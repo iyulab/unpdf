@@ -1,11 +1,11 @@
-# un-pdf
+# unpdf-markdown
 
 Python bindings for [unpdf](https://github.com/iyulab/unpdf) - High-performance PDF content extraction to Markdown, text, and JSON.
 
 ## Installation
 
 ```bash
-pip install un-pdf
+pip install unpdf-markdown
 ```
 
 ## Quick Start
