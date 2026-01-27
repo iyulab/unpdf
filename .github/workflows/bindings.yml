@@ -60,13 +60,9 @@ jobs:
           retention-days: 7
 
   build-python:
-    name: Build Python Wheels
+    name: Build Python Wheel
     needs: build-native
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-        python-version: ['3.9', '3.10', '3.11', '3.12']
+    runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
@@ -74,35 +70,25 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: '3.11'
 
-      - name: Download Linux native library
-        if: matrix.os == 'ubuntu-latest'
+      - name: Download all native libraries
         uses: actions/download-artifact@v4
         with:
-          name: native-linux-x64
-          path: bindings/python/src/unpdf/lib/linux-x64/
+          pattern: native-*
+          path: native-libs/
 
-      - name: Download Windows native library
-        if: matrix.os == 'windows-latest'
-        uses: actions/download-artifact@v4
-        with:
-          name: native-win-x64
-          path: bindings/python/src/unpdf/lib/win-x64/
-
-      - name: Download macOS x64 native library
-        if: matrix.os == 'macos-latest'
-        uses: actions/download-artifact@v4
-        with:
-          name: native-osx-x64
-          path: bindings/python/src/unpdf/lib/osx-x64/
-
-      - name: Download macOS ARM64 native library
-        if: matrix.os == 'macos-latest'
-        uses: actions/download-artifact@v4
-        with:
-          name: native-osx-arm64
-          path: bindings/python/src/unpdf/lib/osx-arm64/
+      - name: Copy native libraries to package
+        run: |
+          mkdir -p bindings/python/src/unpdf/lib/linux-x64
+          mkdir -p bindings/python/src/unpdf/lib/win-x64
+          mkdir -p bindings/python/src/unpdf/lib/osx-x64
+          mkdir -p bindings/python/src/unpdf/lib/osx-arm64
+          cp native-libs/native-linux-x64/* bindings/python/src/unpdf/lib/linux-x64/
+          cp native-libs/native-win-x64/* bindings/python/src/unpdf/lib/win-x64/
+          cp native-libs/native-osx-x64/* bindings/python/src/unpdf/lib/osx-x64/
+          cp native-libs/native-osx-arm64/* bindings/python/src/unpdf/lib/osx-arm64/
+          ls -la bindings/python/src/unpdf/lib/*/
 
       - name: Install build dependencies
         run: |
@@ -116,7 +102,7 @@ jobs:
       - name: Upload wheel
         uses: actions/upload-artifact@v4
         with:
-          name: python-wheel-${{ matrix.os }}-py${{ matrix.python-version }}
+          name: python-wheel
           path: bindings/python/dist/*.whl
           retention-days: 7
 
@@ -182,12 +168,11 @@ jobs:
     if: ${{ github.event.workflow_run.conclusion == 'success' || github.event.inputs.publish == 'true' }}
 
     steps:
-      - name: Download all Python wheels
+      - name: Download Python wheel
         uses: actions/download-artifact@v4
         with:
-          pattern: python-wheel-*
+          name: python-wheel
           path: dist/
-          merge-multiple: true
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
@@ -237,7 +222,7 @@ jobs:
       - name: Download wheel
         uses: actions/download-artifact@v4
         with:
-          name: python-wheel-${{ matrix.os }}-py${{ matrix.python-version }}
+          name: python-wheel
           path: ./wheels/
 
       - name: Install package
