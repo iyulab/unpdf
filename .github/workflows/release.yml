@@ -98,11 +98,19 @@ jobs:
       - name: Build
         run: cargo build --release --target ${{ matrix.target }} -p unpdf-cli
 
+      - name: Rename binary
+        shell: bash
+        run: |
+          cd target/${{ matrix.target }}/release
+          if [ -f "${{ matrix.artifact_name }}" ]; then
+            cp "${{ matrix.artifact_name }}" "${{ matrix.asset_name }}"
+          fi
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset_name }}
-          path: target/${{ matrix.target }}/release/${{ matrix.artifact_name }}
+          path: target/${{ matrix.target }}/release/${{ matrix.asset_name }}
 
   build-ffi:
     name: Build FFI Library
@@ -140,11 +148,19 @@ jobs:
       - name: Build FFI library
         run: cargo build --release --features ffi --target ${{ matrix.target }}
 
+      - name: Rename library
+        shell: bash
+        run: |
+          cd target/${{ matrix.target }}/release
+          if [ -f "${{ matrix.lib_name }}" ]; then
+            cp "${{ matrix.lib_name }}" "${{ matrix.asset_name }}"
+          fi
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset_name }}
-          path: target/${{ matrix.target }}/release/${{ matrix.lib_name }}
+          path: target/${{ matrix.target }}/release/${{ matrix.asset_name }}
 
   create-release:
     name: Create Release
