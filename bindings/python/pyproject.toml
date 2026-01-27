@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "unpdf"
+name = "iyulab-unpdf"
 version = "0.1.2"
 description = "Python bindings for unpdf - High-performance PDF content extraction"
 readme = "README.md"
