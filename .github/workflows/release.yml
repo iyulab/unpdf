@@ -2,15 +2,58 @@ name: Release
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches: [main]
+    paths:
+      - 'Cargo.toml'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (leave empty to use Cargo.toml version)'
+        required: false
+        type: string
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  check-version:
+    name: Check Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.get_version.outputs.version }}
+      should_release: ${{ steps.check_release.outputs.should_release }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get version from Cargo.toml
+        id: get_version
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          fi
+          echo "version=v${VERSION}" >> $GITHUB_OUTPUT
+          echo "Version: v${VERSION}"
+
+      - name: Check if release exists
+        id: check_release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=${{ steps.get_version.outputs.version }}
+          if gh release view "$VERSION" > /dev/null 2>&1; then
+            echo "Release $VERSION already exists, skipping"
+            echo "should_release=false" >> $GITHUB_OUTPUT
+          else
+            echo "Release $VERSION does not exist, proceeding"
+            echo "should_release=true" >> $GITHUB_OUTPUT
+          fi
+
   build-release:
     name: Build Release
+    needs: check-version
+    if: needs.check-version.outputs.should_release == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -49,7 +92,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --target ${{ matrix.target }} -p unpdf-cli
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -59,6 +102,8 @@ jobs:
 
   build-ffi:
     name: Build FFI Library
+    needs: check-version
+    if: needs.check-version.outputs.should_release == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -99,7 +144,8 @@ jobs:
 
   create-release:
     name: Create Release
-    needs: [build-release, build-ffi]
+    needs: [check-version, build-release, build-ffi]
+    if: needs.check-version.outputs.should_release == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -115,15 +161,18 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ needs.check-version.outputs.version }}
+          name: Release ${{ needs.check-version.outputs.version }}
           files: |
             artifacts/**/*
           generate_release_notes: true
           draft: false
-          prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') || contains(github.ref, 'rc') }}
+          prerelease: ${{ contains(needs.check-version.outputs.version, 'alpha') || contains(needs.check-version.outputs.version, 'beta') || contains(needs.check-version.outputs.version, 'rc') }}
 
   publish-crate:
     name: Publish to crates.io
-    needs: create-release
+    needs: [check-version, create-release]
+    if: needs.check-version.outputs.should_release == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
