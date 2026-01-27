@@ -1,10 +1,10 @@
 name: Release
 
 on:
-  push:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
     branches: [main]
-    paths:
-      - 'Cargo.toml'
   workflow_dispatch:
     inputs:
       version:
@@ -19,6 +19,10 @@ jobs:
   check-version:
     name: Check Version
     runs-on: ubuntu-latest
+    # workflow_run일 경우 CI 성공 시에만, workflow_dispatch는 항상 실행
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
     outputs:
       version: ${{ steps.get_version.outputs.version }}
       should_release: ${{ steps.check_release.outputs.should_release }}
