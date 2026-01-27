@@ -19,12 +19,12 @@ jobs:
   check-version:
     name: Check Version
     runs-on: ubuntu-latest
-    # workflow_run일 경우 CI 성공 시에만, workflow_dispatch는 항상 실행
     if: |
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
     outputs:
       version: ${{ steps.get_version.outputs.version }}
+      version_num: ${{ steps.get_version.outputs.version_num }}
       should_release: ${{ steps.check_release.outputs.should_release }}
     steps:
       - uses: actions/checkout@v4
@@ -33,12 +33,13 @@ jobs:
         id: get_version
         run: |
           if [ -n "${{ inputs.version }}" ]; then
-            VERSION="${{ inputs.version }}"
+            VERSION_NUM="${{ inputs.version }}"
           else
-            VERSION=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+            VERSION_NUM=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
           fi
-          echo "version=v${VERSION}" >> $GITHUB_OUTPUT
-          echo "Version: v${VERSION}"
+          echo "version=v${VERSION_NUM}" >> $GITHUB_OUTPUT
+          echo "version_num=${VERSION_NUM}" >> $GITHUB_OUTPUT
+          echo "Version: v${VERSION_NUM}"
 
       - name: Check if release exists
         id: check_release
@@ -65,23 +66,28 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             artifact_name: unpdf
-            asset_name: unpdf-linux-x86_64
+            archive_name: unpdf-linux-x86_64
+            archive_ext: tar.gz
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
             artifact_name: unpdf
-            asset_name: unpdf-linux-x86_64-musl
+            archive_name: unpdf-linux-x86_64-musl
+            archive_ext: tar.gz
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact_name: unpdf.exe
-            asset_name: unpdf-windows-x86_64.exe
+            archive_name: unpdf-windows-x86_64
+            archive_ext: zip
           - os: macos-latest
             target: x86_64-apple-darwin
             artifact_name: unpdf
-            asset_name: unpdf-macos-x86_64
+            archive_name: unpdf-macos-x86_64
+            archive_ext: tar.gz
           - os: macos-latest
             target: aarch64-apple-darwin
             artifact_name: unpdf
-            asset_name: unpdf-macos-aarch64
+            archive_name: unpdf-macos-aarch64
+            archive_ext: tar.gz
 
     steps:
       - uses: actions/checkout@v4
@@ -98,19 +104,24 @@ jobs:
       - name: Build
         run: cargo build --release --target ${{ matrix.target }} -p unpdf-cli
 
-      - name: Rename binary
-        shell: bash
+      - name: Create archive (Unix)
+        if: matrix.archive_ext == 'tar.gz'
         run: |
           cd target/${{ matrix.target }}/release
-          if [ -f "${{ matrix.artifact_name }}" ]; then
-            cp "${{ matrix.artifact_name }}" "${{ matrix.asset_name }}"
-          fi
+          tar -czvf ${{ matrix.archive_name }}-${{ needs.check-version.outputs.version }}.tar.gz ${{ matrix.artifact_name }}
+
+      - name: Create archive (Windows)
+        if: matrix.archive_ext == 'zip'
+        shell: pwsh
+        run: |
+          cd target/${{ matrix.target }}/release
+          Compress-Archive -Path ${{ matrix.artifact_name }} -DestinationPath "${{ matrix.archive_name }}-${{ needs.check-version.outputs.version }}.zip"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.asset_name }}
-          path: target/${{ matrix.target }}/release/${{ matrix.asset_name }}
+          name: ${{ matrix.archive_name }}
+          path: target/${{ matrix.target }}/release/${{ matrix.archive_name }}-${{ needs.check-version.outputs.version }}.${{ matrix.archive_ext }}
 
   build-ffi:
     name: Build FFI Library
@@ -123,19 +134,23 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             lib_name: libunpdf.so
-            asset_name: libunpdf-linux-x86_64.so
+            archive_name: libunpdf-linux-x86_64
+            archive_ext: tar.gz
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             lib_name: unpdf.dll
-            asset_name: unpdf-windows-x86_64.dll
+            archive_name: libunpdf-windows-x86_64
+            archive_ext: zip
           - os: macos-latest
             target: x86_64-apple-darwin
             lib_name: libunpdf.dylib
-            asset_name: libunpdf-macos-x86_64.dylib
+            archive_name: libunpdf-macos-x86_64
+            archive_ext: tar.gz
           - os: macos-latest
             target: aarch64-apple-darwin
             lib_name: libunpdf.dylib
-            asset_name: libunpdf-macos-aarch64.dylib
+            archive_name: libunpdf-macos-aarch64
+            archive_ext: tar.gz
 
     steps:
       - uses: actions/checkout@v4
@@ -148,19 +163,24 @@ jobs:
       - name: Build FFI library
         run: cargo build --release --features ffi --target ${{ matrix.target }}
 
-      - name: Rename library
-        shell: bash
+      - name: Create archive (Unix)
+        if: matrix.archive_ext == 'tar.gz'
         run: |
           cd target/${{ matrix.target }}/release
-          if [ -f "${{ matrix.lib_name }}" ]; then
-            cp "${{ matrix.lib_name }}" "${{ matrix.asset_name }}"
-          fi
+          tar -czvf ${{ matrix.archive_name }}-${{ needs.check-version.outputs.version }}.tar.gz ${{ matrix.lib_name }}
+
+      - name: Create archive (Windows)
+        if: matrix.archive_ext == 'zip'
+        shell: pwsh
+        run: |
+          cd target/${{ matrix.target }}/release
+          Compress-Archive -Path ${{ matrix.lib_name }} -DestinationPath "${{ matrix.archive_name }}-${{ needs.check-version.outputs.version }}.zip"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.asset_name }}
-          path: target/${{ matrix.target }}/release/${{ matrix.asset_name }}
+          name: ${{ matrix.archive_name }}
+          path: target/${{ matrix.target }}/release/${{ matrix.archive_name }}-${{ needs.check-version.outputs.version }}.${{ matrix.archive_ext }}
 
   create-release:
     name: Create Release
@@ -177,6 +197,9 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
+
+      - name: List artifacts
+        run: find artifacts -type f
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
