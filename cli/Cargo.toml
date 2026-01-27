@@ -1,0 +1,40 @@
+[package]
+name = "unpdf-cli"
+version = "0.1.0"
+edition = "2021"
+authors = ["iyulab"]
+license = "MIT"
+description = "CLI tool for extracting PDF content to Markdown, text, and JSON"
+repository = "https://github.com/iyulab/unpdf"
+readme = "../README.md"
+keywords = ["pdf", "markdown", "cli", "text-extraction"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "unpdf"
+path = "src/main.rs"
+
+[dependencies]
+unpdf = { path = ".." }
+
+# CLI argument parsing
+clap = { version = "4.5", features = ["derive", "env"] }
+
+# Terminal colors
+colored = "2.1"
+
+# Progress bars
+indicatif = "0.17"
+
+# Self-update
+self_update = "0.41"
+
+# Async runtime (for update)
+tokio = { version = "1.42", features = ["rt-multi-thread", "macros"] }
+
+# Semantic versioning
+semver = "1.0"
+
+# Logging
+env_logger = "0.11"
+log = "0.4"

@@ -1,0 +1,28 @@
+# Build artifacts
+/target/
+debug/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Test files
+test-files/
+test-output/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Coverage
+*.profraw
+*.profdata
+coverage/
+
+# Local
+dev-docs/
