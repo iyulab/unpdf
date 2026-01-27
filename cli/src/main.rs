@@ -281,9 +281,9 @@ fn cmd_convert(
             .progress_chars("#>-"),
     );
 
-    // Parse document
+    // Parse document with lenient mode to handle malformed PDFs
     pb.set_message("Parsing PDF...");
-    let options = ParseOptions::new();
+    let options = ParseOptions::new().lenient();
     let doc = parse_file_with_options(input, options)?;
     pb.inc(1);
 
