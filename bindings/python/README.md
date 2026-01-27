@@ -1,11 +1,11 @@
-# iyulab-unpdf
+# un-pdf
 
 Python bindings for [unpdf](https://github.com/iyulab/unpdf) - High-performance PDF content extraction to Markdown, text, and JSON.
 
 ## Installation
 
 ```bash
-pip install iyulab-unpdf
+pip install un-pdf
 ```
 
 ## Quick Start
