@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "unpdf"
+version = "0.1.2"
+description = "Python bindings for unpdf - High-performance PDF content extraction"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "iyulab"}
+]
+requires-python = ">=3.9"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Text Processing",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+keywords = ["pdf", "markdown", "text-extraction", "document", "parser"]
+
+[project.urls]
+Homepage = "https://github.com/iyulab/unpdf"
+Documentation = "https://github.com/iyulab/unpdf"
+Repository = "https://github.com/iyulab/unpdf"
+Issues = "https://github.com/iyulab/unpdf/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+unpdf = ["lib/**/*"]

@@ -155,7 +155,7 @@ impl Default for RenderOptions {
             preserve_line_breaks: false,
             list_marker: '-',
             escape_special_chars: true,
-            cleanup: None,
+            cleanup: Some(CleanupOptions::standard()), // Enable standard cleanup by default
             page_selection: PageSelection::All,
             heading_config: None,
             line_width: 0,

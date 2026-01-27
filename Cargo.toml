@@ -29,7 +29,7 @@ fast-parse = []  # Enable nom_parser for faster PDF parsing
 
 [dependencies]
 # PDF parsing
-lopdf = { version = "0.34", features = ["nom_parser"] }
+lopdf = "0.39"
 pdf-extract = "0.7"
 
 # Serialization

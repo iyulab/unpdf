@@ -381,8 +381,8 @@ impl PdfParser {
 
             // Check if it's an image
             if let Ok(subtype) = dict.get(b"Subtype") {
-                match subtype.as_name_str() {
-                    Ok("Image") => {}
+                match subtype.as_name() {
+                    Ok(name) if name == b"Image" => {}
                     _ => return Err(Error::ImageExtract("Not an image XObject".to_string())),
                 }
             }
@@ -410,10 +410,11 @@ impl PdfParser {
             let filter = dict
                 .get(b"Filter")
                 .ok()
-                .and_then(|f| f.as_name_str().ok())
-                .unwrap_or("");
+                .and_then(|f| f.as_name().ok())
+                .map(|n| String::from_utf8_lossy(n).to_string())
+                .unwrap_or_default();
 
-            let (mime_type, data) = match filter {
+            let (mime_type, data) = match filter.as_str() {
                 "DCTDecode" => {
                     // JPEG - data can be used directly
                     ("image/jpeg".to_string(), stream.content.clone())
@@ -449,8 +450,8 @@ impl PdfParser {
                     lopdf::Object::Name(n) => Some(String::from_utf8_lossy(n).to_string()),
                     lopdf::Object::Array(arr) => arr
                         .first()
-                        .and_then(|o| o.as_name_str().ok())
-                        .map(String::from),
+                        .and_then(|o| o.as_name().ok())
+                        .map(|n| String::from_utf8_lossy(n).to_string()),
                     _ => None,
                 };
                 if let Some(cs_name) = cs_name {

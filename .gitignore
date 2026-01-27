@@ -26,3 +26,19 @@ coverage/
 
 # Local
 dev-docs/
+
+# Python bindings
+bindings/python/src/unpdf/lib/
+bindings/python/dist/
+bindings/python/build/
+bindings/python/*.egg-info/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# C# bindings
+bindings/csharp/**/bin/
+bindings/csharp/**/obj/
+bindings/csharp/**/runtimes/
+bindings/csharp/artifacts/
+*.nupkg

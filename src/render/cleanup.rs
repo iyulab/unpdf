@@ -51,6 +51,12 @@ pub struct CleanupOptions {
     /// Merge single newlines into spaces (for PDF word-by-word extraction)
     pub merge_single_newlines: bool,
 
+    /// Merge bullet/number markers with following content
+    pub merge_list_markers: bool,
+
+    /// Merge CJK characters across line breaks (fix mid-sentence breaks in Korean/Chinese/Japanese)
+    pub merge_cjk_lines: bool,
+
     /// Normalize whitespace
     pub normalize_whitespace: bool,
 
@@ -85,6 +91,8 @@ impl CleanupOptions {
             remove_pua: false,
             remove_replacement_char: false,
             merge_single_newlines: false,
+            merge_list_markers: false,
+            merge_cjk_lines: false,
             normalize_whitespace: true,
             max_consecutive_newlines: 0,
             preserve_frontmatter: true,
@@ -105,6 +113,8 @@ impl CleanupOptions {
             remove_pua: false,
             remove_replacement_char: true,
             merge_single_newlines: true,
+            merge_list_markers: true,
+            merge_cjk_lines: true,
             normalize_whitespace: true,
             max_consecutive_newlines: 3,
             preserve_frontmatter: true,
@@ -125,6 +135,8 @@ impl CleanupOptions {
             remove_pua: true,
             remove_replacement_char: true,
             merge_single_newlines: true,
+            merge_list_markers: true,
+            merge_cjk_lines: true,
             normalize_whitespace: true,
             max_consecutive_newlines: 2,
             preserve_frontmatter: true,
@@ -231,6 +243,17 @@ impl CleanupPipeline {
             result = self.fix_hyphenation(&result);
         }
 
+        // Merge list markers with following content (• \n내용 → • 내용)
+        // This must run BEFORE merge_single_newlines
+        if self.options.merge_list_markers {
+            result = self.merge_list_markers(&result);
+        }
+
+        // Merge CJK characters across line breaks (fix mid-sentence breaks)
+        if self.options.merge_cjk_lines {
+            result = self.merge_cjk_lines(&result);
+        }
+
         // Merge single newlines into spaces (for PDF word-by-word extraction)
         // This must run AFTER hyphenation fix but BEFORE whitespace normalization
         if self.options.merge_single_newlines {
@@ -308,18 +331,91 @@ impl CleanupPipeline {
     }
 
     fn merge_single_newlines(&self, text: &str) -> String {
-        // Replace single newlines with spaces, but preserve paragraph breaks (2+ newlines)
-        // This fixes PDF extraction that puts each word on a separate line
+        // Replace single newlines with spaces, but preserve:
+        // 1. Paragraph breaks (2+ newlines)
+        // 2. Sentence endings (period/question mark/exclamation + newline)
         //
-        // Approach: use placeholder to preserve double newlines, then replace singles
-        const PLACEHOLDER: &str = "\u{0000}PARA\u{0000}";
+        // This fixes PDF extraction that puts each word on a separate line
+        // while keeping logical paragraph structure.
+
+        const PARA_PLACEHOLDER: &str = "\u{0000}PARA\u{0000}";
+        const SENT_PLACEHOLDER: &str = "\u{0000}SENT\u{0000}";
+
+        // First, protect paragraph breaks (2+ newlines)
+        let re_para = Regex::new(r"\n{2,}").unwrap();
+        let protected = re_para.replace_all(text, PARA_PLACEHOLDER);
+
+        // Protect sentence endings followed by newline
+        // Pattern: sentence-ending punctuation + optional space + newline
+        let re_sent = Regex::new(r"([.。!?！？])\s*\n").unwrap();
+        let protected = re_sent.replace_all(&protected, |caps: &regex::Captures| {
+            format!("{}{}", &caps[1], SENT_PLACEHOLDER)
+        });
+
+        // Replace remaining single newlines with space
+        let merged = protected.replace('\n', " ");
+
+        // Restore sentence breaks as single newline
+        let merged = merged.replace(SENT_PLACEHOLDER, "\n");
+
+        // Restore paragraph breaks
+        merged.replace(PARA_PLACEHOLDER, "\n\n")
+    }
+
+    fn merge_list_markers(&self, text: &str) -> String {
+        // Merge list markers with following content
+        // Handles:
+        // - "• \n내용" → "• 내용"
+        // - "01. \n내용" → "01. 내용"
+        // - "1) \n내용" → "1) 내용"
+        // - "(1) \n내용" → "(1) 내용"
+        // - "■\n내용" → "■ 내용"
+
+        let mut result = text.to_string();
+
+        // Bullet markers followed by newline (• \n, - \n, ■\n, etc.)
+        let re_bullet = Regex::new(r"([•\-■□▪▸►◆◇➤✓✗])\s*\n\s*").unwrap();
+        result = re_bullet.replace_all(&result, "$1 ").to_string();
+
+        // Numbered list markers: "01. \n", "1. \n", "1) \n", "(1) \n"
+        let re_number = Regex::new(r"(\d{1,3}[.)]\s*)\n\s*").unwrap();
+        result = re_number.replace_all(&result, "$1").to_string();
+
+        let re_paren_number = Regex::new(r"(\(\d{1,3}\)\s*)\n\s*").unwrap();
+        result = re_paren_number.replace_all(&result, "$1").to_string();
+
+        // Korean list markers: "가. \n", "나. \n", etc.
+        let re_korean = Regex::new(r"([가-힣][.)]\s*)\n\s*").unwrap();
+        result = re_korean.replace_all(&result, "$1").to_string();
+
+        // Circled numbers: ❶, ❷, etc.
+        let re_circled = Regex::new(r"([❶-❿])\s*\n\s*").unwrap();
+        result = re_circled.replace_all(&result, "$1 ").to_string();
+
+        result
+    }
+
+    fn merge_cjk_lines(&self, text: &str) -> String {
+        // Merge CJK (Korean/Chinese/Japanese) characters across SINGLE line breaks only
+        // Fixes mid-sentence breaks like "반드시 지키\n십시오" → "반드시 지키십시오"
+        // But preserves paragraph breaks (2+ newlines)
+        //
+        // Also handles: CJK + punctuation + newline + CJK
+        // E.g., "감사합니다.\n반드시" → preserves as separate sentences
+
+        const PLACEHOLDER: &str = "\u{0000}CJKPARA\u{0000}";
 
         // First, protect paragraph breaks (2+ newlines)
         let re_para = Regex::new(r"\n{2,}").unwrap();
         let protected = re_para.replace_all(text, PLACEHOLDER);
 
-        // Replace remaining single newlines with space
-        let merged = protected.replace('\n', " ");
+        // Pattern: CJK char (not followed by sentence-ending punctuation) + single newline + CJK char
+        // Don't merge if the first char is followed by sentence-ending punctuation
+        let re = Regex::new(
+            r"([\p{Hangul}\p{Han}\p{Hiragana}\p{Katakana}])([^.。!?！？\n]?)\n([\p{Hangul}\p{Han}\p{Hiragana}\p{Katakana}])"
+        ).unwrap();
+
+        let merged = re.replace_all(&protected, "$1$2$3").to_string();
 
         // Restore paragraph breaks
         merged.replace(PLACEHOLDER, "\n\n")
@@ -413,5 +509,53 @@ mod tests {
         let text = "Hello\u{FFFD}World";
         let result = pipeline.process(text);
         assert_eq!(result, "HelloWorld");
+    }
+
+    #[test]
+    fn test_merge_list_markers_bullet() {
+        let pipeline = CleanupPipeline::from_preset(CleanupPreset::Standard);
+        let text = "• \n'안전을 위한 주의사항'은 제품을 올바르게 사용하기 위한 것입니다.";
+        let result = pipeline.process(text);
+        assert!(
+            result.starts_with("• '안전을"),
+            "Expected bullet merged, got: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_merge_list_markers_number() {
+        let pipeline = CleanupPipeline::from_preset(CleanupPreset::Standard);
+        let text = "01. \n인명이나 재산상에 영향이 큰 기기에 사용하지 마십시오.";
+        let result = pipeline.process(text);
+        assert!(
+            result.starts_with("01. 인명이나"),
+            "Expected number merged, got: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_merge_cjk_lines() {
+        let pipeline = CleanupPipeline::from_preset(CleanupPreset::Standard);
+        let text = "반드시 지키\n십시오.";
+        let result = pipeline.process(text);
+        assert!(
+            result.contains("반드시 지키십시오"),
+            "Expected CJK merged, got: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_merge_cjk_with_space() {
+        let pipeline = CleanupPipeline::from_preset(CleanupPreset::Standard);
+        let text = "특정조건 하에서\n 위험이 발생할 우려가 있습니다.";
+        let result = pipeline.process(text);
+        assert!(
+            result.contains("하에서 위험이") || result.contains("하에서위험이"),
+            "Expected proper merge, got: {}",
+            result
+        );
     }
 }
