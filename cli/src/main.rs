@@ -297,15 +297,20 @@ fn cmd_convert(
         render_options = render_options.with_cleanup_preset(level.into());
     }
 
-    // Extract images
+    // Extract images (only create folder if there are images)
     pb.set_message("Extracting images...");
     let images_dir = output_dir.join("images");
-    fs::create_dir_all(&images_dir)?;
+    let mut image_count = 0;
     for (id, resource) in &doc.resources {
         if resource.is_image() {
+            // Create images folder on first image
+            if image_count == 0 {
+                fs::create_dir_all(&images_dir)?;
+            }
             let filename = resource.suggested_filename(id);
             let path = images_dir.join(&filename);
             fs::write(&path, &resource.data)?;
+            image_count += 1;
         }
     }
     pb.inc(1);
@@ -331,8 +336,12 @@ fn cmd_convert(
     println!("\n{}", "Output files:".green().bold());
     println!("  {} extract.md", "├─".dimmed());
     println!("  {} extract.txt", "├─".dimmed());
-    println!("  {} content.json", "├─".dimmed());
-    println!("  {} images/", "└─".dimmed());
+    if image_count > 0 {
+        println!("  {} content.json", "├─".dimmed());
+        println!("  {} images/", "└─".dimmed());
+    } else {
+        println!("  {} content.json", "└─".dimmed());
+    }
 
     Ok(())
 }

@@ -9,11 +9,12 @@ use lopdf::Document as LopdfDocument;
 use crate::detect::detect_format_from_path;
 use crate::error::{Error, Result};
 use crate::model::{
-    Document, Metadata, Outline, OutlineItem, Page, Paragraph, Resource, ResourceType,
+    Block, Document, Metadata, Outline, OutlineItem, Page, Paragraph, Resource, ResourceType,
 };
 
 use super::layout::{BlockType, LayoutAnalyzer};
 use super::options::{ErrorMode, ExtractMode, ParseOptions};
+use super::table_detector::TableDetector;
 
 /// PDF document parser.
 pub struct PdfParser {
@@ -163,32 +164,11 @@ impl PdfParser {
 
         // Extract text content
         if self.options.extract_mode != ExtractMode::StructureOnly {
-            // Try layout-aware extraction first
-            match self.extract_page_with_layout(page_num) {
+            // Try layout-aware extraction with table detection
+            match self.extract_page_with_tables(page_num) {
                 Ok(blocks) if !blocks.is_empty() => {
                     for block in blocks {
-                        if !block.is_empty() {
-                            let text = block.text();
-                            log::debug!(
-                                "Block type: {:?}, heading_level: {}, text preview: {}",
-                                block.block_type,
-                                block.heading_level,
-                                if text.len() > 50 { &text[..50] } else { &text }
-                            );
-                            match block.block_type {
-                                BlockType::Heading => {
-                                    let level = block.heading_level.max(1).min(6);
-                                    page.add_paragraph(Paragraph::heading(text, level));
-                                }
-                                BlockType::Paragraph | BlockType::Unknown => {
-                                    page.add_paragraph(Paragraph::with_text(text));
-                                }
-                                BlockType::ListItem => {
-                                    // TODO: Proper list handling
-                                    page.add_paragraph(Paragraph::with_text(format!("• {}", text)));
-                                }
-                            }
-                        }
+                        page.add_block(block);
                     }
                 }
                 Ok(_) => {
@@ -203,6 +183,113 @@ impl PdfParser {
         }
 
         Ok(page)
+    }
+
+    /// Extract page content with table detection.
+    fn extract_page_with_tables(&self, page_num: u32) -> Result<Vec<Block>> {
+        let analyzer = LayoutAnalyzer::new(&self.doc);
+
+        // Step 1: Extract all text spans
+        let spans = analyzer.extract_page_spans(page_num)?;
+
+        if spans.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // Step 2: Detect tables
+        let table_detector = TableDetector::new();
+        let (detected_tables, remaining_spans) = table_detector.detect(spans.clone());
+
+        let mut blocks: Vec<Block> = Vec::new();
+
+        // If tables were detected, process them along with remaining text
+        if !detected_tables.is_empty() {
+            log::debug!("Detected {} tables on page {}", detected_tables.len(), page_num);
+
+            // Collect all elements with their Y position for proper ordering
+            let mut elements: Vec<(f32, Block)> = Vec::new();
+
+            // Add detected tables
+            for detected in &detected_tables {
+                let table = table_detector.to_table_model(detected);
+                if !table.is_empty() {
+                    elements.push((detected.top_y, Block::Table(table)));
+                }
+            }
+
+            // Process remaining spans into text blocks
+            if !remaining_spans.is_empty() {
+                let mut analyzer = LayoutAnalyzer::new(&self.doc);
+                // Manually add font stats from remaining spans
+                for span in &remaining_spans {
+                    analyzer.font_stats_mut().add_size(span.font_size);
+                }
+                analyzer.font_stats_mut().analyze();
+
+                let lines = analyzer.group_spans_into_lines_pub(remaining_spans);
+                let lines = analyzer.detect_headings_pub(lines);
+                let text_blocks = analyzer.group_lines_into_blocks_pub(lines);
+
+                for block in text_blocks {
+                    if !block.is_empty() {
+                        let text = block.text();
+                        let y_pos = block.lines.first().map(|l| l.y).unwrap_or(0.0);
+
+                        let para_block = match block.block_type {
+                            BlockType::Heading => {
+                                let level = block.heading_level.clamp(1, 6);
+                                Block::Paragraph(Paragraph::heading(text, level))
+                            }
+                            BlockType::Paragraph | BlockType::Unknown => {
+                                Block::Paragraph(Paragraph::with_text(text))
+                            }
+                            BlockType::ListItem => {
+                                Block::Paragraph(Paragraph::with_text(format!("• {}", text)))
+                            }
+                        };
+                        elements.push((y_pos, para_block));
+                    }
+                }
+            }
+
+            // Sort by Y position (descending for PDF coords - top to bottom)
+            elements.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+
+            blocks = elements.into_iter().map(|(_, block)| block).collect();
+        } else {
+            // No tables detected, use regular layout analysis
+            match self.extract_page_with_layout(page_num) {
+                Ok(text_blocks) => {
+                    for block in text_blocks {
+                        if !block.is_empty() {
+                            let text = block.text();
+                            log::debug!(
+                                "Block type: {:?}, heading_level: {}, text preview: {}",
+                                block.block_type,
+                                block.heading_level,
+                                if text.len() > 50 { &text[..50] } else { &text }
+                            );
+                            let para_block = match block.block_type {
+                                BlockType::Heading => {
+                                    let level = block.heading_level.clamp(1, 6);
+                                    Block::Paragraph(Paragraph::heading(text, level))
+                                }
+                                BlockType::Paragraph | BlockType::Unknown => {
+                                    Block::Paragraph(Paragraph::with_text(text))
+                                }
+                                BlockType::ListItem => {
+                                    Block::Paragraph(Paragraph::with_text(format!("• {}", text)))
+                                }
+                            };
+                            blocks.push(para_block);
+                        }
+                    }
+                }
+                Err(e) => return Err(e),
+            }
+        }
+
+        Ok(blocks)
     }
 
     /// Extract page with layout analysis.

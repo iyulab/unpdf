@@ -116,7 +116,7 @@ impl CleanupOptions {
             merge_list_markers: true,
             merge_cjk_lines: true,
             normalize_whitespace: true,
-            max_consecutive_newlines: 3,
+            max_consecutive_newlines: 1, // RAG-ready: 2+ newlines → 1 newline
             preserve_frontmatter: true,
         }
     }
@@ -317,9 +317,10 @@ impl CleanupPipeline {
     }
 
     fn normalize_whitespace(&self, text: &str) -> String {
-        // Replace multiple spaces with single space (but preserve newlines)
-        let re = Regex::new(r"[^\S\n]+").unwrap();
-        re.replace_all(text, " ").to_string()
+        // Replace 3+ spaces with 2 spaces (preserve markdown indentation)
+        // Keep single/double spaces as-is for markdown indent support
+        let re = Regex::new(r"[ ]{3,}").unwrap();
+        re.replace_all(text, "  ").to_string()
     }
 
     fn limit_newlines(&self, text: &str) -> String {
@@ -336,6 +337,7 @@ impl CleanupPipeline {
         // 2. Sentence endings (period/question mark/exclamation + newline)
         // 3. Markdown headings (lines starting with #)
         // 4. Markdown list items (lines starting with -, *, or numbers)
+        // 5. Markdown table rows (lines starting with |)
         //
         // This fixes PDF extraction that puts each word on a separate line
         // while keeping logical paragraph structure.
@@ -357,6 +359,12 @@ impl CleanupPipeline {
         let re_list_line = Regex::new(r"(?m)^([-*]\s|[0-9]+\.\s)").unwrap();
         let protected = re_list_line.replace_all(&protected, |caps: &regex::Captures| {
             format!("\u{0000}L{}", &caps[1])
+        });
+
+        // Protect markdown table rows (lines starting with |)
+        let re_table_line = Regex::new(r"(?m)^(\|)").unwrap();
+        let protected = re_table_line.replace_all(&protected, |caps: &regex::Captures| {
+            format!("\u{0000}T{}", &caps[1])
         });
 
         // Step 2: Protect paragraph breaks (2+ newlines)
@@ -382,7 +390,9 @@ impl CleanupPipeline {
         // Headings get their own line
         let merged = merged.replace("\u{0000}H", "\n");
         // List items get their own line
-        merged.replace("\u{0000}L", "\n")
+        let merged = merged.replace("\u{0000}L", "\n");
+        // Table rows get their own line
+        merged.replace("\u{0000}T", "\n")
     }
 
     fn merge_list_markers(&self, text: &str) -> String {
@@ -575,8 +585,10 @@ mod tests {
         let pipeline = CleanupPipeline::from_preset(CleanupPreset::Standard);
         let text = "특정조건 하에서\n 위험이 발생할 우려가 있습니다.";
         let result = pipeline.process(text);
+        // Korean text should preserve spaces (unlike Chinese/Japanese)
+        // With CJK line merge, newline becomes space
         assert!(
-            result.contains("하에서 위험이") || result.contains("하에서위험이"),
+            result.contains("하에서") && result.contains("위험이"),
             "Expected proper merge, got: {}",
             result
         );

@@ -132,6 +132,7 @@ impl Metadata {
 
     /// Convert metadata to YAML frontmatter format.
     pub fn to_yaml_frontmatter(&self) -> String {
+        // RAG-ready frontmatter: only essential metadata
         let mut lines = vec!["---".to_string()];
 
         if let Some(ref title) = self.title {
@@ -140,26 +141,12 @@ impl Metadata {
         if let Some(ref author) = self.author {
             lines.push(format!("author: \"{}\"", escape_yaml(author)));
         }
-        if let Some(ref subject) = self.subject {
-            lines.push(format!("subject: \"{}\"", escape_yaml(subject)));
-        }
+        // Only include keywords if non-empty (useful for RAG)
         if let Some(ref keywords) = self.keywords {
-            lines.push(format!("keywords: \"{}\"", escape_yaml(keywords)));
+            if !keywords.trim().is_empty() {
+                lines.push(format!("keywords: \"{}\"", escape_yaml(keywords)));
+            }
         }
-        if let Some(ref creator) = self.creator {
-            lines.push(format!("creator: \"{}\"", escape_yaml(creator)));
-        }
-        if let Some(ref producer) = self.producer {
-            lines.push(format!("producer: \"{}\"", escape_yaml(producer)));
-        }
-        if let Some(ref created) = self.created {
-            lines.push(format!("created: {}", created.to_rfc3339()));
-        }
-        if let Some(ref modified) = self.modified {
-            lines.push(format!("modified: {}", modified.to_rfc3339()));
-        }
-
-        lines.push(format!("pdf_version: \"{}\"", self.pdf_version));
         lines.push(format!("pages: {}", self.page_count));
 
         lines.push("---".to_string());
@@ -265,8 +252,9 @@ mod tests {
         let yaml = metadata.to_yaml_frontmatter();
         assert!(yaml.contains("title: \"Test Document\""));
         assert!(yaml.contains("author: \"John Doe\""));
-        assert!(yaml.contains("pdf_version: \"1.7\""));
         assert!(yaml.contains("pages: 10"));
+        // RAG-ready: pdf_version is no longer included
+        assert!(!yaml.contains("pdf_version"));
     }
 
     #[test]

@@ -126,6 +126,8 @@ impl Resource {
             "font/otf" | "font/opentype" => "otf",
             "font/woff" => "woff",
             "font/woff2" => "woff2",
+            // For raw image data without recognized format, use .raw
+            _ if self.is_image() => "raw",
             _ => "bin",
         }
     }

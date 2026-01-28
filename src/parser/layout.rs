@@ -121,13 +121,72 @@ impl TextLine {
         }
     }
 
-    /// Get the combined text of all spans.
+    /// Get the combined text of all spans with appropriate spacing.
+    /// 
+    /// Inserts spaces between spans based on their X coordinate gaps.
+    /// For CJK characters, no space is inserted between adjacent characters.
     pub fn text(&self) -> String {
-        self.spans
-            .iter()
-            .map(|s| s.text.as_str())
-            .collect::<Vec<_>>()
-            .join("")
+        if self.spans.is_empty() {
+            return String::new();
+        }
+        
+        if self.spans.len() == 1 {
+            return self.spans[0].text.clone();
+        }
+
+        let mut result = String::new();
+        
+        for (i, span) in self.spans.iter().enumerate() {
+            if i == 0 {
+                result.push_str(&span.text);
+                continue;
+            }
+
+            let prev_span = &self.spans[i - 1];
+            
+            // Calculate gap between end of previous span and start of current span
+            let prev_end = prev_span.x + prev_span.width;
+            let gap = span.x - prev_end;
+            
+            // Estimate average character width from current span
+            let char_count = span.text.chars().count();
+            let avg_char_width = if char_count > 0 && span.width > 0.0 {
+                span.width / char_count as f32
+            } else {
+                span.font_size * 0.5 // Fallback: assume half of font size
+            };
+            
+            // Check if we need to insert a space
+            // Gap threshold: if gap is more than 20% of average char width, insert space
+            let space_threshold = avg_char_width * 0.2;
+            
+            // Get last char of previous span and first char of current span
+            let prev_last_char = prev_span.text.chars().last();
+            let curr_first_char = span.text.chars().next();
+            
+            let should_insert_space = if gap > space_threshold {
+                // Check if both characters are CJK (no space needed between CJK chars)
+                let prev_is_cjk = prev_last_char.map(is_spaceless_script_char).unwrap_or(false);
+                let curr_is_cjk = curr_first_char.map(is_spaceless_script_char).unwrap_or(false);
+                
+                // Don't insert space between CJK characters
+                !(prev_is_cjk && curr_is_cjk)
+            } else {
+                false
+            };
+
+            // Also check if previous span ends with space or current starts with space
+            let prev_ends_with_space = prev_span.text.ends_with(' ') || prev_span.text.ends_with('\u{00A0}');
+            let curr_starts_with_space = span.text.starts_with(' ') || span.text.starts_with('\u{00A0}');
+            
+            if should_insert_space && !prev_ends_with_space && !curr_starts_with_space {
+                result.push(' ');
+            }
+            
+            result.push_str(&span.text);
+        }
+        
+        result
     }
 
     /// Check if the line is predominantly bold.
@@ -309,6 +368,26 @@ impl<'a> LayoutAnalyzer<'a> {
         }
     }
 
+    /// Get mutable reference to font statistics (for external use).
+    pub fn font_stats_mut(&mut self) -> &mut FontStatistics {
+        &mut self.font_stats
+    }
+
+    /// Public wrapper for group_spans_into_lines.
+    pub fn group_spans_into_lines_pub(&self, spans: Vec<TextSpan>) -> Vec<TextLine> {
+        self.group_spans_into_lines(spans)
+    }
+
+    /// Public wrapper for detect_headings.
+    pub fn detect_headings_pub(&self, lines: Vec<TextLine>) -> Vec<TextLine> {
+        self.detect_headings(lines)
+    }
+
+    /// Public wrapper for group_lines_into_blocks.
+    pub fn group_lines_into_blocks_pub(&self, lines: Vec<TextLine>) -> Vec<TextBlock> {
+        self.group_lines_into_blocks(lines)
+    }
+
     /// Extract text spans from a page with position and font information.
     /// Uses lopdf's font encoding support for proper text decoding.
     pub fn extract_page_spans(&self, page_num: u32) -> Result<Vec<TextSpan>> {
@@ -372,12 +451,10 @@ impl<'a> LayoutAnalyzer<'a> {
 
         match contents {
             Object::Reference(r) => {
-                if let Ok(stream) = self.doc.get_object(*r) {
-                    if let Object::Stream(s) = stream {
-                        return s
-                            .decompressed_content()
-                            .map_err(|e| Error::PdfParse(e.to_string()));
-                    }
+                if let Ok(Object::Stream(s)) = self.doc.get_object(*r) {
+                    return s
+                        .decompressed_content()
+                        .map_err(|e| Error::PdfParse(e.to_string()));
                 }
                 Err(Error::PdfParse("Invalid content stream".to_string()))
             }
@@ -385,12 +462,10 @@ impl<'a> LayoutAnalyzer<'a> {
                 let mut content = Vec::new();
                 for obj in arr {
                     if let Object::Reference(r) = obj {
-                        if let Ok(stream) = self.doc.get_object(*r) {
-                            if let Object::Stream(s) = stream {
-                                if let Ok(data) = s.decompressed_content() {
-                                    content.extend_from_slice(&data);
-                                    content.push(b' ');
-                                }
+                        if let Ok(Object::Stream(s)) = self.doc.get_object(*r) {
+                            if let Ok(data) = s.decompressed_content() {
+                                content.extend_from_slice(&data);
+                                content.push(b' ');
                             }
                         }
                     }
@@ -470,18 +545,64 @@ impl<'a> LayoutAnalyzer<'a> {
 
                         let text = if op.operator == "TJ" {
                             // TJ: array of strings and positioning adjustments
+                            // Numbers indicate kerning/spacing adjustments in 1/1000 text space units
+                            // Large negative values (like -200 to -300) often indicate word spaces
                             if let Some(Object::Array(arr)) = op.operands.first() {
                                 let mut combined = String::new();
+                                // Threshold for space detection: 200 units = 0.2 * font_size
+                                // This varies by font, but works well for most cases
+                                let space_threshold = 200.0;
+                                
                                 for item in arr {
-                                    if let Object::String(bytes, _) = item {
-                                        if let Some(ref enc) = encoding {
-                                            if let Ok(decoded) = LopdfDocument::decode_text(enc, bytes) {
-                                                combined.push_str(&decoded);
+                                    match item {
+                                        Object::String(bytes, _) => {
+                                            if let Some(ref enc) = encoding {
+                                                if let Ok(decoded) = LopdfDocument::decode_text(enc, bytes) {
+                                                    combined.push_str(&decoded);
+                                                }
+                                            } else {
+                                                // Fallback: try simple decoding
+                                                combined.push_str(&decode_text_simple(bytes));
                                             }
-                                        } else {
-                                            // Fallback: try simple decoding
-                                            combined.push_str(&decode_text_simple(bytes));
                                         }
+                                        Object::Integer(n) => {
+                                            // Negative values move text to the right (advance)
+                                            // Large negative values indicate word breaks
+                                            let adjustment = -(*n as f32);
+                                            if adjustment > space_threshold {
+                                                // Check if we should insert space
+                                                // Don't insert if already has space or is empty
+                                                if !combined.is_empty() 
+                                                    && !combined.ends_with(' ') 
+                                                    && !combined.ends_with('\u{00A0}') 
+                                                {
+                                                    // Check if it's not CJK text (CJK doesn't use spaces)
+                                                    let last_char = combined.chars().last();
+                                                    if let Some(c) = last_char {
+                                                        if !is_spaceless_script_char(c) {
+                                                            combined.push(' ');
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        Object::Real(n) => {
+                                            // Same logic for Real numbers
+                                            let adjustment = -n;
+                                            if adjustment > space_threshold
+                                                && !combined.is_empty()
+                                                && !combined.ends_with(' ')
+                                                && !combined.ends_with('\u{00A0}')
+                                            {
+                                                let last_char = combined.chars().last();
+                                                if let Some(c) = last_char {
+                                                    if !is_spaceless_script_char(c) {
+                                                        combined.push(' ');
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        _ => {}
                                     }
                                 }
                                 combined
@@ -585,9 +706,9 @@ impl<'a> LayoutAnalyzer<'a> {
         for span in spans {
             let start_slice = ((span.x - min_x) / slice_width) as usize;
             let end_slice = (((span.x + span.width) - min_x) / slice_width) as usize;
-            
-            for i in start_slice..=end_slice.min(num_slices - 1) {
-                slice_occupancy[i] += 1;
+
+            for slot in slice_occupancy.iter_mut().take(end_slice.min(num_slices - 1) + 1).skip(start_slice) {
+                *slot += 1;
             }
         }
 
@@ -604,8 +725,8 @@ impl<'a> LayoutAnalyzer<'a> {
         let mut current_gap_start = 0;
         let mut current_gap_len = 0;
         
-        for i in search_start..search_end {
-            if slice_occupancy[i] == 0 {
+        for (i, &occupancy) in slice_occupancy.iter().enumerate().take(search_end).skip(search_start) {
+            if occupancy == 0 {
                 if current_gap_len == 0 {
                     current_gap_start = i;
                 }
@@ -624,14 +745,10 @@ impl<'a> LayoutAnalyzer<'a> {
                         // Score: gap_width * (1 - center_distance_ratio)
                         let best_gap_width = best_gap_len as f32 * slice_width;
                         
-                        // If current gap is significantly larger, prefer it
-                        if current_gap_width > best_gap_width * 1.5 {
-                            best_gap_start = current_gap_start;
-                            best_gap_len = current_gap_len;
-                            best_gap_center_dist = center_dist;
-                        }
-                        // If gaps are similar size, prefer closer to center
-                        else if current_gap_width >= best_gap_width * 0.7 && center_dist < best_gap_center_dist {
+                        // Prefer larger gaps, or similar-sized gaps closer to center
+                        if current_gap_width > best_gap_width * 1.5
+                            || (current_gap_width >= best_gap_width * 0.7 && center_dist < best_gap_center_dist)
+                        {
                             best_gap_start = current_gap_start;
                             best_gap_len = current_gap_len;
                             best_gap_center_dist = center_dist;
@@ -649,15 +766,12 @@ impl<'a> LayoutAnalyzer<'a> {
             let current_gap_width = current_gap_len as f32 * slice_width;
             let best_gap_width = best_gap_len as f32 * slice_width;
             
-            if current_gap_width >= 10.0 {
-                if current_gap_width > best_gap_width * 1.5 {
-                    best_gap_start = current_gap_start;
-                    best_gap_len = current_gap_len;
-                }
-                else if current_gap_width >= best_gap_width * 0.7 && center_dist < best_gap_center_dist {
-                    best_gap_start = current_gap_start;
-                    best_gap_len = current_gap_len;
-                }
+            if current_gap_width >= 10.0
+                && (current_gap_width > best_gap_width * 1.5
+                    || (current_gap_width >= best_gap_width * 0.7 && center_dist < best_gap_center_dist))
+            {
+                best_gap_start = current_gap_start;
+                best_gap_len = current_gap_len;
             }
         }
 
@@ -1028,6 +1142,33 @@ fn get_number(obj: &Object) -> Option<f32> {
         Object::Real(r) => Some(*r),
         _ => None,
     }
+}
+
+/// Check if a character is a CJK (Chinese/Japanese/Korean) character.
+/// 
+/// CJK characters typically don't need spaces between them.
+/// Check if character is from a script that doesn't use word spaces.
+/// Chinese and Japanese don't use spaces between words, but Korean does.
+fn is_spaceless_script_char(c: char) -> bool {
+    let code = c as u32;
+    
+    // CJK Unified Ideographs (Chinese characters, used in Chinese/Japanese)
+    (0x4E00..=0x9FFF).contains(&code)
+    // CJK Unified Ideographs Extension A
+    || (0x3400..=0x4DBF).contains(&code)
+    // CJK Unified Ideographs Extension B-F
+    || (0x20000..=0x2A6DF).contains(&code)
+    || (0x2A700..=0x2B73F).contains(&code)
+    || (0x2B740..=0x2B81F).contains(&code)
+    || (0x2B820..=0x2CEAF).contains(&code)
+    || (0x2CEB0..=0x2EBEF).contains(&code)
+    // Hiragana (Japanese)
+    || (0x3040..=0x309F).contains(&code)
+    // Katakana (Japanese)
+    || (0x30A0..=0x30FF).contains(&code)
+    // NOTE: Hangul (Korean) is NOT included - Korean uses word spaces like English
+    // CJK Symbols and Punctuation
+    || (0x3000..=0x303F).contains(&code)
 }
 
 /// Simple text decoding fallback when no encoding is available.

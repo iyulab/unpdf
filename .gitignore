@@ -26,6 +26,7 @@ coverage/
 
 # Local
 dev-docs/
+.serena/
 
 # Python bindings
 bindings/python/src/unpdf/lib/
