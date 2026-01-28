@@ -21,6 +21,54 @@ public static class Pdf
     }
 
     /// <summary>
+    /// Convert a PDF file to Markdown format with options.
+    /// </summary>
+    /// <param name="path">Path to the PDF file.</param>
+    /// <param name="options">Conversion options.</param>
+    /// <returns>The extracted content as Markdown.</returns>
+    /// <exception cref="UnpdfException">Thrown when conversion fails.</exception>
+    public static string ToMarkdown(string path, PdfOptions options)
+    {
+        var nativeOptions = new UnpdfOptionsNative
+        {
+            ExtractImages = options.ExtractImages,
+            ImageDir = options.ImageOutputDir != null
+                ? Marshal.StringToCoTaskMemUTF8(options.ImageOutputDir)
+                : IntPtr.Zero,
+            IncludeFrontmatter = options.IncludeFrontmatter,
+            Lenient = options.Lenient
+        };
+
+        try
+        {
+            var result = NativeMethods.ToMarkdownWithOptions(path, nativeOptions);
+            return HandleResult(result);
+        }
+        finally
+        {
+            if (nativeOptions.ImageDir != IntPtr.Zero)
+            {
+                Marshal.FreeCoTaskMem(nativeOptions.ImageDir);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Extract images from a PDF file.
+    /// </summary>
+    /// <param name="path">Path to the PDF file.</param>
+    /// <param name="outputDir">Directory to save extracted images.</param>
+    /// <returns>Information about extracted images.</returns>
+    /// <exception cref="UnpdfException">Thrown when extraction fails.</exception>
+    public static IReadOnlyList<ExtractedImage> ExtractImages(string path, string outputDir)
+    {
+        var result = NativeMethods.ExtractImages(path, outputDir);
+        var json = HandleResult(result);
+        return JsonSerializer.Deserialize<List<ExtractedImage>>(json)
+            ?? new List<ExtractedImage>();
+    }
+
+    /// <summary>
     /// Convert a PDF file to plain text.
     /// </summary>
     /// <param name="path">Path to the PDF file.</param>

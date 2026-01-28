@@ -15,6 +15,21 @@ internal struct UnpdfResult
 }
 
 /// <summary>
+/// Options structure for FFI functions.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct UnpdfOptionsNative
+{
+    [MarshalAs(UnmanagedType.I1)]
+    public bool ExtractImages;
+    public IntPtr ImageDir;
+    [MarshalAs(UnmanagedType.I1)]
+    public bool IncludeFrontmatter;
+    [MarshalAs(UnmanagedType.I1)]
+    public bool Lenient;
+}
+
+/// <summary>
 /// P/Invoke declarations for the native unpdf library.
 /// </summary>
 internal static class NativeMethods
@@ -45,4 +60,14 @@ internal static class NativeMethods
 
     [DllImport(LibraryName, EntryPoint = "unpdf_version", CallingConvention = CallingConvention.Cdecl)]
     internal static extern IntPtr GetVersion();
+
+    [DllImport(LibraryName, EntryPoint = "unpdf_to_markdown_with_options", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern UnpdfResult ToMarkdownWithOptions(
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string path,
+        UnpdfOptionsNative options);
+
+    [DllImport(LibraryName, EntryPoint = "unpdf_extract_images", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern UnpdfResult ExtractImages(
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string path,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string outputDir);
 }

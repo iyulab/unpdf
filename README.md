@@ -501,28 +501,35 @@ cargo build --release --features ffi
 ```csharp
 using Unpdf;
 
-// Parse and convert to Markdown
-string markdown = UnpdfNative.ToMarkdown("document.pdf");
+// Convert PDF to Markdown
+string markdown = Pdf.ToMarkdown("document.pdf");
 
-// Parse and convert to plain text
-string text = UnpdfNative.ToText("document.pdf");
+// Convert PDF to plain text
+string text = Pdf.ToText("document.pdf");
 
-// Parse and convert to JSON
-string json = UnpdfNative.ToJson("document.pdf");
+// Convert PDF to JSON
+string json = Pdf.ToJson("document.pdf", pretty: true);
 
-// From byte array
-byte[] data = File.ReadAllBytes("document.pdf");
-string markdown = UnpdfNative.ToMarkdownFromBytes(data);
+// Get document information
+var info = Pdf.GetInfo("document.pdf");
+Console.WriteLine($"Title: {info.Title}, Pages: {info.PageCount}");
 
-// With options
-var options = new ConversionOptions
+// Convert with options
+var options = new PdfOptions
 {
-    EnableCleanup = true,
-    CleanupPreset = CleanupPreset.Aggressive,
     IncludeFrontmatter = true,
-    PageRange = "1-10"
+    ExtractImages = true,
+    ImageOutputDir = "./images",
+    Lenient = true
 };
-string markdown = UnpdfNative.ToMarkdown("document.pdf", options);
+string markdownWithImages = Pdf.ToMarkdown("document.pdf", options);
+
+// Extract images only
+var images = Pdf.ExtractImages("document.pdf", "./output/images");
+foreach (var img in images)
+{
+    Console.WriteLine($"{img.Filename}: {img.Width}x{img.Height}");
+}
 ```
 
 ### ASP.NET Core Example
@@ -537,20 +544,55 @@ public class PdfController : ControllerBase
     {
         if (file == null) return BadRequest("No file");
 
-        using var ms = new MemoryStream();
-        await file.CopyToAsync(ms);
-
+        // Save to temp file for processing
+        var tempPath = Path.GetTempFileName();
         try
         {
-            var markdown = UnpdfNative.ToMarkdownFromBytes(
-                ms.ToArray(),
-                enableCleanup: true
-            );
+            using (var stream = System.IO.File.Create(tempPath))
+            {
+                await file.CopyToAsync(stream);
+            }
+
+            var options = new PdfOptions { IncludeFrontmatter = true };
+            var markdown = Pdf.ToMarkdown(tempPath, options);
             return Ok(new { markdown });
         }
         catch (UnpdfException ex)
         {
             return BadRequest(new { error = ex.Message });
+        }
+        finally
+        {
+            if (System.IO.File.Exists(tempPath))
+                System.IO.File.Delete(tempPath);
+        }
+    }
+
+    [HttpPost("extract-images")]
+    public async Task<IActionResult> ExtractImages(IFormFile file)
+    {
+        if (file == null) return BadRequest("No file");
+
+        var tempPath = Path.GetTempFileName();
+        var outputDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
+        try
+        {
+            using (var stream = System.IO.File.Create(tempPath))
+            {
+                await file.CopyToAsync(stream);
+            }
+
+            var images = Pdf.ExtractImages(tempPath, outputDir);
+            return Ok(new { count = images.Count, images });
+        }
+        catch (UnpdfException ex)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
+        finally
+        {
+            if (System.IO.File.Exists(tempPath))
+                System.IO.File.Delete(tempPath);
         }
     }
 }
