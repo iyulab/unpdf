@@ -12,6 +12,7 @@ use crate::model::{
     Document, Metadata, Outline, OutlineItem, Page, Paragraph, Resource, ResourceType,
 };
 
+use super::layout::{BlockType, LayoutAnalyzer};
 use super::options::{ErrorMode, ExtractMode, ParseOptions};
 
 /// PDF document parser.
@@ -162,25 +163,70 @@ impl PdfParser {
 
         // Extract text content
         if self.options.extract_mode != ExtractMode::StructureOnly {
-            match self.extract_page_text(page_num) {
-                Ok(text) => {
-                    if !text.trim().is_empty() {
-                        // For now, add as a single paragraph
-                        // TODO: Implement proper layout analysis
-                        page.add_paragraph(Paragraph::with_text(text));
+            // Try layout-aware extraction first
+            match self.extract_page_with_layout(page_num) {
+                Ok(blocks) if !blocks.is_empty() => {
+                    for block in blocks {
+                        if !block.is_empty() {
+                            let text = block.text();
+                            log::debug!(
+                                "Block type: {:?}, heading_level: {}, text preview: {}",
+                                block.block_type,
+                                block.heading_level,
+                                if text.len() > 50 { &text[..50] } else { &text }
+                            );
+                            match block.block_type {
+                                BlockType::Heading => {
+                                    let level = block.heading_level.max(1).min(6);
+                                    page.add_paragraph(Paragraph::heading(text, level));
+                                }
+                                BlockType::Paragraph | BlockType::Unknown => {
+                                    page.add_paragraph(Paragraph::with_text(text));
+                                }
+                                BlockType::ListItem => {
+                                    // TODO: Proper list handling
+                                    page.add_paragraph(Paragraph::with_text(format!("• {}", text)));
+                                }
+                            }
+                        }
                     }
                 }
-                Err(e) => {
-                    if self.options.error_mode == ErrorMode::Strict {
-                        return Err(e);
-                    }
-                    // In lenient mode, skip this page's text
-                    log::warn!("Failed to extract text from page {}: {}", page_num, e);
+                Ok(_) => {
+                    // Layout analysis returned empty, use fallback
+                    self.fallback_text_extraction(&mut page, page_num)?;
+                }
+                Err(_) => {
+                    // Layout analysis failed, use fallback
+                    self.fallback_text_extraction(&mut page, page_num)?;
                 }
             }
         }
 
         Ok(page)
+    }
+
+    /// Extract page with layout analysis.
+    fn extract_page_with_layout(&self, page_num: u32) -> Result<Vec<super::layout::TextBlock>> {
+        let mut analyzer = LayoutAnalyzer::new(&self.doc);
+        analyzer.extract_page_blocks(page_num)
+    }
+
+    /// Fallback text extraction without layout analysis.
+    fn fallback_text_extraction(&self, page: &mut Page, page_num: u32) -> Result<()> {
+        match self.extract_page_text(page_num) {
+            Ok(text) => {
+                if !text.trim().is_empty() {
+                    page.add_paragraph(Paragraph::with_text(text));
+                }
+            }
+            Err(e) => {
+                if self.options.error_mode == ErrorMode::Strict {
+                    return Err(e);
+                }
+                log::warn!("Failed to extract text from page {}: {}", page_num, e);
+            }
+        }
+        Ok(())
     }
 
     /// Get page dimensions.

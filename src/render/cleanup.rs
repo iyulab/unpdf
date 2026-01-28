@@ -334,6 +334,8 @@ impl CleanupPipeline {
         // Replace single newlines with spaces, but preserve:
         // 1. Paragraph breaks (2+ newlines)
         // 2. Sentence endings (period/question mark/exclamation + newline)
+        // 3. Markdown headings (lines starting with #)
+        // 4. Markdown list items (lines starting with -, *, or numbers)
         //
         // This fixes PDF extraction that puts each word on a separate line
         // while keeping logical paragraph structure.
@@ -341,25 +343,46 @@ impl CleanupPipeline {
         const PARA_PLACEHOLDER: &str = "\u{0000}PARA\u{0000}";
         const SENT_PLACEHOLDER: &str = "\u{0000}SENT\u{0000}";
 
-        // First, protect paragraph breaks (2+ newlines)
-        let re_para = Regex::new(r"\n{2,}").unwrap();
-        let protected = re_para.replace_all(text, PARA_PLACEHOLDER);
+        // Step 1: Protect markdown block elements FIRST (before paragraph breaks)
+        // This ensures we don't lose the newline structure around headings
 
-        // Protect sentence endings followed by newline
-        // Pattern: sentence-ending punctuation + optional space + newline
+        // Protect lines that start with markdown heading (# to ######)
+        // Pattern: start of line or newline, then 1-6 hashes + space + content
+        let re_heading_line = Regex::new(r"(?m)^(#{1,6}\s)").unwrap();
+        let protected = re_heading_line.replace_all(text, |caps: &regex::Captures| {
+            format!("\u{0000}H{}", &caps[1])
+        });
+
+        // Protect lines that start with list markers (-, *, or number.)
+        let re_list_line = Regex::new(r"(?m)^([-*]\s|[0-9]+\.\s)").unwrap();
+        let protected = re_list_line.replace_all(&protected, |caps: &regex::Captures| {
+            format!("\u{0000}L{}", &caps[1])
+        });
+
+        // Step 2: Protect paragraph breaks (2+ newlines)
+        let re_para = Regex::new(r"\n{2,}").unwrap();
+        let protected = re_para.replace_all(&protected, PARA_PLACEHOLDER);
+
+        // Step 3: Protect sentence endings followed by newline
         let re_sent = Regex::new(r"([.。!?！？])\s*\n").unwrap();
         let protected = re_sent.replace_all(&protected, |caps: &regex::Captures| {
             format!("{}{}", &caps[1], SENT_PLACEHOLDER)
         });
 
-        // Replace remaining single newlines with space
+        // Step 4: Replace remaining single newlines with space
         let merged = protected.replace('\n', " ");
 
-        // Restore sentence breaks as single newline
+        // Step 5: Restore sentence breaks as single newline
         let merged = merged.replace(SENT_PLACEHOLDER, "\n");
 
-        // Restore paragraph breaks
-        merged.replace(PARA_PLACEHOLDER, "\n\n")
+        // Step 6: Restore paragraph breaks
+        let merged = merged.replace(PARA_PLACEHOLDER, "\n\n");
+
+        // Step 7: Restore markdown block markers with newline prefix
+        // Headings get their own line
+        let merged = merged.replace("\u{0000}H", "\n");
+        // List items get their own line
+        merged.replace("\u{0000}L", "\n")
     }
 
     fn merge_list_markers(&self, text: &str) -> String {
