@@ -418,7 +418,9 @@ fn cmd_json(
     output: Option<&Path>,
     compact: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let doc = unpdf::parse_file(input)?;
+    // Use lenient mode to continue even if some text extraction fails
+    let options = ParseOptions::new().lenient();
+    let doc = unpdf::parse_file_with_options(input, options)?;
 
     let format = if compact {
         JsonFormat::Compact
@@ -505,7 +507,8 @@ fn cmd_extract(
         PageSelection::All
     };
 
-    let options = ParseOptions::new().with_pages(page_selection);
+    // Use lenient mode to continue even if some text extraction fails
+    let options = ParseOptions::new().lenient().with_pages(page_selection);
     let doc = parse_file_with_options(input, options)?;
 
     let output_dir = output

@@ -8,7 +8,7 @@ use std::path::Path;
 use std::ptr;
 
 use crate::render::{JsonFormat, RenderOptions};
-use crate::{parse_file, render};
+use crate::{parse_file_with_options, render, ParseOptions};
 
 /// Result structure returned by FFI functions.
 #[repr(C)]
@@ -63,9 +63,10 @@ pub unsafe extern "C" fn unpdf_to_markdown(path: *const c_char) -> UnpdfResult {
 }
 
 fn to_markdown_internal(path: &Path) -> crate::Result<String> {
-    let doc = parse_file(path)?;
-    let options = RenderOptions::default();
-    render::to_markdown(&doc, &options)
+    let options = ParseOptions::new().lenient();
+    let doc = parse_file_with_options(path, options)?;
+    let render_options = RenderOptions::default();
+    render::to_markdown(&doc, &render_options)
 }
 
 /// Convert a PDF file to plain text.
@@ -92,9 +93,10 @@ pub unsafe extern "C" fn unpdf_to_text(path: *const c_char) -> UnpdfResult {
 }
 
 fn to_text_internal(path: &Path) -> crate::Result<String> {
-    let doc = parse_file(path)?;
-    let options = RenderOptions::default();
-    render::to_text(&doc, &options)
+    let options = ParseOptions::new().lenient();
+    let doc = parse_file_with_options(path, options)?;
+    let render_options = RenderOptions::default();
+    render::to_text(&doc, &render_options)
 }
 
 /// Convert a PDF file to JSON.
@@ -127,7 +129,8 @@ pub unsafe extern "C" fn unpdf_to_json(path: *const c_char, pretty: bool) -> Unp
 }
 
 fn to_json_internal(path: &Path, format: JsonFormat) -> crate::Result<String> {
-    let doc = parse_file(path)?;
+    let options = ParseOptions::new().lenient();
+    let doc = parse_file_with_options(path, options)?;
     render::to_json(&doc, format)
 }
 
@@ -155,7 +158,8 @@ pub unsafe extern "C" fn unpdf_get_info(path: *const c_char) -> UnpdfResult {
 }
 
 fn get_info_internal(path: &Path) -> crate::Result<String> {
-    let doc = parse_file(path)?;
+    let options = ParseOptions::new().lenient();
+    let doc = parse_file_with_options(path, options)?;
     let info = serde_json::json!({
         "title": doc.metadata.title,
         "author": doc.metadata.author,
@@ -189,7 +193,8 @@ pub unsafe extern "C" fn unpdf_get_page_count(path: *const c_char) -> i32 {
         Err(_) => return -1,
     };
 
-    match parse_file(path_str) {
+    let options = ParseOptions::new().lenient();
+    match parse_file_with_options(path_str, options) {
         Ok(doc) => doc.metadata.page_count as i32,
         Err(_) => -1,
     }
