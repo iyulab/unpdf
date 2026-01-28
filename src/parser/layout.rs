@@ -122,20 +122,20 @@ impl TextLine {
     }
 
     /// Get the combined text of all spans with appropriate spacing.
-    /// 
+    ///
     /// Inserts spaces between spans based on their X coordinate gaps.
     /// For CJK characters, no space is inserted between adjacent characters.
     pub fn text(&self) -> String {
         if self.spans.is_empty() {
             return String::new();
         }
-        
+
         if self.spans.len() == 1 {
             return self.spans[0].text.clone();
         }
 
         let mut result = String::new();
-        
+
         for (i, span) in self.spans.iter().enumerate() {
             if i == 0 {
                 result.push_str(&span.text);
@@ -143,11 +143,11 @@ impl TextLine {
             }
 
             let prev_span = &self.spans[i - 1];
-            
+
             // Calculate gap between end of previous span and start of current span
             let prev_end = prev_span.x + prev_span.width;
             let gap = span.x - prev_end;
-            
+
             // Estimate average character width from current span
             let char_count = span.text.chars().count();
             let avg_char_width = if char_count > 0 && span.width > 0.0 {
@@ -155,20 +155,24 @@ impl TextLine {
             } else {
                 span.font_size * 0.5 // Fallback: assume half of font size
             };
-            
+
             // Check if we need to insert a space
             // Gap threshold: if gap is more than 20% of average char width, insert space
             let space_threshold = avg_char_width * 0.2;
-            
+
             // Get last char of previous span and first char of current span
             let prev_last_char = prev_span.text.chars().last();
             let curr_first_char = span.text.chars().next();
-            
+
             let should_insert_space = if gap > space_threshold {
                 // Check if both characters are CJK (no space needed between CJK chars)
-                let prev_is_cjk = prev_last_char.map(is_spaceless_script_char).unwrap_or(false);
-                let curr_is_cjk = curr_first_char.map(is_spaceless_script_char).unwrap_or(false);
-                
+                let prev_is_cjk = prev_last_char
+                    .map(is_spaceless_script_char)
+                    .unwrap_or(false);
+                let curr_is_cjk = curr_first_char
+                    .map(is_spaceless_script_char)
+                    .unwrap_or(false);
+
                 // Don't insert space between CJK characters
                 !(prev_is_cjk && curr_is_cjk)
             } else {
@@ -176,16 +180,18 @@ impl TextLine {
             };
 
             // Also check if previous span ends with space or current starts with space
-            let prev_ends_with_space = prev_span.text.ends_with(' ') || prev_span.text.ends_with('\u{00A0}');
-            let curr_starts_with_space = span.text.starts_with(' ') || span.text.starts_with('\u{00A0}');
-            
+            let prev_ends_with_space =
+                prev_span.text.ends_with(' ') || prev_span.text.ends_with('\u{00A0}');
+            let curr_starts_with_space =
+                span.text.starts_with(' ') || span.text.starts_with('\u{00A0}');
+
             if should_insert_space && !prev_ends_with_space && !curr_starts_with_space {
                 result.push(' ');
             }
-            
+
             result.push_str(&span.text);
         }
-        
+
         result
     }
 
@@ -220,7 +226,6 @@ pub struct TextBlock {
     pub heading_level: u8,
 }
 
-
 /// A detected column in the page layout.
 #[derive(Debug, Clone)]
 pub struct Column {
@@ -237,7 +242,7 @@ impl Column {
     pub fn contains(&self, x: f32) -> bool {
         x >= self.left && x <= self.right
     }
-    
+
     /// Check if a span belongs to this column.
     pub fn contains_span(&self, span: &TextSpan) -> bool {
         // A span belongs to a column if its left edge is within the column
@@ -397,13 +402,16 @@ impl<'a> LayoutAnalyzer<'a> {
             .ok_or(Error::PageOutOfRange(page_num, pages.len() as u32))?;
 
         // Get fonts using lopdf's method
-        let lopdf_fonts = self.doc.get_page_fonts(*page_id)
+        let lopdf_fonts = self
+            .doc
+            .get_page_fonts(*page_id)
             .map_err(|e| Error::PdfParse(e.to_string()))?;
 
         // Build font info map
         let mut fonts = HashMap::new();
         for (name, font) in &lopdf_fonts {
-            let base_font = font.get(b"BaseFont")
+            let base_font = font
+                .get(b"BaseFont")
                 .ok()
                 .and_then(|o| o.as_name().ok())
                 .map(|n| String::from_utf8_lossy(n).to_string())
@@ -436,7 +444,6 @@ impl<'a> LayoutAnalyzer<'a> {
 
         Ok(blocks)
     }
-
 
     /// Get page content stream.
     fn get_page_content(&self, page_id: ObjectId) -> Result<Vec<u8>> {
@@ -483,8 +490,8 @@ impl<'a> LayoutAnalyzer<'a> {
         fonts: &HashMap<Vec<u8>, FontInfo>,
         lopdf_fonts: &BTreeMap<Vec<u8>, &lopdf::Dictionary>,
     ) -> Result<Vec<TextSpan>> {
-        let content = lopdf::content::Content::decode(content)
-            .map_err(|e| Error::PdfParse(e.to_string()))?;
+        let content =
+            lopdf::content::Content::decode(content).map_err(|e| Error::PdfParse(e.to_string()))?;
 
         let mut spans = Vec::new();
         let mut current_font = String::new();
@@ -509,7 +516,8 @@ impl<'a> LayoutAnalyzer<'a> {
                             if let Some(info) = fonts.get(font_name.as_slice()) {
                                 current_font = info.name.clone();
                             } else {
-                                current_font = String::from_utf8_lossy(font_name.as_slice()).to_string();
+                                current_font =
+                                    String::from_utf8_lossy(font_name.as_slice()).to_string();
                             }
                         }
                         current_font_size = get_number(&op.operands[1]).unwrap_or(12.0);
@@ -540,7 +548,8 @@ impl<'a> LayoutAnalyzer<'a> {
                 "Tj" | "TJ" => {
                     if in_text_block {
                         // Get encoding for current font
-                        let encoding = lopdf_fonts.get(&current_font_name)
+                        let encoding = lopdf_fonts
+                            .get(&current_font_name)
                             .and_then(|f| f.get_font_encoding(self.doc).ok());
 
                         let text = if op.operator == "TJ" {
@@ -552,12 +561,14 @@ impl<'a> LayoutAnalyzer<'a> {
                                 // Threshold for space detection: 200 units = 0.2 * font_size
                                 // This varies by font, but works well for most cases
                                 let space_threshold = 200.0;
-                                
+
                                 for item in arr {
                                     match item {
                                         Object::String(bytes, _) => {
                                             if let Some(ref enc) = encoding {
-                                                if let Ok(decoded) = LopdfDocument::decode_text(enc, bytes) {
+                                                if let Ok(decoded) =
+                                                    LopdfDocument::decode_text(enc, bytes)
+                                                {
                                                     combined.push_str(&decoded);
                                                 }
                                             } else {
@@ -572,9 +583,9 @@ impl<'a> LayoutAnalyzer<'a> {
                                             if adjustment > space_threshold {
                                                 // Check if we should insert space
                                                 // Don't insert if already has space or is empty
-                                                if !combined.is_empty() 
-                                                    && !combined.ends_with(' ') 
-                                                    && !combined.ends_with('\u{00A0}') 
+                                                if !combined.is_empty()
+                                                    && !combined.ends_with(' ')
+                                                    && !combined.ends_with('\u{00A0}')
                                                 {
                                                     // Check if it's not CJK text (CJK doesn't use spaces)
                                                     let last_char = combined.chars().last();
@@ -640,7 +651,8 @@ impl<'a> LayoutAnalyzer<'a> {
                     if in_text_block {
                         let text_idx = if op.operator == "\"" { 2 } else { 0 };
                         if let Some(Object::String(bytes, _)) = op.operands.get(text_idx) {
-                            let encoding = lopdf_fonts.get(&current_font_name)
+                            let encoding = lopdf_fonts
+                                .get(&current_font_name)
                                 .and_then(|f| f.get_font_encoding(self.doc).ok());
 
                             let text = if let Some(ref enc) = encoding {
@@ -670,9 +682,8 @@ impl<'a> LayoutAnalyzer<'a> {
         Ok(spans)
     }
 
-
     /// Detect columns in a page based on vertical gap (gutter) detection.
-    /// 
+    ///
     /// This looks for vertical empty spaces between text regions to identify
     /// column boundaries. Returns columns sorted from left to right.
     fn detect_columns(&self, spans: &[TextSpan]) -> Vec<Column> {
@@ -681,33 +692,43 @@ impl<'a> LayoutAnalyzer<'a> {
         }
 
         // Find minimum and maximum X to determine page extent
-        let min_x = spans.iter()
+        let min_x = spans
+            .iter()
             .map(|s| s.x)
             .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
             .unwrap_or(0.0);
-        let max_x = spans.iter()
+        let max_x = spans
+            .iter()
             .map(|s| s.x + s.width)
             .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
             .unwrap_or(0.0);
-        
+
         let page_width = max_x - min_x;
-        
+
         // Don't detect columns if page is too narrow
         if page_width < 250.0 {
-            return vec![Column { left: min_x - 10.0, right: max_x + 10.0, index: 0 }];
+            return vec![Column {
+                left: min_x - 10.0,
+                right: max_x + 10.0,
+                index: 0,
+            }];
         }
 
         // Divide page into vertical slices and count spans in each
         let slice_width = 3.0; // Finer slices for better precision
         let num_slices = ((page_width / slice_width) as usize) + 1;
         let mut slice_occupancy = vec![0usize; num_slices];
-        
+
         // Count how many spans occupy each slice
         for span in spans {
             let start_slice = ((span.x - min_x) / slice_width) as usize;
             let end_slice = (((span.x + span.width) - min_x) / slice_width) as usize;
 
-            for slot in slice_occupancy.iter_mut().take(end_slice.min(num_slices - 1) + 1).skip(start_slice) {
+            for slot in slice_occupancy
+                .iter_mut()
+                .take(end_slice.min(num_slices - 1) + 1)
+                .skip(start_slice)
+            {
                 *slot += 1;
             }
         }
@@ -716,16 +737,21 @@ impl<'a> LayoutAnalyzer<'a> {
         // Extended from 50% to catch more gutters
         let search_start = num_slices * 15 / 100; // Start at 15%
         let search_end = num_slices * 85 / 100; // End at 85%
-        
+
         let mut best_gap_start = 0;
         let mut best_gap_len = 0;
         let mut best_gap_center_dist = f32::MAX; // Distance from center
-        
+
         let page_center = num_slices / 2;
         let mut current_gap_start = 0;
         let mut current_gap_len = 0;
-        
-        for (i, &occupancy) in slice_occupancy.iter().enumerate().take(search_end).skip(search_start) {
+
+        for (i, &occupancy) in slice_occupancy
+            .iter()
+            .enumerate()
+            .take(search_end)
+            .skip(search_start)
+        {
             if occupancy == 0 {
                 if current_gap_len == 0 {
                     current_gap_start = i;
@@ -735,19 +761,21 @@ impl<'a> LayoutAnalyzer<'a> {
                 if current_gap_len > 0 {
                     let gap_center = current_gap_start + current_gap_len / 2;
                     let center_dist = (gap_center as i32 - page_center as i32).abs() as f32;
-                    
+
                     // Prefer gaps that are:
                     // 1. Larger (more confident it's a gutter)
                     // 2. Closer to center (more likely to be a column separator)
                     let current_gap_width = current_gap_len as f32 * slice_width;
-                    
-                    if current_gap_width >= 10.0 { // Minimum 10pt gap
+
+                    if current_gap_width >= 10.0 {
+                        // Minimum 10pt gap
                         // Score: gap_width * (1 - center_distance_ratio)
                         let best_gap_width = best_gap_len as f32 * slice_width;
-                        
+
                         // Prefer larger gaps, or similar-sized gaps closer to center
                         if current_gap_width > best_gap_width * 1.5
-                            || (current_gap_width >= best_gap_width * 0.7 && center_dist < best_gap_center_dist)
+                            || (current_gap_width >= best_gap_width * 0.7
+                                && center_dist < best_gap_center_dist)
                         {
                             best_gap_start = current_gap_start;
                             best_gap_len = current_gap_len;
@@ -758,17 +786,18 @@ impl<'a> LayoutAnalyzer<'a> {
                 current_gap_len = 0;
             }
         }
-        
+
         // Check the last gap
         if current_gap_len > 0 {
             let gap_center = current_gap_start + current_gap_len / 2;
             let center_dist = (gap_center as i32 - page_center as i32).abs() as f32;
             let current_gap_width = current_gap_len as f32 * slice_width;
             let best_gap_width = best_gap_len as f32 * slice_width;
-            
+
             if current_gap_width >= 10.0
                 && (current_gap_width > best_gap_width * 1.5
-                    || (current_gap_width >= best_gap_width * 0.7 && center_dist < best_gap_center_dist))
+                    || (current_gap_width >= best_gap_width * 0.7
+                        && center_dist < best_gap_center_dist))
             {
                 best_gap_start = current_gap_start;
                 best_gap_len = current_gap_len;
@@ -777,53 +806,91 @@ impl<'a> LayoutAnalyzer<'a> {
 
         // Convert gap to actual X coordinates
         let gap_width = best_gap_len as f32 * slice_width;
-        
-        log::debug!("Best gap: width={:.1}pt at x={:.1}, page_width={:.1}", 
-                  gap_width, 
-                  min_x + best_gap_start as f32 * slice_width,
-                  page_width);
-        
+
+        log::debug!(
+            "Best gap: width={:.1}pt at x={:.1}, page_width={:.1}",
+            gap_width,
+            min_x + best_gap_start as f32 * slice_width,
+            page_width
+        );
+
         // Require a minimum gap width for column detection (at least 12 points)
         if gap_width < 12.0 {
             log::debug!("Gap too small (< 12pt), treating as single column");
-            return vec![Column { left: min_x - 10.0, right: max_x + 10.0, index: 0 }];
+            return vec![Column {
+                left: min_x - 10.0,
+                right: max_x + 10.0,
+                index: 0,
+            }];
         }
 
         // Calculate gutter center
-        let gutter_center = min_x + (best_gap_start as f32 + best_gap_len as f32 / 2.0) * slice_width;
+        let gutter_center =
+            min_x + (best_gap_start as f32 + best_gap_len as f32 / 2.0) * slice_width;
 
         // Validate that both columns have reasonable width (at least 80 points each)
         let left_col_width = gutter_center - min_x;
         let right_col_width = max_x - gutter_center;
-        
-        log::debug!("Column widths: left={:.1}, right={:.1}", left_col_width, right_col_width);
-        
+
+        log::debug!(
+            "Column widths: left={:.1}, right={:.1}",
+            left_col_width,
+            right_col_width
+        );
+
         if left_col_width < 80.0 || right_col_width < 80.0 {
             log::debug!("Column too narrow, treating as single column");
-            return vec![Column { left: min_x - 10.0, right: max_x + 10.0, index: 0 }];
+            return vec![Column {
+                left: min_x - 10.0,
+                right: max_x + 10.0,
+                index: 0,
+            }];
         }
 
         // Validate that both columns have spans
-        let left_spans = spans.iter().filter(|s| s.x + s.width / 2.0 < gutter_center).count();
-        let right_spans = spans.iter().filter(|s| s.x + s.width / 2.0 >= gutter_center).count();
-        
-        log::debug!("Spans: left={}, right={}, total={}", left_spans, right_spans, spans.len());
-        
+        let left_spans = spans
+            .iter()
+            .filter(|s| s.x + s.width / 2.0 < gutter_center)
+            .count();
+        let right_spans = spans
+            .iter()
+            .filter(|s| s.x + s.width / 2.0 >= gutter_center)
+            .count();
+
+        log::debug!(
+            "Spans: left={}, right={}, total={}",
+            left_spans,
+            right_spans,
+            spans.len()
+        );
+
         // Both columns should have at least 10% of spans
         let min_spans = spans.len() / 10;
         if left_spans < min_spans.max(2) || right_spans < min_spans.max(2) {
             log::debug!("Spans too imbalanced, treating as single column");
-            return vec![Column { left: min_x - 10.0, right: max_x + 10.0, index: 0 }];
+            return vec![Column {
+                left: min_x - 10.0,
+                right: max_x + 10.0,
+                index: 0,
+            }];
         }
 
         vec![
-            Column { left: min_x - 10.0, right: gutter_center, index: 0 },
-            Column { left: gutter_center, right: max_x + 10.0, index: 1 },
+            Column {
+                left: min_x - 10.0,
+                right: gutter_center,
+                index: 0,
+            },
+            Column {
+                left: gutter_center,
+                right: max_x + 10.0,
+                index: 1,
+            },
         ]
     }
 
     /// Group spans into lines based on Y position, respecting column boundaries.
-    /// 
+    ///
     /// In multi-column layouts, text on the same Y coordinate but in different
     /// columns will be placed in separate lines, ordered by column (left to right).
     fn group_spans_into_lines(&self, spans: Vec<TextSpan>) -> Vec<TextLine> {
@@ -833,12 +900,17 @@ impl<'a> LayoutAnalyzer<'a> {
 
         // Detect columns first
         let columns = self.detect_columns(&spans);
-        
+
         log::debug!("Detected {} columns", columns.len());
         for col in &columns {
-            log::debug!("  Column {}: left={:.1}, right={:.1}", col.index, col.left, col.right);
+            log::debug!(
+                "  Column {}: left={:.1}, right={:.1}",
+                col.index,
+                col.left,
+                col.right
+            );
         }
-        
+
         // If single column, use simple Y-based grouping
         if columns.len() <= 1 {
             return self.group_spans_into_lines_single_column(spans);
@@ -846,18 +918,22 @@ impl<'a> LayoutAnalyzer<'a> {
 
         // Multi-column layout: process each column separately, then interleave
         let mut column_lines: Vec<Vec<TextLine>> = vec![Vec::new(); columns.len()];
-        
+
         // Assign spans to columns
         let mut column_spans: Vec<Vec<TextSpan>> = vec![Vec::new(); columns.len()];
         for span in spans {
             // Find which column this span belongs to
-            let col_idx = columns.iter()
+            let col_idx = columns
+                .iter()
                 .position(|c| c.contains_span(&span))
                 .unwrap_or(0);
             column_spans[col_idx].push(span);
         }
 
-        log::debug!("Spans per column: {:?}", column_spans.iter().map(|v| v.len()).collect::<Vec<_>>());
+        log::debug!(
+            "Spans per column: {:?}",
+            column_spans.iter().map(|v| v.len()).collect::<Vec<_>>()
+        );
 
         // Group each column's spans into lines
         for (col_idx, col_spans) in column_spans.into_iter().enumerate() {
@@ -875,7 +951,10 @@ impl<'a> LayoutAnalyzer<'a> {
 
         // Sort by Y (descending for top-to-bottom), then by column index (left to right)
         all_lines.sort_by(|(col_a, line_a), (col_b, line_b)| {
-            let y_cmp = line_b.y.partial_cmp(&line_a.y).unwrap_or(std::cmp::Ordering::Equal);
+            let y_cmp = line_b
+                .y
+                .partial_cmp(&line_a.y)
+                .unwrap_or(std::cmp::Ordering::Equal);
             if y_cmp == std::cmp::Ordering::Equal {
                 col_a.cmp(col_b)
             } else {
@@ -917,7 +996,9 @@ impl<'a> LayoutAnalyzer<'a> {
                 } else {
                     // New line
                     if !current_line_spans.is_empty() {
-                        lines.push(TextLine::from_spans(std::mem::take(&mut current_line_spans)));
+                        lines.push(TextLine::from_spans(std::mem::take(
+                            &mut current_line_spans,
+                        )));
                     }
                     current_y = Some(span.y);
                     current_line_spans.push(span);
@@ -939,9 +1020,9 @@ impl<'a> LayoutAnalyzer<'a> {
     /// Detect headings based on font size hierarchy.
     fn detect_headings(&self, mut lines: Vec<TextLine>) -> Vec<TextLine> {
         for line in &mut lines {
-            let level =
-                self.font_stats
-                    .get_heading_level(line.font_size, line.is_bold() || line.is_uppercase());
+            let level = self
+                .font_stats
+                .get_heading_level(line.font_size, line.is_bold() || line.is_uppercase());
             if level > 0 {
                 line.is_heading = true;
                 line.heading_level = level;
@@ -981,9 +1062,12 @@ impl<'a> LayoutAnalyzer<'a> {
                     } else {
                         BlockType::Paragraph
                     };
-                    let mut block = TextBlock::new(std::mem::take(&mut current_block_lines), block_type);
+                    let mut block =
+                        TextBlock::new(std::mem::take(&mut current_block_lines), block_type);
                     if block_type == BlockType::Heading {
-                        block.heading_level = block.lines.iter()
+                        block.heading_level = block
+                            .lines
+                            .iter()
                             .filter(|l| l.is_heading)
                             .map(|l| l.heading_level)
                             .min()
@@ -1005,7 +1089,9 @@ impl<'a> LayoutAnalyzer<'a> {
             };
             let mut block = TextBlock::new(current_block_lines, block_type);
             if block_type == BlockType::Heading {
-                block.heading_level = block.lines.iter()
+                block.heading_level = block
+                    .lines
+                    .iter()
                     .filter(|l| l.is_heading)
                     .map(|l| l.heading_level)
                     .min()
@@ -1037,7 +1123,12 @@ impl<'a> LayoutAnalyzer<'a> {
     }
 
     /// Determine if a new block should start.
-    fn should_break_block(&self, prev_line: &TextLine, curr_line: &TextLine, avg_spacing: f32) -> bool {
+    fn should_break_block(
+        &self,
+        prev_line: &TextLine,
+        curr_line: &TextLine,
+        avg_spacing: f32,
+    ) -> bool {
         // Heading always starts a new block
         if curr_line.is_heading {
             return true;
@@ -1145,13 +1236,13 @@ fn get_number(obj: &Object) -> Option<f32> {
 }
 
 /// Check if a character is a CJK (Chinese/Japanese/Korean) character.
-/// 
+///
 /// CJK characters typically don't need spaces between them.
 /// Check if character is from a script that doesn't use word spaces.
 /// Chinese and Japanese don't use spaces between words, but Korean does.
 fn is_spaceless_script_char(c: char) -> bool {
     let code = c as u32;
-    
+
     // CJK Unified Ideographs (Chinese characters, used in Chinese/Japanese)
     (0x4E00..=0x9FFF).contains(&code)
     // CJK Unified Ideographs Extension A
@@ -1226,19 +1317,34 @@ mod tests {
 
     #[test]
     fn test_text_span_bold_detection() {
-        let span = TextSpan::new("Test".to_string(), 0.0, 0.0, 12.0, "Helvetica-Bold".to_string());
+        let span = TextSpan::new(
+            "Test".to_string(),
+            0.0,
+            0.0,
+            12.0,
+            "Helvetica-Bold".to_string(),
+        );
         assert!(span.is_bold);
         assert!(!span.is_italic);
 
-        let span2 = TextSpan::new("Test".to_string(), 0.0, 0.0, 12.0, "Helvetica-Oblique".to_string());
+        let span2 = TextSpan::new(
+            "Test".to_string(),
+            0.0,
+            0.0,
+            12.0,
+            "Helvetica-Oblique".to_string(),
+        );
         assert!(!span2.is_bold);
         assert!(span2.is_italic);
     }
 
-
     #[test]
     fn test_column_contains() {
-        let col = Column { left: 100.0, right: 200.0, index: 0 };
+        let col = Column {
+            left: 100.0,
+            right: 200.0,
+            index: 0,
+        };
         assert!(col.contains(100.0));
         assert!(col.contains(150.0));
         assert!(col.contains(200.0));
@@ -1248,21 +1354,46 @@ mod tests {
 
     #[test]
     fn test_column_contains_span() {
-        let col = Column { left: 100.0, right: 200.0, index: 0 };
-        
+        let col = Column {
+            left: 100.0,
+            right: 200.0,
+            index: 0,
+        };
+
         // Span fully inside column
-        let span1 = TextSpan::new("Test".to_string(), 120.0, 0.0, 12.0, "Helvetica".to_string());
-        let span1 = TextSpan { width: 50.0, ..span1 };
+        let span1 = TextSpan::new(
+            "Test".to_string(),
+            120.0,
+            0.0,
+            12.0,
+            "Helvetica".to_string(),
+        );
+        let span1 = TextSpan {
+            width: 50.0,
+            ..span1
+        };
         assert!(col.contains_span(&span1));
-        
+
         // Span center inside column
         let span2 = TextSpan::new("Test".to_string(), 90.0, 0.0, 12.0, "Helvetica".to_string());
-        let span2 = TextSpan { width: 40.0, ..span2 }; // center at 110
+        let span2 = TextSpan {
+            width: 40.0,
+            ..span2
+        }; // center at 110
         assert!(col.contains_span(&span2));
-        
+
         // Span completely outside
-        let span3 = TextSpan::new("Test".to_string(), 250.0, 0.0, 12.0, "Helvetica".to_string());
-        let span3 = TextSpan { width: 30.0, ..span3 };
+        let span3 = TextSpan::new(
+            "Test".to_string(),
+            250.0,
+            0.0,
+            12.0,
+            "Helvetica".to_string(),
+        );
+        let span3 = TextSpan {
+            width: 30.0,
+            ..span3
+        };
         assert!(!col.contains_span(&span3));
     }
 }

@@ -56,8 +56,8 @@ impl Default for TableDetectorConfig {
             min_rows: 2,
             min_columns: 2,
             y_tolerance_factor: 0.4,
-            min_alignment_ratio: 0.3,  // Lowered from 0.5 to detect more tables
-            min_column_gap: 15.0,      // Increased to avoid false positives
+            min_alignment_ratio: 0.3, // Lowered from 0.5 to detect more tables
+            min_column_gap: 15.0,     // Increased to avoid false positives
         }
     }
 }
@@ -87,8 +87,11 @@ impl TableDetector {
         log::debug!("TableDetector: starting with {} spans", spans.len());
 
         if spans.len() < self.config.min_rows * self.config.min_columns {
-            log::debug!("TableDetector: not enough spans ({} < {})",
-                spans.len(), self.config.min_rows * self.config.min_columns);
+            log::debug!(
+                "TableDetector: not enough spans ({} < {})",
+                spans.len(),
+                self.config.min_rows * self.config.min_columns
+            );
             return (vec![], spans);
         }
 
@@ -97,19 +100,28 @@ impl TableDetector {
         log::debug!("TableDetector: grouped into {} rows", rows.len());
 
         if rows.len() < self.config.min_rows {
-            log::debug!("TableDetector: not enough rows ({} < {})",
-                rows.len(), self.config.min_rows);
+            log::debug!(
+                "TableDetector: not enough rows ({} < {})",
+                rows.len(),
+                self.config.min_rows
+            );
             return (vec![], spans);
         }
 
         // Step 2: Detect column boundaries from text edges
         let columns = self.detect_columns(&rows);
-        log::debug!("TableDetector: detected {} columns at positions: {:?}",
-            columns.len(), columns);
+        log::debug!(
+            "TableDetector: detected {} columns at positions: {:?}",
+            columns.len(),
+            columns
+        );
 
         if columns.len() < self.config.min_columns {
-            log::debug!("TableDetector: not enough columns ({} < {})",
-                columns.len(), self.config.min_columns);
+            log::debug!(
+                "TableDetector: not enough columns ({} < {})",
+                columns.len(),
+                self.config.min_columns
+            );
             return (vec![], spans);
         }
 
@@ -124,7 +136,8 @@ impl TableDetector {
 
         // Step 4: Convert regions to detected tables
         let mut detected_tables = Vec::new();
-        let mut used_span_indices: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        let mut used_span_indices: std::collections::HashSet<usize> =
+            std::collections::HashSet::new();
 
         for (start_row, end_row) in table_regions {
             let table_rows: Vec<TableRowData> = rows[start_row..=end_row].to_vec();
@@ -136,12 +149,14 @@ impl TableDetector {
             // Calculate table boundaries
             let top_y = table_rows.first().map(|r| r.y).unwrap_or(0.0);
             let bottom_y = table_rows.last().map(|r| r.y).unwrap_or(0.0);
-            let left_x = table_rows.iter()
+            let left_x = table_rows
+                .iter()
                 .flat_map(|r| r.spans.iter())
                 .map(|s| s.x)
                 .min_by(|a, b| a.partial_cmp(b).unwrap())
                 .unwrap_or(0.0);
-            let right_x = table_rows.iter()
+            let right_x = table_rows
+                .iter()
                 .flat_map(|r| r.spans.iter())
                 .map(|s| s.x + s.width)
                 .max_by(|a, b| a.partial_cmp(b).unwrap())
@@ -178,7 +193,8 @@ impl TableDetector {
         }
 
         // Return unused spans
-        let unused_spans: Vec<TextSpan> = spans.into_iter()
+        let unused_spans: Vec<TextSpan> = spans
+            .into_iter()
             .enumerate()
             .filter(|(i, _)| !used_span_indices.contains(i))
             .map(|(_, span)| span)
@@ -232,8 +248,8 @@ impl TableDetector {
 
         // Don't forget the last row
         if !current_row_spans.is_empty() {
-            let avg_y = current_row_spans.iter().map(|s| s.y).sum::<f32>()
-                / current_row_spans.len() as f32;
+            let avg_y =
+                current_row_spans.iter().map(|s| s.y).sum::<f32>() / current_row_spans.len() as f32;
             rows.push(TableRowData {
                 y: avg_y,
                 spans: current_row_spans,
@@ -255,11 +271,13 @@ impl TableDetector {
         }
 
         // Approach 1: Look at rows with multiple spans (likely table rows)
-        let multi_span_rows: Vec<&TableRowData> = rows.iter()
-            .filter(|r| r.spans.len() >= 2)
-            .collect();
+        let multi_span_rows: Vec<&TableRowData> =
+            rows.iter().filter(|r| r.spans.len() >= 2).collect();
 
-        log::debug!("TableDetector: {} rows have 2+ spans", multi_span_rows.len());
+        log::debug!(
+            "TableDetector: {} rows have 2+ spans",
+            multi_span_rows.len()
+        );
 
         if multi_span_rows.len() < self.config.min_rows {
             // Not enough multi-span rows, fall back to simpler detection
@@ -283,13 +301,18 @@ impl TableDetector {
         }
 
         // Find edges that appear in a good portion of multi-span rows
-        let min_occurrences = (multi_span_rows.len() as f32 * self.config.min_alignment_ratio) as usize;
+        let min_occurrences =
+            (multi_span_rows.len() as f32 * self.config.min_alignment_ratio) as usize;
         let min_occurrences = min_occurrences.max(2);
 
-        log::debug!("TableDetector: min_occurrences = {}, edge_counts = {:?}",
-            min_occurrences, edge_counts);
+        log::debug!(
+            "TableDetector: min_occurrences = {}, edge_counts = {:?}",
+            min_occurrences,
+            edge_counts
+        );
 
-        let mut column_edges: Vec<f32> = edge_counts.iter()
+        let mut column_edges: Vec<f32> = edge_counts
+            .iter()
             .filter(|(_, count)| **count >= min_occurrences)
             .map(|(bucket, _)| *bucket as f32 * bucket_size)
             .collect();
@@ -333,7 +356,8 @@ impl TableDetector {
         let min_occurrences = (rows.len() as f32 * self.config.min_alignment_ratio) as usize;
         let min_occurrences = min_occurrences.max(2);
 
-        let mut column_edges: Vec<f32> = edge_counts.iter()
+        let mut column_edges: Vec<f32> = edge_counts
+            .iter()
             .filter(|(_, count)| **count >= min_occurrences)
             .map(|(bucket, _)| *bucket as f32 * bucket_size)
             .collect();
@@ -404,10 +428,10 @@ impl TableDetector {
 
         let tolerance = 5.0; // 5pt tolerance for alignment
 
-        let aligned_spans = row.spans.iter()
-            .filter(|span| {
-                columns.iter().any(|col| (span.x - col).abs() <= tolerance)
-            })
+        let aligned_spans = row
+            .spans
+            .iter()
+            .filter(|span| columns.iter().any(|col| (span.x - col).abs() <= tolerance))
             .count();
 
         aligned_spans as f32 / row.spans.len() as f32
@@ -441,7 +465,8 @@ impl TableDetector {
             }
 
             // Build cells from collected content
-            let cells: Vec<TableCell> = cell_contents.into_iter()
+            let cells: Vec<TableCell> = cell_contents
+                .into_iter()
                 .map(|contents| {
                     let text = contents.join(" ");
                     TableCell::text(text)
@@ -616,7 +641,10 @@ mod tests {
             rows: vec![
                 TableRowData {
                     y: 100.0,
-                    spans: vec![make_span("Name", 10.0, 100.0), make_span("Age", 60.0, 100.0)],
+                    spans: vec![
+                        make_span("Name", 10.0, 100.0),
+                        make_span("Age", 60.0, 100.0),
+                    ],
                 },
                 TableRowData {
                     y: 85.0,

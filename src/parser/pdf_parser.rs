@@ -204,7 +204,11 @@ impl PdfParser {
 
         // If tables were detected, process them along with remaining text
         if !detected_tables.is_empty() {
-            log::debug!("Detected {} tables on page {}", detected_tables.len(), page_num);
+            log::debug!(
+                "Detected {} tables on page {}",
+                detected_tables.len(),
+                page_num
+            );
 
             // Collect all elements with their Y position for proper ordering
             let mut elements: Vec<(f32, Block)> = Vec::new();
