@@ -18,6 +18,7 @@ Thumbs.db
 
 # Logs
 *.log
+debug.txt
 
 # Coverage
 *.profraw
