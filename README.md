@@ -1,6 +1,8 @@
 # unpdf
 
 [![Crates.io](https://img.shields.io/crates/v/unpdf.svg)](https://crates.io/crates/unpdf)
+[![PyPI](https://img.shields.io/pypi/v/unpdf-markdown.svg)](https://pypi.org/project/unpdf-markdown/)
+[![NuGet](https://img.shields.io/nuget/v/Unpdf.svg)](https://www.nuget.org/packages/Unpdf/)
 [![Documentation](https://docs.rs/unpdf/badge.svg)](https://docs.rs/unpdf)
 [![CI](https://github.com/iyulab/unpdf/actions/workflows/ci.yml/badge.svg)](https://github.com/iyulab/unpdf/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -26,6 +28,7 @@ A high-performance Rust library for extracting content from PDF documents to str
 - [Installation](#installation)
 - [CLI Usage](#cli-usage)
 - [Rust Library Usage](#rust-library-usage)
+- [Python Integration](#python-integration)
 - [C# / .NET Integration](#c--net-integration)
 - [Output Formats](#output-formats)
 - [Feature Flags](#feature-flags)
@@ -408,13 +411,78 @@ match parse_file("encrypted.pdf") {
 
 ---
 
+## Python Integration
+
+Install the Python package:
+
+```bash
+pip install unpdf-markdown
+```
+
+### Basic Usage
+
+```python
+from unpdf import to_markdown, to_text, to_json, get_info
+
+# Convert PDF to Markdown
+markdown = to_markdown("document.pdf")
+
+# Convert to plain text
+text = to_text("document.pdf")
+
+# Convert to JSON
+json_data = to_json("document.pdf")
+
+# Get document information
+info = get_info("document.pdf")
+print(f"Title: {info.get('title')}")
+print(f"Pages: {info.get('page_count')}")
+```
+
+### Working with Bytes
+
+```python
+from unpdf import to_markdown
+
+# Read PDF from file
+with open("document.pdf", "rb") as f:
+    pdf_bytes = f.read()
+
+# Convert from bytes
+markdown = to_markdown(pdf_bytes)
+```
+
+### Check PDF Validity
+
+```python
+from unpdf import is_pdf
+
+# Check if file is a valid PDF
+if is_pdf("document.pdf"):
+    markdown = to_markdown("document.pdf")
+```
+
+---
+
 ## C# / .NET Integration
 
 unpdf provides C-ABI compatible bindings for integration with C# and .NET applications.
 
-### Getting the Native Library
+### Installation via NuGet
 
-Download from [GitHub Releases](https://github.com/iyulab/unpdf/releases):
+```bash
+dotnet add package Unpdf
+```
+
+Or via Package Manager Console:
+
+```powershell
+Install-Package Unpdf
+```
+
+### Getting the Native Library (Manual)
+
+Alternatively, download from [GitHub Releases](https://github.com/iyulab/unpdf/releases):
 
 | Platform | Library File |
 |----------|-------------|
