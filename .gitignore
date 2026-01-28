@@ -28,6 +28,8 @@ coverage/
 # Local
 dev-docs/
 .serena/
+claudedocs/
+test-extract/
 
 # Python bindings
 bindings/python/src/unpdf/lib/

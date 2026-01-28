@@ -212,7 +212,7 @@ jobs:
           draft: false
           prerelease: ${{ contains(needs.check-version.outputs.version, 'alpha') || contains(needs.check-version.outputs.version, 'beta') || contains(needs.check-version.outputs.version, 'rc') }}
 
-  publish-crate:
+  publish-crates:
     name: Publish to crates.io
     needs: [check-version, create-release]
     if: needs.check-version.outputs.should_release == 'true'
@@ -223,6 +223,13 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Publish
+      - name: Publish library (unpdf)
         run: cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        continue-on-error: true
+
+      - name: Wait for crates.io index update
+        run: sleep 30
+
+      - name: Publish CLI (unpdf-cli)
+        run: cargo publish -p unpdf-cli --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
         continue-on-error: true

@@ -541,13 +541,25 @@ fn cmd_extract(
     Ok(())
 }
 
+/// Detect if installed via cargo install (binary in .cargo/bin)
+fn is_cargo_install() -> bool {
+    if let Ok(exe_path) = std::env::current_exe() {
+        let path_str = exe_path.to_string_lossy();
+        // Check for .cargo/bin in path (works on all platforms)
+        path_str.contains(".cargo") && path_str.contains("bin")
+    } else {
+        false
+    }
+}
+
 fn cmd_update(check_only: bool, force: bool) -> Result<(), Box<dyn std::error::Error>> {
     println!("{}", "Checking for updates...".cyan());
 
-    // Use tokio runtime for async update
+    // Use tokio runtime for async update check
     let rt = tokio::runtime::Runtime::new()?;
 
     rt.block_on(async {
+        // Check latest version from GitHub
         let status = self_update::backends::github::Update::configure()
             .repo_owner("iyulab")
             .repo_name("unpdf")
@@ -560,7 +572,9 @@ fn cmd_update(check_only: bool, force: bool) -> Result<(), Box<dyn std::error::E
         let current = semver::Version::parse(env!("CARGO_PKG_VERSION"))?;
         let latest_ver = semver::Version::parse(latest.version.trim_start_matches('v'))?;
 
-        if latest_ver > current || force {
+        let update_available = latest_ver > current;
+
+        if update_available || force {
             if check_only {
                 println!(
                     "{} {} -> {}",
@@ -568,7 +582,34 @@ fn cmd_update(check_only: bool, force: bool) -> Result<(), Box<dyn std::error::E
                     current,
                     latest_ver
                 );
+                if is_cargo_install() {
+                    println!(
+                        "\n{} {}",
+                        "To update, run:".dimmed(),
+                        "cargo install unpdf-cli".cyan()
+                    );
+                }
+            } else if is_cargo_install() {
+                // Cargo install users should use cargo to update
+                println!(
+                    "{} {} -> {}",
+                    "Update available:".yellow(),
+                    current,
+                    latest_ver
+                );
+                println!();
+                println!(
+                    "{} Installed via cargo. Please run:",
+                    "Note:".yellow().bold()
+                );
+                println!("  {}", "cargo install unpdf-cli".cyan().bold());
+                println!();
+                println!(
+                    "{}",
+                    "This ensures proper integration with your Rust toolchain.".dimmed()
+                );
             } else {
+                // GitHub Releases install - use self_update
                 println!("{} v{}", "Updating to".green(), latest_ver);
                 status.update()?;
                 println!("{}", "Update complete!".green().bold());
