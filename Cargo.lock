@@ -1931,7 +1931,7 @@ checksum = "b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254"
 
 [[package]]
 name = "unpdf"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "chrono",
  "log",
@@ -1949,7 +1949,7 @@ dependencies = [
 
 [[package]]
 name = "unpdf-cli"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "clap",
  "colored",
