@@ -42,6 +42,8 @@ pub struct TableDetectorConfig {
     pub min_rows: usize,
     /// Minimum number of columns to consider as table
     pub min_columns: usize,
+    /// Maximum number of columns (above this, likely word-level splitting)
+    pub max_columns: usize,
     /// Y tolerance for grouping spans into rows (fraction of font size)
     pub y_tolerance_factor: f32,
     /// Minimum column alignment ratio (0.0-1.0)
@@ -55,6 +57,7 @@ impl Default for TableDetectorConfig {
         Self {
             min_rows: 2,
             min_columns: 2,
+            max_columns: 6,
             y_tolerance_factor: 0.4,
             min_alignment_ratio: 0.3, // Lowered from 0.5 to detect more tables
             min_column_gap: 15.0,     // Increased to avoid false positives
@@ -166,6 +169,24 @@ impl TableDetector {
             let table_columns = self.detect_columns(&table_rows);
 
             if table_columns.len() >= self.config.min_columns {
+                // Reject tables with too many columns (likely word-level splitting)
+                if table_columns.len() > self.config.max_columns {
+                    log::debug!(
+                        "TableDetector: skipping region — too many columns ({} > {})",
+                        table_columns.len(),
+                        self.config.max_columns
+                    );
+                    continue;
+                }
+
+                // Check if this is actually a list pattern, not a real table
+                if self.is_list_pattern(&table_rows, &table_columns) {
+                    log::debug!(
+                        "TableDetector: skipping region — detected as list pattern"
+                    );
+                    continue;
+                }
+
                 // Mark spans as used
                 for row in &table_rows {
                     for span in &row.spans {
@@ -528,6 +549,116 @@ impl TableDetector {
 
         closest_col
     }
+
+    /// Check if detected table rows actually represent a numbered or bulleted list.
+    ///
+    /// When a PDF has a numbered list like "1. Item", the number and text often
+    /// become separate spans at different X positions, which looks like a multi-column
+    /// table to the detector. This method catches that false positive.
+    fn is_list_pattern(&self, rows: &[TableRowData], columns: &[f32]) -> bool {
+        if columns.len() < 2 || rows.is_empty() {
+            return false;
+        }
+
+        let mut bullet_count = 0;
+        let mut number_count = 0;
+
+        for row in rows {
+            if row.spans.is_empty() {
+                continue;
+            }
+
+            // Check the leftmost span in this row
+            let first_span = row
+                .spans
+                .iter()
+                .min_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
+
+            if let Some(span) = first_span {
+                let text = span.text.trim();
+                if is_bullet_marker(text) {
+                    bullet_count += 1;
+                } else if is_number_marker(text) {
+                    number_count += 1;
+                }
+            }
+        }
+
+        let bullet_ratio = bullet_count as f32 / rows.len() as f32;
+        let total_ratio = (bullet_count + number_count) as f32 / rows.len() as f32;
+        log::debug!(
+            "TableDetector: list markers: bullets={}, numbers={}, total rows={}, bullet_ratio={:.2}, total_ratio={:.2}",
+            bullet_count,
+            number_count,
+            rows.len(),
+            bullet_ratio,
+            total_ratio
+        );
+
+        // Bullet markers (•, -, etc.) are almost never real table data
+        if bullet_ratio >= 0.5 {
+            return true;
+        }
+
+        // For numbered markers, only reject 2-column tables to avoid
+        // false-negatives on real tables with numbered first columns
+        if columns.len() == 2 && total_ratio >= 0.5 {
+            return true;
+        }
+
+        false
+    }
+}
+
+
+/// Check if text is a bullet marker (•, -, etc.).
+fn is_bullet_marker(text: &str) -> bool {
+    let trimmed = text.trim();
+    matches!(
+        trimmed,
+        "-" | "–" | "—" | "•" | "·" | "*" | "○" | "▪" | "◦" | "▸" | "▹" | "►" | "■" | "●" | "※" | "□" | "◆" | "◇" | "▶" | "▷" | "☞" | "➤" | "➜"
+    )
+}
+
+/// Check if text is a number-style list marker (1., 2), a., etc.).
+fn is_number_marker(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    // Remove internal whitespace for pattern matching (handles "1 .")
+    let cleaned: String = trimmed.chars().filter(|c| !c.is_whitespace()).collect();
+
+    // Numbered markers: digits followed by "." or ")" — e.g., "1.", "12.", "1)"
+    if let Some(pos) = cleaned.find(|c: char| !c.is_ascii_digit()) {
+        let prefix = &cleaned[..pos];
+        let suffix = &cleaned[pos..];
+        if !prefix.is_empty() && (suffix == "." || suffix == ")") {
+            return true;
+        }
+    }
+
+    // Just a bare number
+    if cleaned.parse::<u32>().is_ok() {
+        return true;
+    }
+
+    // Letter marker: "a.", "B)"
+    if cleaned.len() == 2 {
+        let chars: Vec<char> = cleaned.chars().collect();
+        if chars[0].is_alphabetic() && (chars[1] == '.' || chars[1] == ')') {
+            return true;
+        }
+    }
+
+    false
+}
+
+/// Check if a text string looks like a list marker (number, bullet, etc.).
+#[cfg(test)]
+fn is_list_marker(text: &str) -> bool {
+    is_bullet_marker(text) || is_number_marker(text)
 }
 
 impl Default for TableDetector {
@@ -657,5 +788,71 @@ mod tests {
         assert_eq!(table.row_count(), 2);
         assert_eq!(table.column_count(), 2);
         assert_eq!(table.header_rows, 1);
+    }
+
+    #[test]
+    fn test_numbered_list_not_detected_as_table() {
+        let detector = TableDetector::new();
+        // Simulates a numbered list where number and text are separate spans
+        let spans = vec![
+            make_span("1.", 50.0, 400.0),
+            make_span("장비관리설정", 80.0, 400.0),
+            make_span("2.", 50.0, 370.0),
+            make_span("Object관리", 80.0, 370.0),
+            make_span("3.", 50.0, 340.0),
+            make_span("정책관리 및 라우팅", 80.0, 340.0),
+            make_span("4.", 50.0, 310.0),
+            make_span("VPN", 80.0, 310.0),
+            make_span("5.", 50.0, 280.0),
+            make_span("운영관리", 80.0, 280.0),
+        ];
+
+        let (tables, remaining) = detector.detect(spans);
+        assert!(tables.is_empty(), "Numbered list should not be detected as a table");
+        assert_eq!(remaining.len(), 10);
+    }
+
+    #[test]
+    fn test_bullet_list_not_detected_as_table() {
+        let detector = TableDetector::new();
+        // Simulates a bullet list with "-" markers
+        let spans = vec![
+            make_span("-", 50.0, 400.0),
+            make_span("Management", 80.0, 400.0),
+            make_span("-", 50.0, 370.0),
+            make_span("Interface/Service Option", 80.0, 370.0),
+            make_span("-", 50.0, 340.0),
+            make_span("Firmware", 80.0, 340.0),
+        ];
+
+        let (tables, remaining) = detector.detect(spans);
+        assert!(tables.is_empty(), "Bullet list should not be detected as a table");
+        assert_eq!(remaining.len(), 6);
+    }
+
+    #[test]
+    fn test_is_list_marker() {
+        // Numbered markers
+        assert!(is_list_marker("1."));
+        assert!(is_list_marker("12."));
+        assert!(is_list_marker("1)"));
+        assert!(is_list_marker("1 ."));  // with space
+        assert!(is_list_marker("3"));    // bare number
+
+        // Bullet markers
+        assert!(is_list_marker("-"));
+        assert!(is_list_marker("•"));
+        assert!(is_list_marker("*"));
+        assert!(is_list_marker("–"));
+
+        // Letter markers
+        assert!(is_list_marker("a."));
+        assert!(is_list_marker("B)"));
+
+        // Not markers
+        assert!(!is_list_marker("Name"));
+        assert!(!is_list_marker("Hello World"));
+        assert!(!is_list_marker("Alice"));
+        assert!(!is_list_marker(""));
     }
 }
