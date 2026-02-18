@@ -11,7 +11,14 @@ pub struct ParseOptions {
     /// What to extract from the document
     pub extract_mode: ExtractMode,
 
-    /// Memory limit in MB (0 = unlimited)
+    /// Memory limit in MB (0 = unlimited).
+    ///
+    /// **Deprecated**: This parameter is stored but not enforced.
+    /// Consider using page selection (`with_pages`) to limit processing scope instead.
+    #[deprecated(
+        since = "0.1.8",
+        note = "This parameter is not enforced. Use page selection to limit processing scope."
+    )]
     pub memory_limit_mb: u32,
 
     /// Whether to extract embedded resources (images, fonts)
@@ -58,8 +65,18 @@ impl ParseOptions {
     }
 
     /// Set memory limit in MB.
+    ///
+    /// **Deprecated**: This parameter is stored but not enforced.
+    /// Consider using `with_pages` to limit processing scope instead.
+    #[deprecated(
+        since = "0.1.8",
+        note = "This parameter is not enforced. Use with_pages to limit processing scope."
+    )]
     pub fn with_memory_limit(mut self, mb: u32) -> Self {
-        self.memory_limit_mb = mb;
+        #[allow(deprecated)]
+        {
+            self.memory_limit_mb = mb;
+        }
         self
     }
 
@@ -96,6 +113,7 @@ impl ParseOptions {
 
 impl Default for ParseOptions {
     fn default() -> Self {
+        #[allow(deprecated)]
         Self {
             error_mode: ErrorMode::Strict,
             extract_mode: ExtractMode::Full,
@@ -135,6 +153,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(deprecated)]
     fn test_parse_options_builder() {
         let options = ParseOptions::new()
             .lenient()

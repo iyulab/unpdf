@@ -315,8 +315,18 @@ impl Unpdf {
     }
 
     /// Set memory limit in MB.
+    ///
+    /// **Deprecated**: This parameter is stored but not enforced.
+    /// Consider using `with_pages` to limit processing scope instead.
+    #[deprecated(
+        since = "0.1.8",
+        note = "This parameter is not enforced. Use with_pages to limit processing scope."
+    )]
     pub fn with_memory_limit_mb(mut self, mb: u32) -> Self {
-        self.parse_options = self.parse_options.with_memory_limit(mb);
+        #[allow(deprecated)]
+        {
+            self.parse_options = self.parse_options.with_memory_limit(mb);
+        }
         self
     }
 

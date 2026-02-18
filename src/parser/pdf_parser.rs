@@ -1,6 +1,6 @@
 //! PDF document parser using lopdf.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::Path;
 
@@ -350,9 +350,13 @@ impl PdfParser {
             .map_err(|e| Error::TextExtract(format!("Page {}: {}", page_num, e)))
     }
 
+    /// Maximum depth for outline recursion to prevent stack overflow.
+    const MAX_OUTLINE_DEPTH: u8 = 64;
+
     /// Extract document outline (bookmarks).
     fn extract_outline(&self) -> Result<Outline> {
         let mut outline = Outline::new();
+        let mut visited = HashSet::new();
 
         // Get outline root from catalog
         if let Ok(catalog) = self.doc.catalog() {
@@ -362,7 +366,12 @@ impl PdfParser {
                         // Get first outline item
                         if let Ok(first) = outlines_dict.get(b"First") {
                             if let Ok(first_ref) = first.as_reference() {
-                                self.extract_outline_items(first_ref, 0, &mut outline.items)?;
+                                self.extract_outline_items(
+                                    first_ref,
+                                    0,
+                                    &mut outline.items,
+                                    &mut visited,
+                                )?;
                             }
                         }
                     }
@@ -374,12 +383,20 @@ impl PdfParser {
     }
 
     /// Recursively extract outline items.
+    /// Uses a visited set to detect circular references and a depth limit
+    /// to prevent stack overflow on malformed PDFs.
     fn extract_outline_items(
         &self,
         item_ref: lopdf::ObjectId,
         level: u8,
         items: &mut Vec<OutlineItem>,
+        visited: &mut HashSet<lopdf::ObjectId>,
     ) -> Result<()> {
+        // Guard: cycle detection and depth limit
+        if !visited.insert(item_ref) || level > Self::MAX_OUTLINE_DEPTH {
+            return Ok(());
+        }
+
         if let Ok(item_dict) = self.doc.get_dictionary(item_ref) {
             // Get title
             let title = get_string_from_dict(item_dict, b"Title").unwrap_or_default();
@@ -392,7 +409,12 @@ impl PdfParser {
             // Process children (First)
             if let Ok(first) = item_dict.get(b"First") {
                 if let Ok(first_ref) = first.as_reference() {
-                    self.extract_outline_items(first_ref, level + 1, &mut outline_item.children)?;
+                    self.extract_outline_items(
+                        first_ref,
+                        level + 1,
+                        &mut outline_item.children,
+                        visited,
+                    )?;
                 }
             }
 
@@ -401,7 +423,7 @@ impl PdfParser {
             // Process siblings (Next)
             if let Ok(next) = item_dict.get(b"Next") {
                 if let Ok(next_ref) = next.as_reference() {
-                    self.extract_outline_items(next_ref, level, items)?;
+                    self.extract_outline_items(next_ref, level, items, visited)?;
                 }
             }
         }
