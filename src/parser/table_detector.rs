@@ -181,9 +181,7 @@ impl TableDetector {
 
                 // Check if this is actually a list pattern, not a real table
                 if self.is_list_pattern(&table_rows, &table_columns) {
-                    log::debug!(
-                        "TableDetector: skipping region — detected as list pattern"
-                    );
+                    log::debug!("TableDetector: skipping region — detected as list pattern");
                     continue;
                 }
 
@@ -610,13 +608,33 @@ impl TableDetector {
     }
 }
 
-
 /// Check if text is a bullet marker (•, -, etc.).
 fn is_bullet_marker(text: &str) -> bool {
     let trimmed = text.trim();
     matches!(
         trimmed,
-        "-" | "–" | "—" | "•" | "·" | "*" | "○" | "▪" | "◦" | "▸" | "▹" | "►" | "■" | "●" | "※" | "□" | "◆" | "◇" | "▶" | "▷" | "☞" | "➤" | "➜"
+        "-" | "–"
+            | "—"
+            | "•"
+            | "·"
+            | "*"
+            | "○"
+            | "▪"
+            | "◦"
+            | "▸"
+            | "▹"
+            | "►"
+            | "■"
+            | "●"
+            | "※"
+            | "□"
+            | "◆"
+            | "◇"
+            | "▶"
+            | "▷"
+            | "☞"
+            | "➤"
+            | "➜"
     )
 }
 
@@ -808,7 +826,10 @@ mod tests {
         ];
 
         let (tables, remaining) = detector.detect(spans);
-        assert!(tables.is_empty(), "Numbered list should not be detected as a table");
+        assert!(
+            tables.is_empty(),
+            "Numbered list should not be detected as a table"
+        );
         assert_eq!(remaining.len(), 10);
     }
 
@@ -826,7 +847,10 @@ mod tests {
         ];
 
         let (tables, remaining) = detector.detect(spans);
-        assert!(tables.is_empty(), "Bullet list should not be detected as a table");
+        assert!(
+            tables.is_empty(),
+            "Bullet list should not be detected as a table"
+        );
         assert_eq!(remaining.len(), 6);
     }
 
@@ -836,8 +860,8 @@ mod tests {
         assert!(is_list_marker("1."));
         assert!(is_list_marker("12."));
         assert!(is_list_marker("1)"));
-        assert!(is_list_marker("1 ."));  // with space
-        assert!(is_list_marker("3"));    // bare number
+        assert!(is_list_marker("1 .")); // with space
+        assert!(is_list_marker("3")); // bare number
 
         // Bullet markers
         assert!(is_list_marker("-"));
