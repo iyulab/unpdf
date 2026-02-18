@@ -30,7 +30,7 @@ dev-docs/
 .serena/
 claudedocs/
 test-extract/
-CLAUDE.md
+nul
 
 # Python bindings
 bindings/python/src/unpdf/lib/
