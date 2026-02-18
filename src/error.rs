@@ -88,12 +88,6 @@ impl From<lopdf::Error> for Error {
     }
 }
 
-impl From<pdf_extract::OutputError> for Error {
-    fn from(err: pdf_extract::OutputError) -> Self {
-        Error::TextExtract(err.to_string())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

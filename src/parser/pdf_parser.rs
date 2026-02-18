@@ -1,10 +1,8 @@
-//! PDF document parser using lopdf.
+//! PDF document parser.
 
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::Path;
-
-use lopdf::Document as LopdfDocument;
 
 use crate::detect::detect_format_from_path;
 use crate::error::{Error, Result};
@@ -12,13 +10,14 @@ use crate::model::{
     Block, Document, Metadata, Outline, OutlineItem, Page, Paragraph, Resource, ResourceType,
 };
 
+use super::backend::LopdfBackend;
 use super::layout::{BlockType, LayoutAnalyzer};
 use super::options::{ErrorMode, ExtractMode, ParseOptions};
 use super::table_detector::TableDetector;
 
 /// PDF document parser.
 pub struct PdfParser {
-    doc: LopdfDocument,
+    backend: LopdfBackend,
     options: ParseOptions,
 }
 
@@ -35,19 +34,13 @@ impl PdfParser {
         // Verify it's a PDF
         detect_format_from_path(path)?;
 
-        // Load document
-        let doc = LopdfDocument::load(path).map_err(|e| match e {
-            lopdf::Error::Decryption(_) => Error::Encrypted,
-            _ => Error::from(e),
-        })?;
+        let backend = LopdfBackend::load_file(path)?;
 
-        // Note: Password-protected PDFs are not yet supported in lopdf 0.34
-        // TODO: Add password support when lopdf adds this feature
-        if options.password.is_some() && doc.is_encrypted() {
-            log::warn!("Password was provided but lopdf 0.34 doesn't support decryption");
+        if options.password.is_some() && backend.is_encrypted() {
+            log::warn!("Password was provided but lopdf doesn't support decryption");
         }
 
-        Ok(Self { doc, options })
+        Ok(Self { backend, options })
     }
 
     /// Parse a PDF from bytes.
@@ -57,17 +50,13 @@ impl PdfParser {
 
     /// Parse a PDF from bytes with custom options.
     pub fn from_bytes_with_options(data: &[u8], options: ParseOptions) -> Result<Self> {
-        let doc = LopdfDocument::load_mem(data).map_err(|e| match e {
-            lopdf::Error::Decryption(_) => Error::Encrypted,
-            _ => Error::from(e),
-        })?;
+        let backend = LopdfBackend::load_bytes(data)?;
 
-        // Note: Password-protected PDFs are not yet supported in lopdf 0.34
-        if options.password.is_some() && doc.is_encrypted() {
-            log::warn!("Password was provided but lopdf 0.34 doesn't support decryption");
+        if options.password.is_some() && backend.is_encrypted() {
+            log::warn!("Password was provided but lopdf doesn't support decryption");
         }
 
-        Ok(Self { doc, options })
+        Ok(Self { backend, options })
     }
 
     /// Parse a PDF from a reader.
@@ -76,10 +65,14 @@ impl PdfParser {
     }
 
     /// Parse a PDF from a reader with custom options.
-    pub fn from_reader_with_options<R: Read>(mut reader: R, options: ParseOptions) -> Result<Self> {
-        let mut data = Vec::new();
-        reader.read_to_end(&mut data)?;
-        Self::from_bytes_with_options(&data, options)
+    pub fn from_reader_with_options<R: Read>(reader: R, options: ParseOptions) -> Result<Self> {
+        let backend = LopdfBackend::load_reader(reader)?;
+
+        if options.password.is_some() && backend.is_encrypted() {
+            log::warn!("Password was provided but lopdf doesn't support decryption");
+        }
+
+        Ok(Self { backend, options })
     }
 
     /// Parse the document and return a structured Document.
@@ -90,7 +83,7 @@ impl PdfParser {
         document.metadata = self.extract_metadata()?;
 
         // Extract pages
-        let page_ids = self.doc.get_pages();
+        let page_ids = self.backend.raw_doc().get_pages();
         let total_pages = page_ids.len() as u32;
         document.metadata.page_count = total_pages;
 
@@ -126,12 +119,13 @@ impl PdfParser {
 
     /// Extract document metadata.
     fn extract_metadata(&self) -> Result<Metadata> {
-        let mut metadata = Metadata::with_version(self.doc.version.to_string());
+        let doc = self.backend.raw_doc();
+        let mut metadata = Metadata::with_version(doc.version.to_string());
 
         // Try to get document info dictionary
-        if let Ok(info) = self.doc.trailer.get(b"Info") {
+        if let Ok(info) = doc.trailer.get(b"Info") {
             if let Ok(info_ref) = info.as_reference() {
-                if let Ok(info_dict) = self.doc.get_dictionary(info_ref) {
+                if let Ok(info_dict) = doc.get_dictionary(info_ref) {
                     metadata.title = get_string_from_dict(info_dict, b"Title");
                     metadata.author = get_string_from_dict(info_dict, b"Author");
                     metadata.subject = get_string_from_dict(info_dict, b"Subject");
@@ -151,7 +145,7 @@ impl PdfParser {
         }
 
         // Check if encrypted
-        metadata.encrypted = self.doc.is_encrypted();
+        metadata.encrypted = doc.is_encrypted();
 
         Ok(metadata)
     }
@@ -187,7 +181,7 @@ impl PdfParser {
 
     /// Extract page content with table detection.
     fn extract_page_with_tables(&self, page_num: u32) -> Result<Vec<Block>> {
-        let analyzer = LayoutAnalyzer::new(&self.doc);
+        let analyzer = LayoutAnalyzer::new(&self.backend);
 
         // Step 1: Extract all text spans
         let spans = analyzer.extract_page_spans(page_num)?;
@@ -223,7 +217,7 @@ impl PdfParser {
 
             // Process remaining spans into text blocks
             if !remaining_spans.is_empty() {
-                let mut analyzer = LayoutAnalyzer::new(&self.doc);
+                let mut analyzer = LayoutAnalyzer::new(&self.backend);
                 // Manually add font stats from remaining spans
                 for span in &remaining_spans {
                     analyzer.font_stats_mut().add_size(span.font_size);
@@ -298,7 +292,7 @@ impl PdfParser {
 
     /// Extract page with layout analysis.
     fn extract_page_with_layout(&self, page_num: u32) -> Result<Vec<super::layout::TextBlock>> {
-        let mut analyzer = LayoutAnalyzer::new(&self.doc);
+        let mut analyzer = LayoutAnalyzer::new(&self.backend);
         analyzer.extract_page_blocks(page_num)
     }
 
@@ -322,12 +316,12 @@ impl PdfParser {
 
     /// Get page dimensions.
     fn get_page_dimensions(&self, page_num: u32) -> Result<(f32, f32)> {
-        let pages = self.doc.get_pages();
+        let pages = self.backend.raw_doc().get_pages();
         let page_id = pages
             .get(&page_num)
             .ok_or(Error::PageOutOfRange(page_num, pages.len() as u32))?;
 
-        if let Ok(page_dict) = self.doc.get_dictionary(*page_id) {
+        if let Ok(page_dict) = self.backend.raw_doc().get_dictionary(*page_id) {
             if let Ok(media_box) = page_dict.get(b"MediaBox") {
                 if let Ok(array) = media_box.as_array() {
                     if array.len() >= 4 {
@@ -343,11 +337,21 @@ impl PdfParser {
         Ok((612.0, 792.0))
     }
 
-    /// Extract text from a page.
+    /// Extract text from a page using layout-aware span extraction.
     fn extract_page_text(&self, page_num: u32) -> Result<String> {
-        self.doc
-            .extract_text(&[page_num])
-            .map_err(|e| Error::TextExtract(format!("Page {}: {}", page_num, e)))
+        let analyzer = LayoutAnalyzer::new(&self.backend);
+        let spans = analyzer.extract_page_spans(page_num)?;
+
+        if spans.is_empty() {
+            return Ok(String::new());
+        }
+
+        let lines = analyzer.group_spans_into_lines_pub(spans);
+        Ok(lines
+            .iter()
+            .map(|l| l.text())
+            .collect::<Vec<_>>()
+            .join("\n"))
     }
 
     /// Maximum depth for outline recursion to prevent stack overflow.
@@ -359,10 +363,10 @@ impl PdfParser {
         let mut visited = HashSet::new();
 
         // Get outline root from catalog
-        if let Ok(catalog) = self.doc.catalog() {
+        if let Ok(catalog) = self.backend.raw_doc().catalog() {
             if let Ok(outlines) = catalog.get(b"Outlines") {
                 if let Ok(outlines_ref) = outlines.as_reference() {
-                    if let Ok(outlines_dict) = self.doc.get_dictionary(outlines_ref) {
+                    if let Ok(outlines_dict) = self.backend.raw_doc().get_dictionary(outlines_ref) {
                         // Get first outline item
                         if let Ok(first) = outlines_dict.get(b"First") {
                             if let Ok(first_ref) = first.as_reference() {
@@ -397,7 +401,7 @@ impl PdfParser {
             return Ok(());
         }
 
-        if let Ok(item_dict) = self.doc.get_dictionary(item_ref) {
+        if let Ok(item_dict) = self.backend.raw_doc().get_dictionary(item_ref) {
             // Get title
             let title = get_string_from_dict(item_dict, b"Title").unwrap_or_default();
 
@@ -441,7 +445,7 @@ impl PdfParser {
         // Try A (action) dictionary
         if let Ok(action) = item_dict.get(b"A") {
             if let Ok(action_ref) = action.as_reference() {
-                if let Ok(action_dict) = self.doc.get_dictionary(action_ref) {
+                if let Ok(action_dict) = self.backend.raw_doc().get_dictionary(action_ref) {
                     if let Ok(dest) = action_dict.get(b"D") {
                         return self.resolve_destination(dest);
                     }
@@ -454,7 +458,7 @@ impl PdfParser {
 
     /// Resolve a destination to a page number.
     fn resolve_destination(&self, dest: &lopdf::Object) -> Option<u32> {
-        let pages = self.doc.get_pages();
+        let pages = self.backend.raw_doc().get_pages();
 
         // Destination can be an array or a name
         if let Ok(dest_array) = dest.as_array() {
@@ -477,7 +481,7 @@ impl PdfParser {
     fn extract_resources(&self) -> Result<HashMap<String, Resource>> {
         let mut resources = HashMap::new();
 
-        for (page_num, page_id) in self.doc.get_pages() {
+        for (page_num, page_id) in self.backend.raw_doc().get_pages() {
             if let Ok(page_resources) = self.extract_page_resources(page_id) {
                 for (id, resource) in page_resources {
                     let key = format!("page{}_{}", page_num, id);
@@ -493,10 +497,10 @@ impl PdfParser {
     fn extract_page_resources(&self, page_id: lopdf::ObjectId) -> Result<Vec<(String, Resource)>> {
         let mut resources = Vec::new();
 
-        if let Ok(page_dict) = self.doc.get_dictionary(page_id) {
+        if let Ok(page_dict) = self.backend.raw_doc().get_dictionary(page_id) {
             if let Ok(res) = page_dict.get(b"Resources") {
                 let res_dict = match res {
-                    lopdf::Object::Reference(r) => self.doc.get_dictionary(*r).ok(),
+                    lopdf::Object::Reference(r) => self.backend.raw_doc().get_dictionary(*r).ok(),
                     lopdf::Object::Dictionary(d) => Some(d),
                     _ => None,
                 };
@@ -505,7 +509,9 @@ impl PdfParser {
                     // Extract XObjects (images)
                     if let Ok(xobjects) = res_dict.get(b"XObject") {
                         let xobj_dict = match xobjects {
-                            lopdf::Object::Reference(r) => self.doc.get_dictionary(*r).ok(),
+                            lopdf::Object::Reference(r) => {
+                                self.backend.raw_doc().get_dictionary(*r).ok()
+                            }
                             lopdf::Object::Dictionary(d) => Some(d),
                             _ => None,
                         };
@@ -531,7 +537,8 @@ impl PdfParser {
     /// Extract an XObject (image).
     fn extract_xobject(&self, obj_ref: lopdf::ObjectId) -> Result<Resource> {
         let stream = self
-            .doc
+            .backend
+            .raw_doc()
             .get_object(obj_ref)
             .map_err(|e| Error::ImageExtract(e.to_string()))?;
 
@@ -626,17 +633,17 @@ impl PdfParser {
 
     /// Get the number of pages.
     pub fn page_count(&self) -> u32 {
-        self.doc.get_pages().len() as u32
+        self.backend.raw_doc().get_pages().len() as u32
     }
 
     /// Check if the document is encrypted.
     pub fn is_encrypted(&self) -> bool {
-        self.doc.is_encrypted()
+        self.backend.raw_doc().is_encrypted()
     }
 
     /// Get PDF version.
     pub fn version(&self) -> String {
-        self.doc.version.to_string()
+        self.backend.raw_doc().version.to_string()
     }
 }
 

@@ -1,5 +1,6 @@
 //! PDF parsing module.
 
+pub mod backend;
 mod layout;
 mod options;
 mod pdf_parser;

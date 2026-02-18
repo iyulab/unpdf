@@ -4,7 +4,7 @@ resolver = "2"
 
 [package]
 name = "unpdf"
-version = "0.1.8"
+version = "0.1.9"
 edition = "2021"
 authors = ["iyulab"]
 license = "MIT"
@@ -30,7 +30,6 @@ fast-parse = []  # Enable nom_parser for faster PDF parsing
 [dependencies]
 # PDF parsing
 lopdf = "0.39"
-pdf-extract = "0.7"
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }

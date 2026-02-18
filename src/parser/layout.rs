@@ -3,10 +3,9 @@
 //! This module provides text extraction with position and font information,
 //! enabling proper heading detection, paragraph separation, and structure analysis.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 
-use lopdf::{Document as LopdfDocument, Object, ObjectId};
-
+use super::backend::{get_number_from_value, PdfBackend, PdfValue};
 use crate::error::{Error, Result};
 
 /// A text span with position and style information.
@@ -292,7 +291,7 @@ impl TextBlock {
 
 /// Layout analyzer for extracting structured text from PDF pages.
 pub struct LayoutAnalyzer<'a> {
-    doc: &'a LopdfDocument,
+    backend: &'a dyn PdfBackend,
     /// Font size statistics for the document
     font_stats: FontStatistics,
 }
@@ -366,9 +365,9 @@ impl FontStatistics {
 
 impl<'a> LayoutAnalyzer<'a> {
     /// Create a new layout analyzer.
-    pub fn new(doc: &'a LopdfDocument) -> Self {
+    pub fn new(backend: &'a dyn PdfBackend) -> Self {
         Self {
-            doc,
+            backend,
             font_stats: FontStatistics::default(),
         }
     }
@@ -394,33 +393,26 @@ impl<'a> LayoutAnalyzer<'a> {
     }
 
     /// Extract text spans from a page with position and font information.
-    /// Uses lopdf's font encoding support for proper text decoding.
     pub fn extract_page_spans(&self, page_num: u32) -> Result<Vec<TextSpan>> {
-        let pages = self.doc.get_pages();
+        let pages = self.backend.pages();
         let page_id = pages
             .get(&page_num)
             .ok_or(Error::PageOutOfRange(page_num, pages.len() as u32))?;
 
-        // Get fonts using lopdf's method
-        let lopdf_fonts = self
-            .doc
-            .get_page_fonts(*page_id)
-            .map_err(|e| Error::PdfParse(e.to_string()))?;
-
         // Build font info map
+        let backend_fonts = self.backend.page_fonts(*page_id)?;
         let mut fonts = HashMap::new();
-        for (name, font) in &lopdf_fonts {
-            let base_font = font
-                .get(b"BaseFont")
-                .ok()
-                .and_then(|o| o.as_name().ok())
-                .map(|n| String::from_utf8_lossy(n).to_string())
-                .unwrap_or_else(|| "Unknown".to_string());
-            fonts.insert(name.clone(), FontInfo { name: base_font });
+        for fi in &backend_fonts {
+            fonts.insert(
+                fi.name.clone(),
+                FontInfo {
+                    name: fi.base_font.clone(),
+                },
+            );
         }
 
-        let content = self.get_page_content(*page_id)?;
-        self.parse_content_stream_with_doc(&content, &fonts, &lopdf_fonts)
+        let content = self.backend.page_content(*page_id)?;
+        self.parse_operations(&content, &fonts, *page_id)
     }
 
     /// Extract structured text blocks from a page.
@@ -445,53 +437,17 @@ impl<'a> LayoutAnalyzer<'a> {
         Ok(blocks)
     }
 
-    /// Get page content stream.
-    fn get_page_content(&self, page_id: ObjectId) -> Result<Vec<u8>> {
-        let page_dict = self
-            .doc
-            .get_dictionary(page_id)
-            .map_err(|e| Error::PdfParse(e.to_string()))?;
-
-        let contents = page_dict
-            .get(b"Contents")
-            .map_err(|e| Error::PdfParse(e.to_string()))?;
-
-        match contents {
-            Object::Reference(r) => {
-                if let Ok(Object::Stream(s)) = self.doc.get_object(*r) {
-                    return s
-                        .decompressed_content()
-                        .map_err(|e| Error::PdfParse(e.to_string()));
-                }
-                Err(Error::PdfParse("Invalid content stream".to_string()))
-            }
-            Object::Array(arr) => {
-                let mut content = Vec::new();
-                for obj in arr {
-                    if let Object::Reference(r) = obj {
-                        if let Ok(Object::Stream(s)) = self.doc.get_object(*r) {
-                            if let Ok(data) = s.decompressed_content() {
-                                content.extend_from_slice(&data);
-                                content.push(b' ');
-                            }
-                        }
-                    }
-                }
-                Ok(content)
-            }
-            _ => Err(Error::PdfParse("Invalid content stream".to_string())),
-        }
-    }
-
-    /// Parse content stream with proper encoding support using lopdf fonts.
-    fn parse_content_stream_with_doc(
+    /// Parse content stream operations into text spans.
+    ///
+    /// Delegates content decoding and text decoding to the backend,
+    /// keeping layout.rs free from concrete PDF library types.
+    fn parse_operations(
         &self,
         content: &[u8],
         fonts: &HashMap<Vec<u8>, FontInfo>,
-        lopdf_fonts: &BTreeMap<Vec<u8>, &lopdf::Dictionary>,
+        page_id: super::backend::PageId,
     ) -> Result<Vec<TextSpan>> {
-        let content =
-            lopdf::content::Content::decode(content).map_err(|e| Error::PdfParse(e.to_string()))?;
+        let operations = self.backend.decode_content(content)?;
 
         let mut spans = Vec::new();
         let mut current_font = String::new();
@@ -500,7 +456,7 @@ impl<'a> LayoutAnalyzer<'a> {
         let mut text_matrix = TextMatrix::default();
         let mut in_text_block = false;
 
-        for op in content.operations {
+        for op in &operations {
             match op.operator.as_str() {
                 "BT" => {
                     in_text_block = true;
@@ -511,7 +467,7 @@ impl<'a> LayoutAnalyzer<'a> {
                 }
                 "Tf" => {
                     if op.operands.len() >= 2 {
-                        if let Object::Name(font_name) = &op.operands[0] {
+                        if let PdfValue::Name(font_name) = &op.operands[0] {
                             current_font_name = font_name.clone();
                             if let Some(info) = fonts.get(font_name.as_slice()) {
                                 current_font = info.name.clone();
@@ -520,25 +476,25 @@ impl<'a> LayoutAnalyzer<'a> {
                                     String::from_utf8_lossy(font_name.as_slice()).to_string();
                             }
                         }
-                        current_font_size = get_number(&op.operands[1]).unwrap_or(12.0);
+                        current_font_size = get_number_from_value(&op.operands[1]).unwrap_or(12.0);
                     }
                 }
                 "Td" | "TD" => {
                     if op.operands.len() >= 2 {
-                        let tx = get_number(&op.operands[0]).unwrap_or(0.0);
-                        let ty = get_number(&op.operands[1]).unwrap_or(0.0);
+                        let tx = get_number_from_value(&op.operands[0]).unwrap_or(0.0);
+                        let ty = get_number_from_value(&op.operands[1]).unwrap_or(0.0);
                         text_matrix.translate(tx, ty);
                     }
                 }
                 "Tm" => {
                     if op.operands.len() >= 6 {
                         text_matrix.set(
-                            get_number(&op.operands[0]).unwrap_or(1.0),
-                            get_number(&op.operands[1]).unwrap_or(0.0),
-                            get_number(&op.operands[2]).unwrap_or(0.0),
-                            get_number(&op.operands[3]).unwrap_or(1.0),
-                            get_number(&op.operands[4]).unwrap_or(0.0),
-                            get_number(&op.operands[5]).unwrap_or(0.0),
+                            get_number_from_value(&op.operands[0]).unwrap_or(1.0),
+                            get_number_from_value(&op.operands[1]).unwrap_or(0.0),
+                            get_number_from_value(&op.operands[2]).unwrap_or(0.0),
+                            get_number_from_value(&op.operands[3]).unwrap_or(1.0),
+                            get_number_from_value(&op.operands[4]).unwrap_or(0.0),
+                            get_number_from_value(&op.operands[5]).unwrap_or(0.0),
                         );
                     }
                 }
@@ -547,70 +503,33 @@ impl<'a> LayoutAnalyzer<'a> {
                 }
                 "Tj" | "TJ" => {
                     if in_text_block {
-                        // Get encoding for current font
-                        let encoding = lopdf_fonts
-                            .get(&current_font_name)
-                            .and_then(|f| f.get_font_encoding(self.doc).ok());
-
                         let text = if op.operator == "TJ" {
                             // TJ: array of strings and positioning adjustments
                             // Numbers indicate kerning/spacing adjustments in 1/1000 text space units
                             // Large negative values (like -200 to -300) often indicate word spaces
-                            if let Some(Object::Array(arr)) = op.operands.first() {
+                            if let Some(PdfValue::Array(arr)) = op.operands.first() {
                                 let mut combined = String::new();
-                                // Threshold for space detection: 200 units = 0.2 * font_size
-                                // This varies by font, but works well for most cases
                                 let space_threshold = 200.0;
 
                                 for item in arr {
                                     match item {
-                                        Object::String(bytes, _) => {
-                                            if let Some(ref enc) = encoding {
-                                                if let Ok(decoded) =
-                                                    LopdfDocument::decode_text(enc, bytes)
-                                                {
-                                                    combined.push_str(&decoded);
-                                                }
-                                            } else {
-                                                // Fallback: try simple decoding
-                                                combined.push_str(&decode_text_simple(bytes));
-                                            }
+                                        PdfValue::Str(bytes) => {
+                                            combined.push_str(&self.backend.decode_text(
+                                                page_id,
+                                                &current_font_name,
+                                                bytes,
+                                            ));
                                         }
-                                        Object::Integer(n) => {
-                                            // Negative values move text to the right (advance)
-                                            // Large negative values indicate word breaks
+                                        PdfValue::Integer(n) => {
                                             let adjustment = -(*n as f32);
                                             if adjustment > space_threshold {
-                                                // Check if we should insert space
-                                                // Don't insert if already has space or is empty
-                                                if !combined.is_empty()
-                                                    && !combined.ends_with(' ')
-                                                    && !combined.ends_with('\u{00A0}')
-                                                {
-                                                    // Check if it's not CJK text (CJK doesn't use spaces)
-                                                    let last_char = combined.chars().last();
-                                                    if let Some(c) = last_char {
-                                                        if !is_spaceless_script_char(c) {
-                                                            combined.push(' ');
-                                                        }
-                                                    }
-                                                }
+                                                maybe_insert_space(&mut combined);
                                             }
                                         }
-                                        Object::Real(n) => {
-                                            // Same logic for Real numbers
+                                        PdfValue::Real(n) => {
                                             let adjustment = -n;
-                                            if adjustment > space_threshold
-                                                && !combined.is_empty()
-                                                && !combined.ends_with(' ')
-                                                && !combined.ends_with('\u{00A0}')
-                                            {
-                                                let last_char = combined.chars().last();
-                                                if let Some(c) = last_char {
-                                                    if !is_spaceless_script_char(c) {
-                                                        combined.push(' ');
-                                                    }
-                                                }
+                                            if adjustment > space_threshold {
+                                                maybe_insert_space(&mut combined);
                                             }
                                         }
                                         _ => {}
@@ -622,12 +541,8 @@ impl<'a> LayoutAnalyzer<'a> {
                             }
                         } else {
                             // Tj: single string
-                            if let Some(Object::String(bytes, _)) = op.operands.first() {
-                                if let Some(ref enc) = encoding {
-                                    LopdfDocument::decode_text(enc, bytes).unwrap_or_default()
-                                } else {
-                                    decode_text_simple(bytes)
-                                }
+                            if let Some(PdfValue::Str(bytes)) = op.operands.first() {
+                                self.backend.decode_text(page_id, &current_font_name, bytes)
                             } else {
                                 String::new()
                             }
@@ -650,16 +565,8 @@ impl<'a> LayoutAnalyzer<'a> {
                     text_matrix.next_line();
                     if in_text_block {
                         let text_idx = if op.operator == "\"" { 2 } else { 0 };
-                        if let Some(Object::String(bytes, _)) = op.operands.get(text_idx) {
-                            let encoding = lopdf_fonts
-                                .get(&current_font_name)
-                                .and_then(|f| f.get_font_encoding(self.doc).ok());
-
-                            let text = if let Some(ref enc) = encoding {
-                                LopdfDocument::decode_text(enc, bytes).unwrap_or_default()
-                            } else {
-                                decode_text_simple(bytes)
-                            };
+                        if let Some(PdfValue::Str(bytes)) = op.operands.get(text_idx) {
+                            let text = self.backend.decode_text(page_id, &current_font_name, bytes);
 
                             if !text.trim().is_empty() {
                                 let (x, y) = text_matrix.get_position();
@@ -1226,12 +1133,15 @@ impl TextMatrix {
     }
 }
 
-/// Helper to extract number from PDF object.
-fn get_number(obj: &Object) -> Option<f32> {
-    match obj {
-        Object::Integer(i) => Some(*i as f32),
-        Object::Real(r) => Some(*r),
-        _ => None,
+/// Insert a space into `text` if it doesn't already end with one and the
+/// last character is not from a spaceless script (CJK/Japanese).
+fn maybe_insert_space(text: &mut String) {
+    if !text.is_empty() && !text.ends_with(' ') && !text.ends_with('\u{00A0}') {
+        if let Some(c) = text.chars().last() {
+            if !is_spaceless_script_char(c) {
+                text.push(' ');
+            }
+        }
     }
 }
 
@@ -1260,32 +1170,6 @@ fn is_spaceless_script_char(c: char) -> bool {
     // NOTE: Hangul (Korean) is NOT included - Korean uses word spaces like English
     // CJK Symbols and Punctuation
     || (0x3000..=0x303F).contains(&code)
-}
-
-/// Simple text decoding fallback when no encoding is available.
-fn decode_text_simple(bytes: &[u8]) -> String {
-    // Try UTF-16BE first (BOM marker)
-    if bytes.len() >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF {
-        let utf16: Vec<u16> = bytes[2..]
-            .chunks(2)
-            .filter_map(|c| {
-                if c.len() == 2 {
-                    Some(u16::from_be_bytes([c[0], c[1]]))
-                } else {
-                    None
-                }
-            })
-            .collect();
-        return String::from_utf16(&utf16).unwrap_or_default();
-    }
-
-    // Try UTF-8
-    if let Ok(s) = String::from_utf8(bytes.to_vec()) {
-        return s;
-    }
-
-    // Fallback: Latin-1
-    bytes.iter().map(|&b| b as char).collect()
 }
 
 #[cfg(test)]
