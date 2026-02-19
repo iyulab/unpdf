@@ -31,6 +31,7 @@ dev-docs/
 claudedocs/
 test-extract/
 CLAUDE.md
+nul
 
 # Python bindings
 bindings/python/src/unpdf/lib/

@@ -1,6 +1,7 @@
 //! unpdf CLI - PDF content extraction tool
 
 use std::fs;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand, ValueEnum};
@@ -609,9 +610,72 @@ fn cmd_update(check_only: bool, force: bool) -> Result<(), Box<dyn std::error::E
                     "This ensures proper integration with your Rust toolchain.".dimmed()
                 );
             } else {
-                // GitHub Releases install - use self_update
+                // GitHub Releases install - custom asset selection to avoid
+                // picking FFI library assets (libunpdf-*) instead of CLI assets (unpdf-*)
                 println!("{} v{}", "Updating to".green(), latest_ver);
-                status.update()?;
+
+                // Find the correct CLI asset (starts with "unpdf-", not "libunpdf-")
+                let os_str = std::env::consts::OS;
+                let arch_str = std::env::consts::ARCH;
+                let target_asset = latest
+                    .assets
+                    .iter()
+                    .find(|asset| {
+                        asset.name.starts_with("unpdf-")
+                            && asset.name.contains(os_str)
+                            && asset.name.contains(arch_str)
+                    })
+                    .ok_or_else(|| {
+                        format!("No CLI asset found for {}-{}", os_str, arch_str)
+                    })?;
+
+                let bin_install_path = std::env::current_exe()?;
+                println!("\nunpdf release status:");
+                println!("  * Current exe: {:?}", bin_install_path);
+                println!("  * New exe release: {:?}", target_asset.name);
+                println!(
+                    "\nThe new release will be downloaded/extracted and the existing binary will be replaced."
+                );
+
+                // Confirmation prompt
+                print!("Do you want to continue? [Y/n] ");
+                io::stdout().flush()?;
+                let mut input = String::new();
+                io::stdin().read_line(&mut input)?;
+                let input = input.trim().to_lowercase();
+                if !input.is_empty() && input != "y" {
+                    println!("{}", "Update aborted.".yellow());
+                    return Ok(());
+                }
+
+                // Use direct download URL (avoids needing Accept header for API URL)
+                let download_url = format!(
+                    "https://github.com/iyulab/unpdf/releases/download/v{}/{}",
+                    latest_ver, target_asset.name
+                );
+
+                let tmp_dir = self_update::TempDir::new()?;
+                let tmp_archive_path = tmp_dir.path().join(&target_asset.name);
+                let mut tmp_archive = fs::File::create(&tmp_archive_path)?;
+
+                println!("Downloading...");
+                let mut download = self_update::Download::from_url(&download_url);
+                download.show_progress(true);
+                download.download_to(&mut tmp_archive)?;
+
+                print!("Extracting archive... ");
+                io::stdout().flush()?;
+                let bin_name = format!("unpdf{}", std::env::consts::EXE_SUFFIX);
+                self_update::Extract::from_source(&tmp_archive_path)
+                    .extract_file(tmp_dir.path(), &bin_name)?;
+                println!("Done");
+
+                print!("Replacing binary file... ");
+                io::stdout().flush()?;
+                let new_exe = tmp_dir.path().join(&bin_name);
+                self_update::self_replace::self_replace(new_exe)?;
+                println!("Done");
+
                 println!("{}", "Update complete!".green().bold());
             }
         } else {
