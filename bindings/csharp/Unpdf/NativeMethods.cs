@@ -1,73 +1,169 @@
+using System;
+using System.Reflection;
 using System.Runtime.InteropServices;
 
 namespace Unpdf;
 
 /// <summary>
-/// Result structure returned by FFI functions.
-/// </summary>
-[StructLayout(LayoutKind.Sequential)]
-internal struct UnpdfResult
-{
-    [MarshalAs(UnmanagedType.I1)]
-    public bool Success;
-    public IntPtr Data;
-    public IntPtr Error;
-}
-
-/// <summary>
-/// Options structure for FFI functions.
-/// </summary>
-[StructLayout(LayoutKind.Sequential)]
-internal struct UnpdfOptionsNative
-{
-    [MarshalAs(UnmanagedType.I1)]
-    public bool ExtractImages;
-    public IntPtr ImageDir;
-    [MarshalAs(UnmanagedType.I1)]
-    public bool IncludeFrontmatter;
-    [MarshalAs(UnmanagedType.I1)]
-    public bool Lenient;
-}
-
-/// <summary>
-/// P/Invoke declarations for the native unpdf library.
+/// P/Invoke declarations for the unpdf native library.
 /// </summary>
 internal static class NativeMethods
 {
+    // On Windows, we use unpdf_native.dll to avoid conflict with managed Unpdf.dll
+    // On Unix, libunpdf.so/dylib doesn't conflict with Unpdf.dll
     private const string LibraryName = "unpdf";
 
-    [DllImport(LibraryName, EntryPoint = "unpdf_to_markdown", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
-    internal static extern UnpdfResult ToMarkdown([MarshalAs(UnmanagedType.LPUTF8Str)] string path);
+    static NativeMethods()
+    {
+        NativeLibrary.SetDllImportResolver(typeof(NativeMethods).Assembly, ResolveDllImport);
+    }
 
-    [DllImport(LibraryName, EntryPoint = "unpdf_to_text", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
-    internal static extern UnpdfResult ToText([MarshalAs(UnmanagedType.LPUTF8Str)] string path);
+    private static IntPtr ResolveDllImport(string libraryName, Assembly assembly, DllImportSearchPath? searchPath)
+    {
+        if (libraryName != LibraryName)
+            return IntPtr.Zero;
 
-    [DllImport(LibraryName, EntryPoint = "unpdf_to_json", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
-    internal static extern UnpdfResult ToJson([MarshalAs(UnmanagedType.LPUTF8Str)] string path, [MarshalAs(UnmanagedType.I1)] bool pretty);
+        // Try platform-specific names
+        string[] namesToTry;
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            // On Windows, try unpdf_native.dll first (for test scenarios),
+            // then fall back to unpdf.dll (for NuGet package scenarios)
+            namesToTry = new[] { "unpdf_native", "unpdf" };
+        }
+        else
+        {
+            namesToTry = new[] { "unpdf" };
+        }
 
-    [DllImport(LibraryName, EntryPoint = "unpdf_get_info", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
-    internal static extern UnpdfResult GetInfo([MarshalAs(UnmanagedType.LPUTF8Str)] string path);
+        foreach (var name in namesToTry)
+        {
+            if (NativeLibrary.TryLoad(name, assembly, searchPath, out var handle))
+                return handle;
+        }
 
-    [DllImport(LibraryName, EntryPoint = "unpdf_get_page_count", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
-    internal static extern int GetPageCount([MarshalAs(UnmanagedType.LPUTF8Str)] string path);
+        return IntPtr.Zero;
+    }
 
-    [DllImport(LibraryName, EntryPoint = "unpdf_is_pdf", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
-    [return: MarshalAs(UnmanagedType.I1)]
-    internal static extern bool IsPdf([MarshalAs(UnmanagedType.LPUTF8Str)] string path);
+    // Flags for markdown rendering
+    public const int UNPDF_FLAG_FRONTMATTER = 1;
+    public const int UNPDF_FLAG_ESCAPE_SPECIAL = 2;
+    public const int UNPDF_FLAG_PARAGRAPH_SPACING = 4;
 
-    [DllImport(LibraryName, EntryPoint = "unpdf_free_result", CallingConvention = CallingConvention.Cdecl)]
-    internal static extern void FreeResult(UnpdfResult result);
+    // JSON format options
+    public const int UNPDF_JSON_PRETTY = 0;
+    public const int UNPDF_JSON_COMPACT = 1;
 
-    [DllImport(LibraryName, EntryPoint = "unpdf_version", CallingConvention = CallingConvention.Cdecl)]
-    internal static extern IntPtr GetVersion();
+    /// <summary>
+    /// Get the library version.
+    /// </summary>
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern IntPtr unpdf_version();
 
-    [DllImport(LibraryName, EntryPoint = "unpdf_to_markdown_with_options", CallingConvention = CallingConvention.Cdecl)]
-    internal static extern UnpdfResult ToMarkdownWithOptions(
-        [MarshalAs(UnmanagedType.LPUTF8Str)] string path,
-        UnpdfOptionsNative options);
+    /// <summary>
+    /// Get the last error message.
+    /// </summary>
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern IntPtr unpdf_last_error();
 
-    [DllImport(LibraryName, EntryPoint = "unpdf_extract_images", CallingConvention = CallingConvention.Cdecl)]
-    internal static extern UnpdfResult ExtractImages(
-        [MarshalAs(UnmanagedType.LPUTF8Str)] string path,
-        [MarshalAs(UnmanagedType.LPUTF8Str)] string outputDir);
+    /// <summary>
+    /// Parse a document from a file path.
+    /// </summary>
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+    public static extern IntPtr unpdf_parse_file([MarshalAs(UnmanagedType.LPUTF8Str)] string path);
+
+    /// <summary>
+    /// Parse a document from a byte buffer.
+    /// </summary>
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern IntPtr unpdf_parse_bytes(IntPtr data, UIntPtr len);
+
+    /// <summary>
+    /// Free a document handle.
+    /// </summary>
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern void unpdf_free_document(IntPtr doc);
+
+    /// <summary>
+    /// Convert a document to Markdown.
+    /// </summary>
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern IntPtr unpdf_to_markdown(IntPtr doc, int flags);
+
+    /// <summary>
+    /// Convert a document to plain text.
+    /// </summary>
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern IntPtr unpdf_to_text(IntPtr doc);
+
+    /// <summary>
+    /// Convert a document to JSON.
+    /// </summary>
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern IntPtr unpdf_to_json(IntPtr doc, int format);
+
+    /// <summary>
+    /// Get the plain text content of a document.
+    /// </summary>
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern IntPtr unpdf_plain_text(IntPtr doc);
+
+    /// <summary>
+    /// Get the number of sections (pages) in a document.
+    /// </summary>
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern int unpdf_section_count(IntPtr doc);
+
+    /// <summary>
+    /// Get the number of resources in a document.
+    /// </summary>
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern int unpdf_resource_count(IntPtr doc);
+
+    /// <summary>
+    /// Get the document title.
+    /// </summary>
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern IntPtr unpdf_get_title(IntPtr doc);
+
+    /// <summary>
+    /// Get the document author.
+    /// </summary>
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern IntPtr unpdf_get_author(IntPtr doc);
+
+    /// <summary>
+    /// Free a string allocated by the library.
+    /// </summary>
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern void unpdf_free_string(IntPtr str);
+
+    /// <summary>
+    /// Get all resource IDs as a JSON array.
+    /// </summary>
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern IntPtr unpdf_get_resource_ids(IntPtr doc);
+
+    /// <summary>
+    /// Get resource metadata as JSON.
+    /// </summary>
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+    public static extern IntPtr unpdf_get_resource_info(
+        IntPtr doc,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string resourceId);
+
+    /// <summary>
+    /// Get resource binary data.
+    /// </summary>
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+    public static extern IntPtr unpdf_get_resource_data(
+        IntPtr doc,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string resourceId,
+        out UIntPtr outLen);
+
+    /// <summary>
+    /// Free binary data allocated by the library.
+    /// </summary>
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern void unpdf_free_bytes(IntPtr data, UIntPtr len);
 }

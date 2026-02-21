@@ -1,466 +1,765 @@
-//! C-ABI FFI bindings for cross-language integration.
+//! C-ABI Foreign Function Interface for unpdf.
 //!
-//! This module provides a C-compatible API for using unpdf from other languages
-//! such as C#, Python, and Node.js.
+//! This module provides C-compatible bindings for using unpdf from other languages
+//! such as C, C++, C#, Python, and any language with C FFI support.
+//!
+//! # Memory Management
+//!
+//! All strings returned by this library must be freed using `unpdf_free_string`.
+//! All document handles must be freed using `unpdf_free_document`.
+//!
+//! # Error Handling
+//!
+//! Functions that can fail return a null pointer on error. Use `unpdf_last_error`
+//! to retrieve the error message.
 
-use std::ffi::{c_char, CStr, CString};
-use std::path::Path;
+use std::cell::RefCell;
+use std::ffi::{c_char, c_int, CStr, CString};
+use std::panic::catch_unwind;
 use std::ptr;
 
+use crate::model::Document;
 use crate::render::{JsonFormat, RenderOptions};
-use crate::{parse_file_with_options, render, ParseOptions};
 
-/// Result structure returned by FFI functions.
-#[repr(C)]
-pub struct UnpdfResult {
-    /// Whether the operation succeeded.
-    pub success: bool,
-    /// The result data (null if failed). Must be freed with `unpdf_free_string`.
-    pub data: *mut c_char,
-    /// Error message (null if succeeded). Must be freed with `unpdf_free_string`.
-    pub error: *mut c_char,
+// Thread-local storage for the last error message.
+thread_local! {
+    static LAST_ERROR: RefCell<Option<CString>> = const { RefCell::new(None) };
 }
 
-impl UnpdfResult {
-    fn success(data: String) -> Self {
-        Self {
-            success: true,
-            data: CString::new(data).unwrap_or_default().into_raw(),
-            error: ptr::null_mut(),
-        }
-    }
-
-    fn error(message: String) -> Self {
-        Self {
-            success: false,
-            data: ptr::null_mut(),
-            error: CString::new(message).unwrap_or_default().into_raw(),
-        }
-    }
-}
-
-/// Convert a PDF file to Markdown.
-///
-/// # Safety
-///
-/// The `path` must be a valid null-terminated UTF-8 string.
-/// The returned result must be freed with `unpdf_free_result`.
-#[no_mangle]
-pub unsafe extern "C" fn unpdf_to_markdown(path: *const c_char) -> UnpdfResult {
-    if path.is_null() {
-        return UnpdfResult::error("Path cannot be null".to_string());
-    }
-
-    let path_str = match CStr::from_ptr(path).to_str() {
-        Ok(s) => s,
-        Err(_) => return UnpdfResult::error("Invalid UTF-8 path".to_string()),
-    };
-
-    match to_markdown_internal(Path::new(path_str)) {
-        Ok(markdown) => UnpdfResult::success(markdown),
-        Err(e) => UnpdfResult::error(e.to_string()),
-    }
-}
-
-fn to_markdown_internal(path: &Path) -> crate::Result<String> {
-    let options = ParseOptions::new().lenient();
-    let doc = parse_file_with_options(path, options)?;
-    let render_options = RenderOptions::default();
-    render::to_markdown(&doc, &render_options)
-}
-
-/// Convert a PDF file to plain text.
-///
-/// # Safety
-///
-/// The `path` must be a valid null-terminated UTF-8 string.
-/// The returned result must be freed with `unpdf_free_result`.
-#[no_mangle]
-pub unsafe extern "C" fn unpdf_to_text(path: *const c_char) -> UnpdfResult {
-    if path.is_null() {
-        return UnpdfResult::error("Path cannot be null".to_string());
-    }
-
-    let path_str = match CStr::from_ptr(path).to_str() {
-        Ok(s) => s,
-        Err(_) => return UnpdfResult::error("Invalid UTF-8 path".to_string()),
-    };
-
-    match to_text_internal(Path::new(path_str)) {
-        Ok(text) => UnpdfResult::success(text),
-        Err(e) => UnpdfResult::error(e.to_string()),
-    }
-}
-
-fn to_text_internal(path: &Path) -> crate::Result<String> {
-    let options = ParseOptions::new().lenient();
-    let doc = parse_file_with_options(path, options)?;
-    let render_options = RenderOptions::default();
-    render::to_text(&doc, &render_options)
-}
-
-/// Convert a PDF file to JSON.
-///
-/// # Safety
-///
-/// The `path` must be a valid null-terminated UTF-8 string.
-/// The returned result must be freed with `unpdf_free_result`.
-#[no_mangle]
-pub unsafe extern "C" fn unpdf_to_json(path: *const c_char, pretty: bool) -> UnpdfResult {
-    if path.is_null() {
-        return UnpdfResult::error("Path cannot be null".to_string());
-    }
-
-    let path_str = match CStr::from_ptr(path).to_str() {
-        Ok(s) => s,
-        Err(_) => return UnpdfResult::error("Invalid UTF-8 path".to_string()),
-    };
-
-    let format = if pretty {
-        JsonFormat::Pretty
-    } else {
-        JsonFormat::Compact
-    };
-
-    match to_json_internal(Path::new(path_str), format) {
-        Ok(json) => UnpdfResult::success(json),
-        Err(e) => UnpdfResult::error(e.to_string()),
-    }
-}
-
-fn to_json_internal(path: &Path, format: JsonFormat) -> crate::Result<String> {
-    let options = ParseOptions::new().lenient();
-    let doc = parse_file_with_options(path, options)?;
-    render::to_json(&doc, format)
-}
-
-/// Get document information as JSON.
-///
-/// # Safety
-///
-/// The `path` must be a valid null-terminated UTF-8 string.
-/// The returned result must be freed with `unpdf_free_result`.
-#[no_mangle]
-pub unsafe extern "C" fn unpdf_get_info(path: *const c_char) -> UnpdfResult {
-    if path.is_null() {
-        return UnpdfResult::error("Path cannot be null".to_string());
-    }
-
-    let path_str = match CStr::from_ptr(path).to_str() {
-        Ok(s) => s,
-        Err(_) => return UnpdfResult::error("Invalid UTF-8 path".to_string()),
-    };
-
-    match get_info_internal(Path::new(path_str)) {
-        Ok(info) => UnpdfResult::success(info),
-        Err(e) => UnpdfResult::error(e.to_string()),
-    }
-}
-
-fn get_info_internal(path: &Path) -> crate::Result<String> {
-    let options = ParseOptions::new().lenient();
-    let doc = parse_file_with_options(path, options)?;
-    let info = serde_json::json!({
-        "title": doc.metadata.title,
-        "author": doc.metadata.author,
-        "subject": doc.metadata.subject,
-        "keywords": doc.metadata.keywords,
-        "creator": doc.metadata.creator,
-        "producer": doc.metadata.producer,
-        "created": doc.metadata.created.map(|d| d.to_rfc3339()),
-        "modified": doc.metadata.modified.map(|d| d.to_rfc3339()),
-        "pdf_version": doc.metadata.pdf_version,
-        "page_count": doc.metadata.page_count,
-        "encrypted": doc.metadata.encrypted,
+/// Set the last error message.
+fn set_last_error(msg: &str) {
+    LAST_ERROR.with(|e| {
+        *e.borrow_mut() = CString::new(msg).ok();
     });
-    Ok(serde_json::to_string_pretty(&info).unwrap_or_default())
 }
 
-/// Get the page count of a PDF file.
+/// Clear the last error message.
+fn clear_last_error() {
+    LAST_ERROR.with(|e| {
+        *e.borrow_mut() = None;
+    });
+}
+
+/// Opaque handle to a parsed document.
+#[repr(C)]
+pub struct UnpdfDocument {
+    inner: Document,
+}
+
+/// Flags for markdown rendering.
+pub const UNPDF_FLAG_FRONTMATTER: u32 = 1;
+pub const UNPDF_FLAG_ESCAPE_SPECIAL: u32 = 2;
+pub const UNPDF_FLAG_PARAGRAPH_SPACING: u32 = 4;
+
+/// JSON format options.
+pub const UNPDF_JSON_PRETTY: c_int = 0;
+pub const UNPDF_JSON_COMPACT: c_int = 1;
+
+/// Get the version of the library.
 ///
 /// # Safety
 ///
-/// The `path` must be a valid null-terminated UTF-8 string.
-/// Returns -1 on error.
+/// Returns a static string that must not be freed.
 #[no_mangle]
-pub unsafe extern "C" fn unpdf_get_page_count(path: *const c_char) -> i32 {
+pub extern "C" fn unpdf_version() -> *const c_char {
+    concat!(env!("CARGO_PKG_VERSION"), "\0").as_ptr() as *const c_char
+}
+
+/// Get the last error message.
+///
+/// # Safety
+///
+/// Returns a pointer to a thread-local error string. The pointer is valid until
+/// the next call to any unpdf function on the same thread.
+#[no_mangle]
+pub extern "C" fn unpdf_last_error() -> *const c_char {
+    LAST_ERROR.with(|e| {
+        e.borrow()
+            .as_ref()
+            .map(|s| s.as_ptr())
+            .unwrap_or(ptr::null())
+    })
+}
+
+/// Parse a document from a file path.
+///
+/// # Safety
+///
+/// - `path` must be a valid null-terminated UTF-8 string.
+/// - Returns null on error. Use `unpdf_last_error` to get the error message.
+/// - The returned handle must be freed with `unpdf_free_document`.
+#[no_mangle]
+pub unsafe extern "C" fn unpdf_parse_file(path: *const c_char) -> *mut UnpdfDocument {
+    clear_last_error();
+
     if path.is_null() {
+        set_last_error("path is null");
+        return ptr::null_mut();
+    }
+
+    let result = catch_unwind(|| {
+        let path_str = CStr::from_ptr(path).to_str().map_err(|e| e.to_string())?;
+
+        crate::parse_file(path_str)
+            .map(|doc| Box::into_raw(Box::new(UnpdfDocument { inner: doc })))
+            .map_err(|e| e.to_string())
+    });
+
+    match result {
+        Ok(Ok(doc)) => doc,
+        Ok(Err(e)) => {
+            set_last_error(&e);
+            ptr::null_mut()
+        }
+        Err(_) => {
+            set_last_error("panic occurred during parsing");
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Parse a document from a byte buffer.
+///
+/// # Safety
+///
+/// - `data` must be a valid pointer to a byte buffer of at least `len` bytes.
+/// - Returns null on error. Use `unpdf_last_error` to get the error message.
+/// - The returned handle must be freed with `unpdf_free_document`.
+#[no_mangle]
+pub unsafe extern "C" fn unpdf_parse_bytes(data: *const u8, len: usize) -> *mut UnpdfDocument {
+    clear_last_error();
+
+    if data.is_null() {
+        set_last_error("data is null");
+        return ptr::null_mut();
+    }
+
+    let result = catch_unwind(|| {
+        let bytes = std::slice::from_raw_parts(data, len);
+
+        crate::parse_bytes(bytes)
+            .map(|doc| Box::into_raw(Box::new(UnpdfDocument { inner: doc })))
+            .map_err(|e| e.to_string())
+    });
+
+    match result {
+        Ok(Ok(doc)) => doc,
+        Ok(Err(e)) => {
+            set_last_error(&e);
+            ptr::null_mut()
+        }
+        Err(_) => {
+            set_last_error("panic occurred during parsing");
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Free a document handle.
+///
+/// # Safety
+///
+/// - `doc` must be a valid pointer returned by `unpdf_parse_file` or `unpdf_parse_bytes`.
+/// - After calling this function, the handle is invalid and must not be used.
+#[no_mangle]
+pub unsafe extern "C" fn unpdf_free_document(doc: *mut UnpdfDocument) {
+    if !doc.is_null() {
+        let _ = Box::from_raw(doc);
+    }
+}
+
+/// Convert a document to Markdown.
+///
+/// # Safety
+///
+/// - `doc` must be a valid document handle.
+/// - `flags` is a bitwise OR of `UNPDF_FLAG_*` constants.
+/// - Returns null on error. Use `unpdf_last_error` to get the error message.
+/// - The returned string must be freed with `unpdf_free_string`.
+#[no_mangle]
+pub unsafe extern "C" fn unpdf_to_markdown(
+    doc: *const UnpdfDocument,
+    flags: u32,
+) -> *mut c_char {
+    clear_last_error();
+
+    if doc.is_null() {
+        set_last_error("document is null");
+        return ptr::null_mut();
+    }
+
+    let result = catch_unwind(|| {
+        let document = &(*doc).inner;
+
+        let mut options = RenderOptions::new();
+
+        if flags & UNPDF_FLAG_FRONTMATTER != 0 {
+            options.include_frontmatter = true;
+        }
+        if flags & UNPDF_FLAG_ESCAPE_SPECIAL != 0 {
+            options.escape_special_chars = true;
+        }
+        // PARAGRAPH_SPACING: no direct field in unpdf's RenderOptions,
+        // treat as no-op for now
+
+        crate::render::to_markdown(document, &options).map_err(|e| e.to_string())
+    });
+
+    match result {
+        Ok(Ok(md)) => match CString::new(md) {
+            Ok(s) => s.into_raw(),
+            Err(_) => {
+                set_last_error("output contains null byte");
+                ptr::null_mut()
+            }
+        },
+        Ok(Err(e)) => {
+            set_last_error(&e);
+            ptr::null_mut()
+        }
+        Err(_) => {
+            set_last_error("panic occurred during rendering");
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Convert a document to plain text.
+///
+/// # Safety
+///
+/// - `doc` must be a valid document handle.
+/// - Returns null on error. Use `unpdf_last_error` to get the error message.
+/// - The returned string must be freed with `unpdf_free_string`.
+#[no_mangle]
+pub unsafe extern "C" fn unpdf_to_text(doc: *const UnpdfDocument) -> *mut c_char {
+    clear_last_error();
+
+    if doc.is_null() {
+        set_last_error("document is null");
+        return ptr::null_mut();
+    }
+
+    let result = catch_unwind(|| {
+        let document = &(*doc).inner;
+        let options = RenderOptions::default();
+        crate::render::to_text(document, &options).map_err(|e| e.to_string())
+    });
+
+    match result {
+        Ok(Ok(text)) => match CString::new(text) {
+            Ok(s) => s.into_raw(),
+            Err(_) => {
+                set_last_error("output contains null byte");
+                ptr::null_mut()
+            }
+        },
+        Ok(Err(e)) => {
+            set_last_error(&e);
+            ptr::null_mut()
+        }
+        Err(_) => {
+            set_last_error("panic occurred during rendering");
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Convert a document to JSON.
+///
+/// # Safety
+///
+/// - `doc` must be a valid document handle.
+/// - `format` is one of `UNPDF_JSON_PRETTY` or `UNPDF_JSON_COMPACT`.
+/// - Returns null on error. Use `unpdf_last_error` to get the error message.
+/// - The returned string must be freed with `unpdf_free_string`.
+#[no_mangle]
+pub unsafe extern "C" fn unpdf_to_json(
+    doc: *const UnpdfDocument,
+    format: c_int,
+) -> *mut c_char {
+    clear_last_error();
+
+    if doc.is_null() {
+        set_last_error("document is null");
+        return ptr::null_mut();
+    }
+
+    let result = catch_unwind(|| {
+        let document = &(*doc).inner;
+        let json_format = if format == UNPDF_JSON_COMPACT {
+            JsonFormat::Compact
+        } else {
+            JsonFormat::Pretty
+        };
+        crate::render::to_json(document, json_format).map_err(|e| e.to_string())
+    });
+
+    match result {
+        Ok(Ok(json)) => match CString::new(json) {
+            Ok(s) => s.into_raw(),
+            Err(_) => {
+                set_last_error("output contains null byte");
+                ptr::null_mut()
+            }
+        },
+        Ok(Err(e)) => {
+            set_last_error(&e);
+            ptr::null_mut()
+        }
+        Err(_) => {
+            set_last_error("panic occurred during rendering");
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Get the plain text content of a document.
+///
+/// # Safety
+///
+/// - `doc` must be a valid document handle.
+/// - Returns null on error.
+/// - The returned string must be freed with `unpdf_free_string`.
+#[no_mangle]
+pub unsafe extern "C" fn unpdf_plain_text(doc: *const UnpdfDocument) -> *mut c_char {
+    clear_last_error();
+
+    if doc.is_null() {
+        set_last_error("document is null");
+        return ptr::null_mut();
+    }
+
+    let result = catch_unwind(|| {
+        let document = &(*doc).inner;
+        document.plain_text()
+    });
+
+    match result {
+        Ok(text) => match CString::new(text) {
+            Ok(s) => s.into_raw(),
+            Err(_) => {
+                set_last_error("output contains null byte");
+                ptr::null_mut()
+            }
+        },
+        Err(_) => {
+            set_last_error("panic occurred");
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Get the number of sections (pages) in a document.
+///
+/// # Safety
+///
+/// - `doc` must be a valid document handle.
+/// - Returns -1 on error.
+#[no_mangle]
+pub unsafe extern "C" fn unpdf_section_count(doc: *const UnpdfDocument) -> c_int {
+    if doc.is_null() {
+        set_last_error("document is null");
         return -1;
     }
 
-    let path_str = match CStr::from_ptr(path).to_str() {
-        Ok(s) => s,
-        Err(_) => return -1,
-    };
-
-    let options = ParseOptions::new().lenient();
-    match parse_file_with_options(path_str, options) {
-        Ok(doc) => doc.metadata.page_count as i32,
-        Err(_) => -1,
-    }
-}
-
-/// Check if a file is a valid PDF.
-///
-/// # Safety
-///
-/// The `path` must be a valid null-terminated UTF-8 string.
-#[no_mangle]
-pub unsafe extern "C" fn unpdf_is_pdf(path: *const c_char) -> bool {
-    if path.is_null() {
-        return false;
-    }
-
-    let path_str = match CStr::from_ptr(path).to_str() {
-        Ok(s) => s,
-        Err(_) => return false,
-    };
-
-    crate::detect::detect_format_from_path(Path::new(path_str)).is_ok()
-}
-
-/// Free a result returned by any unpdf function.
-///
-/// # Safety
-///
-/// The `result` must have been returned by an unpdf function.
-/// This function should only be called once per result.
-#[no_mangle]
-pub unsafe extern "C" fn unpdf_free_result(result: UnpdfResult) {
-    if !result.data.is_null() {
-        drop(CString::from_raw(result.data));
-    }
-    if !result.error.is_null() {
-        drop(CString::from_raw(result.error));
-    }
-}
-
-/// Free a string allocated by unpdf.
-///
-/// # Safety
-///
-/// The `ptr` must have been allocated by unpdf.
-/// This function should only be called once per pointer.
-#[no_mangle]
-pub unsafe extern "C" fn unpdf_free_string(ptr: *mut c_char) {
-    if !ptr.is_null() {
-        drop(CString::from_raw(ptr));
-    }
-}
-
-/// Get the version of the unpdf library.
-///
-/// # Safety
-///
-/// The returned string is statically allocated and should not be freed.
-#[no_mangle]
-pub extern "C" fn unpdf_version() -> *const c_char {
-    static VERSION: &[u8] = concat!(env!("CARGO_PKG_VERSION"), "\0").as_bytes();
-    VERSION.as_ptr() as *const c_char
-}
-
-/// Options for PDF conversion via FFI.
-#[repr(C)]
-pub struct UnpdfOptions {
-    /// Enable image extraction.
-    pub extract_images: bool,
-    /// Directory to save extracted images (null = don't save to disk).
-    pub image_dir: *const c_char,
-    /// Include YAML frontmatter in output.
-    pub include_frontmatter: bool,
-    /// Enable lenient parsing mode.
-    pub lenient: bool,
-}
-
-impl Default for UnpdfOptions {
-    fn default() -> Self {
-        Self {
-            extract_images: false,
-            image_dir: ptr::null(),
-            include_frontmatter: false,
-            lenient: true,
+    match catch_unwind(|| (*doc).inner.pages.len() as c_int) {
+        Ok(count) => count,
+        Err(_) => {
+            set_last_error("panic occurred");
+            -1
         }
     }
 }
 
-/// Convert a PDF file to Markdown with options.
+/// Get the number of resources in a document.
 ///
 /// # Safety
 ///
-/// The `path` must be a valid null-terminated UTF-8 string.
-/// The `options.image_dir` must be null or a valid null-terminated UTF-8 string.
-/// The returned result must be freed with `unpdf_free_result`.
+/// - `doc` must be a valid document handle.
+/// - Returns -1 on error.
 #[no_mangle]
-pub unsafe extern "C" fn unpdf_to_markdown_with_options(
-    path: *const c_char,
-    options: UnpdfOptions,
-) -> UnpdfResult {
-    if path.is_null() {
-        return UnpdfResult::error("Path cannot be null".to_string());
+pub unsafe extern "C" fn unpdf_resource_count(doc: *const UnpdfDocument) -> c_int {
+    if doc.is_null() {
+        set_last_error("document is null");
+        return -1;
     }
 
-    let path_str = match CStr::from_ptr(path).to_str() {
-        Ok(s) => s,
-        Err(_) => return UnpdfResult::error("Invalid UTF-8 path".to_string()),
-    };
-
-    let image_dir = if options.image_dir.is_null() {
-        None
-    } else {
-        match CStr::from_ptr(options.image_dir).to_str() {
-            Ok(s) => Some(s),
-            Err(_) => return UnpdfResult::error("Invalid UTF-8 image_dir".to_string()),
+    match catch_unwind(|| (*doc).inner.resources.len() as c_int) {
+        Ok(count) => count,
+        Err(_) => {
+            set_last_error("panic occurred");
+            -1
         }
-    };
-
-    match to_markdown_with_options_internal(Path::new(path_str), &options, image_dir) {
-        Ok(markdown) => UnpdfResult::success(markdown),
-        Err(e) => UnpdfResult::error(e.to_string()),
     }
 }
 
-fn to_markdown_with_options_internal(
-    path: &Path,
-    options: &UnpdfOptions,
-    image_dir: Option<&str>,
-) -> crate::Result<String> {
-    let mut parse_opts = ParseOptions::new();
-    if options.lenient {
-        parse_opts = parse_opts.lenient();
-    }
-    if options.extract_images {
-        parse_opts = parse_opts.with_resources(true);
-    }
-
-    let doc = parse_file_with_options(path, parse_opts)?;
-
-    let mut render_opts = RenderOptions::default();
-    if options.include_frontmatter {
-        render_opts = render_opts.with_frontmatter(true);
-    }
-    if let Some(dir) = image_dir {
-        render_opts = render_opts.with_image_dir(dir);
-    }
-
-    render::to_markdown(&doc, &render_opts)
-}
-
-/// Extract images from a PDF file.
-///
-/// Returns a JSON array of extracted image information.
+/// Get the document title.
 ///
 /// # Safety
 ///
-/// The `path` must be a valid null-terminated UTF-8 string.
-/// The `output_dir` must be a valid null-terminated UTF-8 string.
-/// The returned result must be freed with `unpdf_free_result`.
+/// - `doc` must be a valid document handle.
+/// - Returns null if no title is set.
+/// - The returned string must be freed with `unpdf_free_string`.
 #[no_mangle]
-pub unsafe extern "C" fn unpdf_extract_images(
-    path: *const c_char,
-    output_dir: *const c_char,
-) -> UnpdfResult {
-    if path.is_null() {
-        return UnpdfResult::error("Path cannot be null".to_string());
-    }
-    if output_dir.is_null() {
-        return UnpdfResult::error("Output directory cannot be null".to_string());
+pub unsafe extern "C" fn unpdf_get_title(doc: *const UnpdfDocument) -> *mut c_char {
+    clear_last_error();
+
+    if doc.is_null() {
+        set_last_error("document is null");
+        return ptr::null_mut();
     }
 
-    let path_str = match CStr::from_ptr(path).to_str() {
-        Ok(s) => s,
-        Err(_) => return UnpdfResult::error("Invalid UTF-8 path".to_string()),
-    };
+    let result = catch_unwind(|| {
+        (*doc)
+            .inner
+            .metadata
+            .title
+            .as_ref()
+            .and_then(|t| CString::new(t.as_str()).ok())
+    });
 
-    let output_dir_str = match CStr::from_ptr(output_dir).to_str() {
-        Ok(s) => s,
-        Err(_) => return UnpdfResult::error("Invalid UTF-8 output_dir".to_string()),
-    };
-
-    match extract_images_internal(Path::new(path_str), Path::new(output_dir_str)) {
-        Ok(json) => UnpdfResult::success(json),
-        Err(e) => UnpdfResult::error(e.to_string()),
+    match result {
+        Ok(Some(s)) => s.into_raw(),
+        Ok(None) => ptr::null_mut(),
+        Err(_) => {
+            set_last_error("panic occurred");
+            ptr::null_mut()
+        }
     }
 }
 
-fn extract_images_internal(path: &Path, output_dir: &Path) -> crate::Result<String> {
-    use std::fs;
+/// Get the document author.
+///
+/// # Safety
+///
+/// - `doc` must be a valid document handle.
+/// - Returns null if no author is set.
+/// - The returned string must be freed with `unpdf_free_string`.
+#[no_mangle]
+pub unsafe extern "C" fn unpdf_get_author(doc: *const UnpdfDocument) -> *mut c_char {
+    clear_last_error();
 
-    // Create output directory if it doesn't exist
-    if !output_dir.exists() {
-        fs::create_dir_all(output_dir).map_err(|e| {
-            crate::Error::ImageExtract(format!("Failed to create directory: {}", e))
-        })?;
+    if doc.is_null() {
+        set_last_error("document is null");
+        return ptr::null_mut();
     }
 
-    let parse_opts = ParseOptions::new().lenient().with_resources(true);
-    let doc = parse_file_with_options(path, parse_opts)?;
+    let result = catch_unwind(|| {
+        (*doc)
+            .inner
+            .metadata
+            .author
+            .as_ref()
+            .and_then(|a| CString::new(a.as_str()).ok())
+    });
 
-    let mut extracted: Vec<serde_json::Value> = Vec::new();
-
-    for (id, resource) in &doc.resources {
-        if resource.is_image() {
-            let ext = match resource.mime_type.as_str() {
-                "image/jpeg" => "jpg",
-                "image/png" => "png",
-                "image/jp2" => "jp2",
-                "image/gif" => "gif",
-                "image/tiff" => "tiff",
-                _ => "bin",
-            };
-
-            let filename = format!("{}.{}", id, ext);
-            let filepath = output_dir.join(&filename);
-
-            fs::write(&filepath, &resource.data).map_err(|e| {
-                crate::Error::ImageExtract(format!("Failed to write {}: {}", filename, e))
-            })?;
-
-            extracted.push(serde_json::json!({
-                "id": id,
-                "filename": filename,
-                "path": filepath.to_string_lossy(),
-                "mime_type": resource.mime_type,
-                "width": resource.width,
-                "height": resource.height,
-                "size_bytes": resource.data.len(),
-            }));
+    match result {
+        Ok(Some(s)) => s.into_raw(),
+        Ok(None) => ptr::null_mut(),
+        Err(_) => {
+            set_last_error("panic occurred");
+            ptr::null_mut()
         }
     }
+}
 
-    Ok(serde_json::to_string(&extracted).unwrap_or_else(|_| "[]".to_string()))
+/// Get all resource IDs as a JSON array.
+///
+/// # Safety
+///
+/// - `doc` must be a valid document handle.
+/// - Returns null on error. Use `unpdf_last_error` to get the error message.
+/// - The returned string must be freed with `unpdf_free_string`.
+#[no_mangle]
+pub unsafe extern "C" fn unpdf_get_resource_ids(doc: *const UnpdfDocument) -> *mut c_char {
+    clear_last_error();
+
+    if doc.is_null() {
+        set_last_error("document is null");
+        return ptr::null_mut();
+    }
+
+    let result = catch_unwind(|| {
+        let document = &(*doc).inner;
+        let ids: Vec<&String> = document.resources.keys().collect();
+        serde_json::to_string(&ids).map_err(|e| e.to_string())
+    });
+
+    match result {
+        Ok(Ok(json)) => match CString::new(json) {
+            Ok(s) => s.into_raw(),
+            Err(_) => {
+                set_last_error("output contains null byte");
+                ptr::null_mut()
+            }
+        },
+        Ok(Err(e)) => {
+            set_last_error(&e);
+            ptr::null_mut()
+        }
+        Err(_) => {
+            set_last_error("panic occurred");
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Get resource metadata as JSON (without binary data).
+///
+/// # Safety
+///
+/// - `doc` must be a valid document handle.
+/// - `resource_id` must be a valid null-terminated UTF-8 string.
+/// - Returns null if resource not found or on error.
+/// - The returned string must be freed with `unpdf_free_string`.
+#[no_mangle]
+pub unsafe extern "C" fn unpdf_get_resource_info(
+    doc: *const UnpdfDocument,
+    resource_id: *const c_char,
+) -> *mut c_char {
+    clear_last_error();
+
+    if doc.is_null() {
+        set_last_error("document is null");
+        return ptr::null_mut();
+    }
+
+    if resource_id.is_null() {
+        set_last_error("resource_id is null");
+        return ptr::null_mut();
+    }
+
+    let result = catch_unwind(|| {
+        let id_str = CStr::from_ptr(resource_id)
+            .to_str()
+            .map_err(|e| e.to_string())?;
+
+        let document = &(*doc).inner;
+
+        match document.resources.get(id_str) {
+            Some(resource) => {
+                let info = serde_json::json!({
+                    "id": id_str,
+                    "type": resource.resource_type,
+                    "filename": resource.filename,
+                    "mime_type": resource.mime_type,
+                    "size": resource.size(),
+                    "width": resource.width,
+                    "height": resource.height,
+                });
+                serde_json::to_string(&info).map_err(|e| e.to_string())
+            }
+            None => Err(format!("resource not found: {}", id_str)),
+        }
+    });
+
+    match result {
+        Ok(Ok(json)) => match CString::new(json) {
+            Ok(s) => s.into_raw(),
+            Err(_) => {
+                set_last_error("output contains null byte");
+                ptr::null_mut()
+            }
+        },
+        Ok(Err(e)) => {
+            set_last_error(&e);
+            ptr::null_mut()
+        }
+        Err(_) => {
+            set_last_error("panic occurred");
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Get resource binary data.
+///
+/// # Safety
+///
+/// - `doc` must be a valid document handle.
+/// - `resource_id` must be a valid null-terminated UTF-8 string.
+/// - `out_len` must be a valid pointer to receive the data length.
+/// - Returns null if resource not found or on error.
+/// - The returned pointer must be freed with `unpdf_free_bytes`.
+#[no_mangle]
+pub unsafe extern "C" fn unpdf_get_resource_data(
+    doc: *const UnpdfDocument,
+    resource_id: *const c_char,
+    out_len: *mut usize,
+) -> *mut u8 {
+    clear_last_error();
+
+    if doc.is_null() {
+        set_last_error("document is null");
+        return ptr::null_mut();
+    }
+
+    if resource_id.is_null() {
+        set_last_error("resource_id is null");
+        return ptr::null_mut();
+    }
+
+    if out_len.is_null() {
+        set_last_error("out_len is null");
+        return ptr::null_mut();
+    }
+
+    let result = catch_unwind(|| {
+        let id_str = CStr::from_ptr(resource_id)
+            .to_str()
+            .map_err(|e| e.to_string())?;
+
+        let document = &(*doc).inner;
+
+        match document.resources.get(id_str) {
+            Some(resource) => {
+                let data = resource.data.clone();
+                let len = data.len();
+                let boxed = data.into_boxed_slice();
+                let ptr = Box::into_raw(boxed) as *mut u8;
+                Ok((ptr, len))
+            }
+            None => Err(format!("resource not found: {}", id_str)),
+        }
+    });
+
+    match result {
+        Ok(Ok((ptr, len))) => {
+            *out_len = len;
+            ptr
+        }
+        Ok(Err(e)) => {
+            set_last_error(&e);
+            *out_len = 0;
+            ptr::null_mut()
+        }
+        Err(_) => {
+            set_last_error("panic occurred");
+            *out_len = 0;
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Free a string allocated by this library.
+///
+/// # Safety
+///
+/// - `s` must be a pointer returned by an unpdf function, or null.
+/// - After calling this function, the pointer is invalid and must not be used.
+#[no_mangle]
+pub unsafe extern "C" fn unpdf_free_string(s: *mut c_char) {
+    if !s.is_null() {
+        let _ = CString::from_raw(s);
+    }
+}
+
+/// Free binary data allocated by `unpdf_get_resource_data`.
+///
+/// # Safety
+///
+/// - `data` must be a pointer returned by `unpdf_get_resource_data`, or null.
+/// - `len` must be the length returned by `unpdf_get_resource_data`.
+/// - After calling this function, the pointer is invalid and must not be used.
+#[no_mangle]
+pub unsafe extern "C" fn unpdf_free_bytes(data: *mut u8, len: usize) {
+    if !data.is_null() && len > 0 {
+        let _ = Box::from_raw(std::ptr::slice_from_raw_parts_mut(data, len));
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::CString;
+    use std::path::Path;
 
     #[test]
     fn test_version() {
         let version = unpdf_version();
         assert!(!version.is_null());
+        let version_str = unsafe { CStr::from_ptr(version) }.to_str().unwrap();
+        assert!(!version_str.is_empty());
     }
 
     #[test]
-    fn test_null_path() {
-        unsafe {
-            let result = unpdf_to_markdown(ptr::null());
-            assert!(!result.success);
-            assert!(!result.error.is_null());
-            unpdf_free_result(result);
+    fn test_parse_null_path() {
+        let doc = unsafe { unpdf_parse_file(ptr::null()) };
+        assert!(doc.is_null());
+
+        let error = unpdf_last_error();
+        assert!(!error.is_null());
+    }
+
+    #[test]
+    fn test_parse_invalid_path() {
+        let path = CString::new("nonexistent.pdf").unwrap();
+        let doc = unsafe { unpdf_parse_file(path.as_ptr()) };
+        assert!(doc.is_null());
+
+        let error = unpdf_last_error();
+        assert!(!error.is_null());
+    }
+
+    #[test]
+    fn test_parse_and_convert() {
+        let path = "test-files/sample.pdf";
+        if !Path::new(path).exists() {
+            return;
         }
+
+        let path_cstr = CString::new(path).unwrap();
+        let doc = unsafe { unpdf_parse_file(path_cstr.as_ptr()) };
+        assert!(!doc.is_null());
+
+        // Test markdown conversion
+        let md = unsafe { unpdf_to_markdown(doc, 0) };
+        assert!(!md.is_null());
+        unsafe { unpdf_free_string(md) };
+
+        // Test text conversion
+        let text = unsafe { unpdf_to_text(doc) };
+        assert!(!text.is_null());
+        unsafe { unpdf_free_string(text) };
+
+        // Test JSON conversion
+        let json = unsafe { unpdf_to_json(doc, UNPDF_JSON_PRETTY) };
+        assert!(!json.is_null());
+        unsafe { unpdf_free_string(json) };
+
+        // Test section count
+        let count = unsafe { unpdf_section_count(doc) };
+        assert!(count >= 0);
+
+        // Free document
+        unsafe { unpdf_free_document(doc) };
     }
 
     #[test]
-    fn test_is_pdf_null() {
-        unsafe {
-            assert!(!unpdf_is_pdf(ptr::null()));
-        }
+    fn test_null_document_operations() {
+        let md = unsafe { unpdf_to_markdown(ptr::null(), 0) };
+        assert!(md.is_null());
+
+        let text = unsafe { unpdf_to_text(ptr::null()) };
+        assert!(text.is_null());
+
+        let json = unsafe { unpdf_to_json(ptr::null(), 0) };
+        assert!(json.is_null());
+
+        let count = unsafe { unpdf_section_count(ptr::null()) };
+        assert_eq!(count, -1);
+
+        let res_count = unsafe { unpdf_resource_count(ptr::null()) };
+        assert_eq!(res_count, -1);
     }
 
     #[test]
-    fn test_get_page_count_null() {
+    fn test_free_null() {
+        // Should not crash
         unsafe {
-            assert_eq!(unpdf_get_page_count(ptr::null()), -1);
+            unpdf_free_document(ptr::null_mut());
+            unpdf_free_string(ptr::null_mut());
         }
     }
 }
