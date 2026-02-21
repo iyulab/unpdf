@@ -52,10 +52,7 @@ fn create_test_pdf(page_count: usize) -> Vec<u8> {
 
     // Cross-reference table (simplified)
     let xref_offset = content.len();
-    content.push_str(&format!(
-        "xref\n0 {}\n",
-        next_obj
-    ));
+    content.push_str(&format!("xref\n0 {}\n", next_obj));
     content.push_str("0000000000 65535 f \n");
     // Simplified: just write placeholder offsets
     for _ in 1..next_obj {
