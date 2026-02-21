@@ -1,6 +1,6 @@
 [package]
 name = "unpdf-cli"
-version = "0.1.10"
+version = "0.2.0"
 edition = "2021"
 authors = ["iyulab"]
 license = "MIT"
@@ -15,7 +15,7 @@ name = "unpdf"
 path = "src/main.rs"
 
 [dependencies]
-unpdf = { version = "0.1", path = ".." }
+unpdf = { version = "0.2", path = ".." }
 
 # CLI argument parsing
 clap = { version = "4.5", features = ["derive", "env"] }

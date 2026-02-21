@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFrameworks>net8.0;net9.0</TargetFrameworks>
+    <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
@@ -10,7 +10,7 @@
 
     <!-- Package metadata -->
     <PackageId>Unpdf</PackageId>
-    <Version>0.1.10</Version>
+    <Version>0.2.0</Version>
     <Authors>iyulab</Authors>
     <Description>High-performance PDF content extraction to Markdown, text, and JSON</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
@@ -32,6 +32,7 @@
   <ItemGroup>
     <None Include="runtimes\win-x64\native\unpdf.dll" Pack="true" PackagePath="runtimes\win-x64\native\" Condition="Exists('runtimes\win-x64\native\unpdf.dll')" />
     <None Include="runtimes\linux-x64\native\libunpdf.so" Pack="true" PackagePath="runtimes\linux-x64\native\" Condition="Exists('runtimes\linux-x64\native\libunpdf.so')" />
+    <None Include="runtimes\linux-musl-x64\native\libunpdf.so" Pack="true" PackagePath="runtimes\linux-musl-x64\native\" Condition="Exists('runtimes\linux-musl-x64\native\libunpdf.so')" />
     <None Include="runtimes\osx-x64\native\libunpdf.dylib" Pack="true" PackagePath="runtimes\osx-x64\native\" Condition="Exists('runtimes\osx-x64\native\libunpdf.dylib')" />
     <None Include="runtimes\osx-arm64\native\libunpdf.dylib" Pack="true" PackagePath="runtimes\osx-arm64\native\" Condition="Exists('runtimes\osx-arm64\native\libunpdf.dylib')" />
   </ItemGroup>
