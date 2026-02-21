@@ -38,3 +38,9 @@ semver = "1.0"
 # Logging
 env_logger = "0.11"
 log = "0.4"
+
+# musl 타겟에서 openssl-sys가 OpenSSL을 찾지 못하는 문제 해결
+# self_update -> reqwest -> native-tls -> openssl-sys 체인에서 발생
+# vendored 피처로 소스에서 직접 빌드 (musl-gcc 사용)
+[target.'cfg(target_env = "musl")'.dependencies]
+openssl = { version = "0.10", features = ["vendored"] }
