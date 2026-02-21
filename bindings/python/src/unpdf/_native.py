@@ -5,6 +5,7 @@ Native library loading for unpdf.
 import ctypes
 import os
 import platform
+import subprocess
 import sys
 from ctypes import c_bool, c_char_p, c_int, Structure, POINTER
 
@@ -16,6 +17,25 @@ class UnpdfResult(Structure):
         ("data", c_char_p),
         ("error", c_char_p),
     ]
+
+
+def _is_musl() -> bool:
+    """Detect if the current Linux system uses musl libc."""
+    try:
+        with open("/etc/os-release") as f:
+            if "alpine" in f.read().lower():
+                return True
+    except OSError:
+        pass
+    try:
+        result = subprocess.run(
+            ["ldd", "--version"], capture_output=True, text=True, timeout=5
+        )
+        if "musl" in (result.stdout + result.stderr).lower():
+            return True
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return False
 
 
 def _get_lib_path() -> str:
@@ -35,7 +55,7 @@ def _get_lib_path() -> str:
             runtime = "osx-x64"
     elif system == "linux":
         lib_name = "libunpdf.so"
-        runtime = "linux-x64"
+        runtime = "linux-musl-x64" if _is_musl() else "linux-x64"
     else:
         raise OSError(f"Unsupported platform: {system}")
 
