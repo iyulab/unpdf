@@ -2,10 +2,10 @@
 High-level Python API for unpdf.
 """
 
-import json
+import ctypes
 from typing import Any
 
-from ._native import get_library, UnpdfResult
+from ._native import get_library, UNPDF_JSON_PRETTY, UNPDF_JSON_COMPACT
 
 
 def _encode_path(path: str) -> bytes:
@@ -13,30 +13,29 @@ def _encode_path(path: str) -> bytes:
     return path.encode("utf-8")
 
 
-def _handle_result(result: UnpdfResult) -> str:
-    """Handle an UnpdfResult, raising on error."""
-    lib = get_library()
-
-    try:
-        if result.success:
-            if result.data:
-                return result.data.decode("utf-8")
-            return ""
-        else:
-            error_msg = "Unknown error"
-            if result.error:
-                error_msg = result.error.decode("utf-8")
-            raise RuntimeError(f"unpdf error: {error_msg}")
-    finally:
-        lib.unpdf_free_result(result)
+def _check_last_error(lib: ctypes.CDLL) -> str:
+    """Get the last error message from the native library."""
+    err = lib.unpdf_last_error()
+    if err:
+        return err.decode("utf-8")
+    return "Unknown error"
 
 
-def to_markdown(path: str) -> str:
+def _parse_file(lib: ctypes.CDLL, path: str) -> ctypes.c_void_p:
+    """Parse a file and return the document handle. Raises on failure."""
+    handle = lib.unpdf_parse_file(_encode_path(path))
+    if not handle:
+        raise RuntimeError(f"unpdf error: {_check_last_error(lib)}")
+    return handle
+
+
+def to_markdown(path: str, flags: int = 0) -> str:
     """
     Convert a PDF file to Markdown format.
 
     Args:
         path: Path to the PDF file.
+        flags: Bitwise OR of UNPDF_FLAG_* constants (optional).
 
     Returns:
         The extracted content as Markdown.
@@ -45,8 +44,14 @@ def to_markdown(path: str) -> str:
         RuntimeError: If conversion fails.
     """
     lib = get_library()
-    result = lib.unpdf_to_markdown(_encode_path(path))
-    return _handle_result(result)
+    handle = _parse_file(lib, path)
+    try:
+        result = lib.unpdf_to_markdown(handle, flags)
+        if not result:
+            raise RuntimeError(f"unpdf error: {_check_last_error(lib)}")
+        return result.decode("utf-8")
+    finally:
+        lib.unpdf_free_document(handle)
 
 
 def to_text(path: str) -> str:
@@ -63,8 +68,14 @@ def to_text(path: str) -> str:
         RuntimeError: If conversion fails.
     """
     lib = get_library()
-    result = lib.unpdf_to_text(_encode_path(path))
-    return _handle_result(result)
+    handle = _parse_file(lib, path)
+    try:
+        result = lib.unpdf_to_text(handle)
+        if not result:
+            raise RuntimeError(f"unpdf error: {_check_last_error(lib)}")
+        return result.decode("utf-8")
+    finally:
+        lib.unpdf_free_document(handle)
 
 
 def to_json(path: str, pretty: bool = False) -> str:
@@ -82,8 +93,15 @@ def to_json(path: str, pretty: bool = False) -> str:
         RuntimeError: If conversion fails.
     """
     lib = get_library()
-    result = lib.unpdf_to_json(_encode_path(path), pretty)
-    return _handle_result(result)
+    handle = _parse_file(lib, path)
+    try:
+        fmt = UNPDF_JSON_PRETTY if pretty else UNPDF_JSON_COMPACT
+        result = lib.unpdf_to_json(handle, fmt)
+        if not result:
+            raise RuntimeError(f"unpdf error: {_check_last_error(lib)}")
+        return result.decode("utf-8")
+    finally:
+        lib.unpdf_free_document(handle)
 
 
 def get_info(path: str) -> dict[str, Any]:
@@ -94,20 +112,35 @@ def get_info(path: str) -> dict[str, Any]:
         path: Path to the PDF file.
 
     Returns:
-        Dictionary containing document metadata (title, author, page_count, etc.)
+        Dictionary containing document metadata (title, author, section_count, etc.)
 
     Raises:
         RuntimeError: If extraction fails.
     """
     lib = get_library()
-    result = lib.unpdf_get_info(_encode_path(path))
-    json_str = _handle_result(result)
-    return json.loads(json_str)
+    handle = _parse_file(lib, path)
+    try:
+        info: dict[str, Any] = {}
+
+        title = lib.unpdf_get_title(handle)
+        if title:
+            info["title"] = title.decode("utf-8")
+
+        author = lib.unpdf_get_author(handle)
+        if author:
+            info["author"] = author.decode("utf-8")
+
+        info["section_count"] = lib.unpdf_section_count(handle)
+        info["resource_count"] = lib.unpdf_resource_count(handle)
+
+        return info
+    finally:
+        lib.unpdf_free_document(handle)
 
 
 def get_page_count(path: str) -> int:
     """
-    Get the number of pages in a PDF file.
+    Get the number of pages (sections) in a PDF file.
 
     Args:
         path: Path to the PDF file.
@@ -116,21 +149,31 @@ def get_page_count(path: str) -> int:
         The number of pages, or -1 on error.
     """
     lib = get_library()
-    return lib.unpdf_get_page_count(_encode_path(path))
+    handle = lib.unpdf_parse_file(_encode_path(path))
+    if not handle:
+        return -1
+    try:
+        return lib.unpdf_section_count(handle)
+    finally:
+        lib.unpdf_free_document(handle)
 
 
 def is_pdf(path: str) -> bool:
     """
-    Check if a file is a valid PDF.
+    Check if a file is a valid PDF by attempting to parse it.
 
     Args:
         path: Path to the file.
 
     Returns:
-        True if the file is a valid PDF, False otherwise.
+        True if the file can be parsed as a PDF, False otherwise.
     """
     lib = get_library()
-    return lib.unpdf_is_pdf(_encode_path(path))
+    handle = lib.unpdf_parse_file(_encode_path(path))
+    if not handle:
+        return False
+    lib.unpdf_free_document(handle)
+    return True
 
 
 def version() -> str:
