@@ -187,6 +187,8 @@ jobs:
     needs: build-python
     runs-on: ubuntu-latest
     if: ${{ github.event.workflow_run.conclusion == 'success' || github.event.inputs.publish == 'true' }}
+    permissions:
+      id-token: write
 
     steps:
       - name: Download Python wheel
@@ -198,7 +200,6 @@ jobs:
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          password: ${{ secrets.PYPI_API_TOKEN }}
           packages-dir: dist/
           skip-existing: true
 
