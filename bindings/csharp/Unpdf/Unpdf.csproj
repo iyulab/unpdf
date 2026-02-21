@@ -10,7 +10,7 @@
 
     <!-- Package metadata -->
     <PackageId>Unpdf</PackageId>
-    <Version>0.2.0</Version>
+    <Version>0.2.1</Version>
     <Authors>iyulab</Authors>
     <Description>High-performance PDF content extraction to Markdown, text, and JSON</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
