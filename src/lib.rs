@@ -452,4 +452,182 @@ mod tests {
         ));
         assert!(unpdf.render_options.include_frontmatter);
     }
+
+    // ==================== Edge Case Tests ====================
+
+    #[test]
+    fn test_parse_bytes_empty_data() {
+        // Empty data should return an error
+        let data: [u8; 0] = [];
+        let result = parse_bytes(&data);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_bytes_too_short() {
+        // Data shorter than PDF magic bytes should fail
+        let data = b"%PDF";
+        let result = parse_bytes(data);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_bytes_unknown_magic() {
+        // Random bytes that don't match PDF format
+        let data = [0xFF, 0xFE, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
+        let result = parse_bytes(&data);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_detect_format_empty_data() {
+        let data: [u8; 0] = [];
+        let result = detect_format_from_bytes(&data);
+        assert!(result.is_err());
+        assert!(matches!(result, Err(Error::UnknownFormat)));
+    }
+
+    #[test]
+    fn test_detect_format_too_short() {
+        let data = b"%PDF-";
+        let result = detect_format_from_bytes(data);
+        assert!(result.is_err());
+        assert!(matches!(result, Err(Error::UnknownFormat)));
+    }
+
+    #[test]
+    fn test_detect_format_unknown_magic() {
+        let data = b"<!DOCTYPE html><html></html>";
+        let result = detect_format_from_bytes(data);
+        assert!(result.is_err());
+        assert!(matches!(result, Err(Error::UnknownFormat)));
+    }
+
+    #[test]
+    fn test_detect_valid_pdf_17() {
+        let data = b"%PDF-1.7\n%test";
+        let format = detect_format_from_bytes(data).unwrap();
+        assert_eq!(format.version, "1.7");
+    }
+
+    #[test]
+    fn test_detect_valid_pdf_20() {
+        let data = b"%PDF-2.0\n%test";
+        let format = detect_format_from_bytes(data).unwrap();
+        assert_eq!(format.version, "2.0");
+    }
+
+    #[test]
+    fn test_is_pdf_bytes() {
+        assert!(detect::is_pdf_bytes(b"%PDF-1.4\ntest"));
+        assert!(!detect::is_pdf_bytes(b"Not a PDF file"));
+        assert!(!detect::is_pdf_bytes(b""));
+    }
+
+    // ==================== Builder Pattern Tests ====================
+
+    #[test]
+    fn test_unpdf_builder_default() {
+        let builder = Unpdf::default();
+        assert!(!builder.render_options.include_frontmatter);
+    }
+
+    #[test]
+    fn test_unpdf_builder_text_only() {
+        let builder = Unpdf::new().text_only();
+        assert!(matches!(
+            builder.parse_options.extract_mode,
+            parser::ExtractMode::TextOnly
+        ));
+    }
+
+    #[test]
+    fn test_unpdf_builder_sequential() {
+        let builder = Unpdf::new().sequential();
+        assert!(!builder.parse_options.parallel);
+    }
+
+    #[test]
+    fn test_unpdf_builder_with_password() {
+        let builder = Unpdf::new().with_password("secret");
+        assert_eq!(builder.parse_options.password, Some("secret".to_string()));
+    }
+
+    #[test]
+    fn test_unpdf_builder_with_pages() {
+        let builder = Unpdf::new().with_pages(PageSelection::Range(1..=5));
+        assert!(matches!(
+            builder.render_options.page_selection,
+            PageSelection::Range(_)
+        ));
+    }
+
+    #[test]
+    fn test_unpdf_builder_with_table_fallback() {
+        let builder = Unpdf::new().with_table_fallback(TableFallback::Html);
+        assert!(matches!(
+            builder.render_options.table_fallback,
+            TableFallback::Html
+        ));
+    }
+
+    #[test]
+    fn test_unpdf_builder_chained() {
+        let builder = Unpdf::new()
+            .lenient()
+            .with_frontmatter()
+            .with_cleanup(CleanupPreset::Aggressive)
+            .with_table_fallback(TableFallback::Ascii)
+            .sequential();
+
+        assert!(matches!(
+            builder.parse_options.error_mode,
+            parser::ErrorMode::Lenient
+        ));
+        assert!(builder.render_options.include_frontmatter);
+        assert!(!builder.parse_options.parallel);
+    }
+
+    // ==================== Output Format Tests ====================
+
+    #[test]
+    fn test_unpdf_builder_parse_invalid_bytes() {
+        // Builder with invalid bytes should fail gracefully
+        let result = Unpdf::new().parse_bytes(b"not a pdf");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_render_options_defaults() {
+        let options = RenderOptions::default();
+        assert!(!options.include_frontmatter);
+    }
+
+    #[test]
+    fn test_render_options_with_image_dir() {
+        use std::path::PathBuf;
+        let options = RenderOptions::new().with_image_dir("./images");
+        assert_eq!(options.image_dir, Some(PathBuf::from("./images")));
+    }
+
+    #[test]
+    fn test_cleanup_preset_variants() {
+        // All cleanup presets should be usable
+        let _minimal = RenderOptions::new().with_cleanup_preset(CleanupPreset::Minimal);
+        let _standard = RenderOptions::new().with_cleanup_preset(CleanupPreset::Standard);
+        let _aggressive = RenderOptions::new().with_cleanup_preset(CleanupPreset::Aggressive);
+    }
+
+    #[test]
+    fn test_json_format_variants() {
+        // Both JSON format variants should exist
+        let _pretty = JsonFormat::Pretty;
+        let _compact = JsonFormat::Compact;
+    }
+
+    #[test]
+    fn test_page_selection_all() {
+        let selection = PageSelection::All;
+        assert!(matches!(selection, PageSelection::All));
+    }
 }

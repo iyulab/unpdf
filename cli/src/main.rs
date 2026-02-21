@@ -1,7 +1,8 @@
 //! unpdf CLI - PDF content extraction tool
 
+mod update;
+
 use std::fs;
-use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand, ValueEnum};
@@ -194,10 +195,26 @@ impl From<TableMode> for unpdf::TableFallback {
     }
 }
 
+/// Check if we should perform background update check.
+/// Skip for update/version commands to avoid redundant checks.
+fn should_check_update(cli: &Cli) -> bool {
+    !matches!(
+        &cli.command,
+        Some(Commands::Update { .. }) | Some(Commands::Version)
+    )
+}
+
 fn main() {
     env_logger::init();
 
     let cli = Cli::parse();
+
+    // Start background update check (except for update/version commands)
+    let update_rx = if should_check_update(&cli) {
+        Some(update::check_update_async())
+    } else {
+        None
+    };
 
     let result = match cli.command {
         Some(Commands::Convert {
@@ -239,7 +256,13 @@ fn main() {
             output,
             pages,
         }) => cmd_extract(&input, output.as_deref(), pages.as_deref()),
-        Some(Commands::Update { check, force }) => cmd_update(check, force),
+        Some(Commands::Update { check, force }) => {
+            if let Err(e) = update::run_update(check, force) {
+                eprintln!("{}: {}", "Error".red().bold(), e);
+                std::process::exit(1);
+            }
+            Ok(())
+        }
         Some(Commands::Version) => {
             cmd_version();
             Ok(())
@@ -255,6 +278,13 @@ fn main() {
             }
         }
     };
+
+    // Check for update result and show notification if available
+    if let Some(rx) = update_rx {
+        if let Some(update_result) = update::try_get_update_result(&rx) {
+            update::print_update_notification(&update_result);
+        }
+    }
 
     if let Err(e) = result {
         eprintln!("{}: {}", "Error".red().bold(), e);
@@ -540,150 +570,6 @@ fn cmd_extract(
     println!("\n{} {} images extracted", "Done!".green().bold(), count);
 
     Ok(())
-}
-
-/// Detect if installed via cargo install (binary in .cargo/bin)
-fn is_cargo_install() -> bool {
-    if let Ok(exe_path) = std::env::current_exe() {
-        let path_str = exe_path.to_string_lossy();
-        // Check for .cargo/bin in path (works on all platforms)
-        path_str.contains(".cargo") && path_str.contains("bin")
-    } else {
-        false
-    }
-}
-
-fn cmd_update(check_only: bool, force: bool) -> Result<(), Box<dyn std::error::Error>> {
-    println!("{}", "Checking for updates...".cyan());
-
-    // Use tokio runtime for async update check
-    let rt = tokio::runtime::Runtime::new()?;
-
-    rt.block_on(async {
-        // Check latest version from GitHub
-        let status = self_update::backends::github::Update::configure()
-            .repo_owner("iyulab")
-            .repo_name("unpdf")
-            .bin_name("unpdf")
-            .show_download_progress(true)
-            .current_version(env!("CARGO_PKG_VERSION"))
-            .build()?;
-
-        let latest = status.get_latest_release()?;
-        let current = semver::Version::parse(env!("CARGO_PKG_VERSION"))?;
-        let latest_ver = semver::Version::parse(latest.version.trim_start_matches('v'))?;
-
-        let update_available = latest_ver > current;
-
-        if update_available || force {
-            if check_only {
-                println!(
-                    "{} {} -> {}",
-                    "Update available:".yellow(),
-                    current,
-                    latest_ver
-                );
-                if is_cargo_install() {
-                    println!(
-                        "\n{} {}",
-                        "To update, run:".dimmed(),
-                        "cargo install unpdf-cli".cyan()
-                    );
-                }
-            } else if is_cargo_install() {
-                // Cargo install users should use cargo to update
-                println!(
-                    "{} {} -> {}",
-                    "Update available:".yellow(),
-                    current,
-                    latest_ver
-                );
-                println!();
-                println!(
-                    "{} Installed via cargo. Please run:",
-                    "Note:".yellow().bold()
-                );
-                println!("  {}", "cargo install unpdf-cli".cyan().bold());
-                println!();
-                println!(
-                    "{}",
-                    "This ensures proper integration with your Rust toolchain.".dimmed()
-                );
-            } else {
-                // GitHub Releases install - custom asset selection to avoid
-                // picking FFI library assets (libunpdf-*) instead of CLI assets (unpdf-*)
-                println!("{} v{}", "Updating to".green(), latest_ver);
-
-                // Find the correct CLI asset (starts with "unpdf-", not "libunpdf-")
-                let os_str = std::env::consts::OS;
-                let arch_str = std::env::consts::ARCH;
-                let target_asset = latest
-                    .assets
-                    .iter()
-                    .find(|asset| {
-                        asset.name.starts_with("unpdf-")
-                            && asset.name.contains(os_str)
-                            && asset.name.contains(arch_str)
-                    })
-                    .ok_or_else(|| {
-                        format!("No CLI asset found for {}-{}", os_str, arch_str)
-                    })?;
-
-                let bin_install_path = std::env::current_exe()?;
-                println!("\nunpdf release status:");
-                println!("  * Current exe: {:?}", bin_install_path);
-                println!("  * New exe release: {:?}", target_asset.name);
-                println!(
-                    "\nThe new release will be downloaded/extracted and the existing binary will be replaced."
-                );
-
-                // Confirmation prompt
-                print!("Do you want to continue? [Y/n] ");
-                io::stdout().flush()?;
-                let mut input = String::new();
-                io::stdin().read_line(&mut input)?;
-                let input = input.trim().to_lowercase();
-                if !input.is_empty() && input != "y" {
-                    println!("{}", "Update aborted.".yellow());
-                    return Ok(());
-                }
-
-                // Use direct download URL (avoids needing Accept header for API URL)
-                let download_url = format!(
-                    "https://github.com/iyulab/unpdf/releases/download/v{}/{}",
-                    latest_ver, target_asset.name
-                );
-
-                let tmp_dir = self_update::TempDir::new()?;
-                let tmp_archive_path = tmp_dir.path().join(&target_asset.name);
-                let mut tmp_archive = fs::File::create(&tmp_archive_path)?;
-
-                println!("Downloading...");
-                let mut download = self_update::Download::from_url(&download_url);
-                download.show_progress(true);
-                download.download_to(&mut tmp_archive)?;
-
-                print!("Extracting archive... ");
-                io::stdout().flush()?;
-                let bin_name = format!("unpdf{}", std::env::consts::EXE_SUFFIX);
-                self_update::Extract::from_source(&tmp_archive_path)
-                    .extract_file(tmp_dir.path(), &bin_name)?;
-                println!("Done");
-
-                print!("Replacing binary file... ");
-                io::stdout().flush()?;
-                let new_exe = tmp_dir.path().join(&bin_name);
-                self_update::self_replace::self_replace(new_exe)?;
-                println!("Done");
-
-                println!("{}", "Update complete!".green().bold());
-            }
-        } else {
-            println!("{} (v{})", "Already up to date".green(), current);
-        }
-
-        Ok::<(), Box<dyn std::error::Error>>(())
-    })
 }
 
 fn cmd_version() {

@@ -26,8 +26,8 @@ colored = "2.1"
 # Progress bars
 indicatif = "0.17"
 
-# Self-update (use rustls for musl compatibility)
-self_update = { version = "0.41", default-features = false, features = ["rustls", "archive-zip"] }
+# Self-update from GitHub releases
+self_update = { version = "0.41", features = ["archive-zip", "archive-tar", "compression-flate2"] }
 
 # Async runtime (for update)
 tokio = { version = "1.42", features = ["rt-multi-thread", "macros"] }
