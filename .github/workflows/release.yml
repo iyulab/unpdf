@@ -101,6 +101,10 @@ jobs:
         if: matrix.target == 'x86_64-unknown-linux-musl'
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
+      - name: Set RUSTFLAGS for musl
+        if: contains(matrix.target, 'musl')
+        run: echo "RUSTFLAGS=-C target-feature=-crt-static" >> $GITHUB_ENV
+
       - name: Build
         run: cargo build --release --target ${{ matrix.target }} -p unpdf-cli
 
@@ -168,6 +172,10 @@ jobs:
       - name: Install musl-tools
         if: contains(matrix.target, 'musl')
         run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Set RUSTFLAGS for musl
+        if: contains(matrix.target, 'musl')
+        run: echo "RUSTFLAGS=-C target-feature=-crt-static" >> $GITHUB_ENV
 
       - name: Build FFI library
         run: cargo build --release --features ffi --target ${{ matrix.target }}
