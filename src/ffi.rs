@@ -177,10 +177,7 @@ pub unsafe extern "C" fn unpdf_free_document(doc: *mut UnpdfDocument) {
 /// - Returns null on error. Use `unpdf_last_error` to get the error message.
 /// - The returned string must be freed with `unpdf_free_string`.
 #[no_mangle]
-pub unsafe extern "C" fn unpdf_to_markdown(
-    doc: *const UnpdfDocument,
-    flags: u32,
-) -> *mut c_char {
+pub unsafe extern "C" fn unpdf_to_markdown(doc: *const UnpdfDocument, flags: u32) -> *mut c_char {
     clear_last_error();
 
     if doc.is_null() {
@@ -274,10 +271,7 @@ pub unsafe extern "C" fn unpdf_to_text(doc: *const UnpdfDocument) -> *mut c_char
 /// - Returns null on error. Use `unpdf_last_error` to get the error message.
 /// - The returned string must be freed with `unpdf_free_string`.
 #[no_mangle]
-pub unsafe extern "C" fn unpdf_to_json(
-    doc: *const UnpdfDocument,
-    format: c_int,
-) -> *mut c_char {
+pub unsafe extern "C" fn unpdf_to_json(doc: *const UnpdfDocument, format: c_int) -> *mut c_char {
     clear_last_error();
 
     if doc.is_null() {

@@ -136,6 +136,11 @@ jobs:
             lib_name: libunpdf.so
             archive_name: libunpdf-linux-x86_64
             archive_ext: tar.gz
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            lib_name: libunpdf.so
+            archive_name: libunpdf-linux-x86_64-musl
+            archive_ext: tar.gz
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             lib_name: unpdf.dll
@@ -159,6 +164,10 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+
+      - name: Install musl-tools
+        if: contains(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: Build FFI library
         run: cargo build --release --features ffi --target ${{ matrix.target }}
