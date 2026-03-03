@@ -486,9 +486,7 @@ impl PdfBackend for LopdfBackend {
         if result.is_empty() {
             if let Ok(page_dict) = self.doc.get_dictionary(page) {
                 if let Ok(Object::Reference(parent_ref)) = page_dict.get(b"Parent") {
-                    if let Some(fonts) =
-                        self.collect_fonts_from_ancestor(*parent_ref)
-                    {
+                    if let Some(fonts) = self.collect_fonts_from_ancestor(*parent_ref) {
                         return Ok(fonts);
                     }
                 }

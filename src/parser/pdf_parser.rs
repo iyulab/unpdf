@@ -265,7 +265,13 @@ impl PdfParser {
                                 "Block type: {:?}, heading_level: {}, text preview: {}",
                                 block.block_type,
                                 block.heading_level,
-                                { let t = text.char_indices().nth(50).map_or(text.as_str(), |(i, _)| &text[..i]); t }
+                                {
+                                    let t = text
+                                        .char_indices()
+                                        .nth(50)
+                                        .map_or(text.as_str(), |(i, _)| &text[..i]);
+                                    t
+                                }
                             );
                             let para_block = match block.block_type {
                                 BlockType::Heading => {

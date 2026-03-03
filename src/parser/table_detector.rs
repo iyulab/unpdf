@@ -667,10 +667,7 @@ fn is_number_marker(text: &str) -> bool {
     // so a single multi-byte UTF-8 char (e.g. 'α' = 2 bytes) would pass len()==2
     // but produce only 1 element in the chars vec, causing index-out-of-bounds.
     let chars: Vec<char> = cleaned.chars().collect();
-    if chars.len() == 2
-        && chars[0].is_alphabetic()
-        && (chars[1] == '.' || chars[1] == ')')
-    {
+    if chars.len() == 2 && chars[0].is_alphabetic() && (chars[1] == '.' || chars[1] == ')') {
         return true;
     }
 
