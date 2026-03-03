@@ -265,7 +265,7 @@ impl PdfParser {
                                 "Block type: {:?}, heading_level: {}, text preview: {}",
                                 block.block_type,
                                 block.heading_level,
-                                if text.len() > 50 { &text[..50] } else { &text }
+                                { let t = text.char_indices().nth(50).map_or(text.as_str(), |(i, _)| &text[..i]); t }
                             );
                             let para_block = match block.block_type {
                                 BlockType::Heading => {

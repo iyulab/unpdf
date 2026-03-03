@@ -663,11 +663,15 @@ fn is_number_marker(text: &str) -> bool {
     }
 
     // Letter marker: "a.", "B)"
-    if cleaned.len() == 2 {
-        let chars: Vec<char> = cleaned.chars().collect();
-        if chars[0].is_alphabetic() && (chars[1] == '.' || chars[1] == ')') {
-            return true;
-        }
+    // Use chars().count() instead of len() — len() counts bytes, not characters,
+    // so a single multi-byte UTF-8 char (e.g. 'α' = 2 bytes) would pass len()==2
+    // but produce only 1 element in the chars vec, causing index-out-of-bounds.
+    let chars: Vec<char> = cleaned.chars().collect();
+    if chars.len() == 2
+        && chars[0].is_alphabetic()
+        && (chars[1] == '.' || chars[1] == ')')
+    {
+        return true;
     }
 
     false

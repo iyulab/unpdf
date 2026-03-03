@@ -84,11 +84,13 @@ pub fn detect_format_from_bytes(data: &[u8]) -> Result<PdfFormat> {
 
 /// Check if a version string is valid.
 fn is_valid_version(version: &str) -> bool {
-    if version.len() != 3 {
+    // Use chars().count() to count characters, not bytes.
+    // version.len() counts bytes, which differs for multi-byte UTF-8 chars.
+    let chars: Vec<char> = version.chars().collect();
+    if chars.len() != 3 {
         return false;
     }
 
-    let chars: Vec<char> = version.chars().collect();
     chars[0].is_ascii_digit() && chars[1] == '.' && chars[2].is_ascii_digit()
 }
 
