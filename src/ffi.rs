@@ -660,9 +660,13 @@ pub unsafe extern "C" fn unpdf_page_to_markdown(
 
     let result = catch_unwind(|| {
         let document = &(*doc).inner;
-        let page = document
-            .get_page(page_num as u32)
-            .ok_or_else(|| format!("page {} out of range (document has {} pages)", page_num, document.page_count()))?;
+        let page = document.get_page(page_num as u32).ok_or_else(|| {
+            format!(
+                "page {} out of range (document has {} pages)",
+                page_num,
+                document.page_count()
+            )
+        })?;
 
         let mut options = RenderOptions::new();
         if flags & UNPDF_FLAG_FRONTMATTER != 0 {
@@ -720,9 +724,13 @@ pub unsafe extern "C" fn unpdf_page_to_text(
 
     let result = catch_unwind(|| {
         let document = &(*doc).inner;
-        let page = document
-            .get_page(page_num as u32)
-            .ok_or_else(|| format!("page {} out of range (document has {} pages)", page_num, document.page_count()))?;
+        let page = document.get_page(page_num as u32).ok_or_else(|| {
+            format!(
+                "page {} out of range (document has {} pages)",
+                page_num,
+                document.page_count()
+            )
+        })?;
 
         Ok::<String, String>(page.plain_text())
     });
