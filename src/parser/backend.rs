@@ -449,9 +449,7 @@ impl LopdfBackend {
         };
 
         // Try decompressed first (for compressed streams), fall back to raw content
-        let data = stream
-            .decompressed_content()
-            .unwrap_or_else(|_| stream.content.clone());
+        let data = safe_decompress(stream);
 
         parse_to_unicode_cmap(&data)
     }
@@ -509,9 +507,7 @@ impl PdfBackend for LopdfBackend {
         match contents {
             Object::Reference(r) => {
                 if let Ok(Object::Stream(s)) = self.doc.get_object(*r) {
-                    return s
-                        .decompressed_content()
-                        .map_err(|e| Error::PdfParse(e.to_string()));
+                    return Ok(safe_decompress(s));
                 }
                 Err(Error::PdfParse("Invalid content stream".to_string()))
             }
@@ -520,10 +516,9 @@ impl PdfBackend for LopdfBackend {
                 for obj in arr {
                     if let Object::Reference(r) = obj {
                         if let Ok(Object::Stream(s)) = self.doc.get_object(*r) {
-                            if let Ok(data) = s.decompressed_content() {
-                                content.extend_from_slice(&data);
-                                content.push(b' ');
-                            }
+                            let data = safe_decompress(s);
+                            content.extend_from_slice(&data);
+                            content.push(b' ');
                         }
                     }
                 }
@@ -642,6 +637,22 @@ impl LopdfBackend {
         }
 
         Some(result)
+    }
+}
+
+/// Safely decompress a PDF stream, handling missing `Filter` key.
+///
+/// Per ISO 32000, the `Filter` key in a stream dictionary is **optional**.
+/// Its absence means the stream data is uncompressed (identity encoding).
+/// `lopdf` requires it, so we check first and use raw content when absent.
+pub(crate) fn safe_decompress(stream: &lopdf::Stream) -> Vec<u8> {
+    if stream.dict.get(b"Filter").is_ok() {
+        stream
+            .decompressed_content()
+            .unwrap_or_else(|_| stream.content.clone())
+    } else {
+        // No Filter = uncompressed (identity encoding per PDF spec)
+        stream.content.clone()
     }
 }
 

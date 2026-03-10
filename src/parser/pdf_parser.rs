@@ -95,8 +95,15 @@ impl PdfParser {
                 continue;
             }
 
-            let page = self.parse_page(page_num)?;
-            document.add_page(page);
+            match self.parse_page(page_num) {
+                Ok(page) => document.add_page(page),
+                Err(e) => {
+                    if self.options.error_mode == ErrorMode::Strict {
+                        return Err(e);
+                    }
+                    log::warn!("Skipping page {}: {}", page_num, e);
+                }
+            }
         }
 
         // Extract outline (bookmarks) if available
@@ -594,9 +601,7 @@ impl PdfParser {
                 "FlateDecode" | "LZWDecode" | "" => {
                     // Need to decode and convert to PNG
                     // For now, store raw data
-                    let decoded = stream
-                        .decompressed_content()
-                        .unwrap_or_else(|_| stream.content.clone());
+                    let decoded = super::backend::safe_decompress(stream);
                     ("application/octet-stream".to_string(), decoded)
                 }
                 "JPXDecode" => ("image/jp2".to_string(), stream.content.clone()),
