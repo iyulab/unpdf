@@ -272,6 +272,54 @@ public class UnpdfDocument : IDisposable
     }
 
     /// <summary>
+    /// Convert a single page to Markdown.
+    /// </summary>
+    /// <param name="pageNumber">Page number (1-indexed)</param>
+    /// <param name="options">Optional rendering options</param>
+    /// <returns>Markdown string for the specified page</returns>
+    /// <exception cref="UnpdfException">If the page number is out of range or rendering fails</exception>
+    public string PageToMarkdown(int pageNumber, MarkdownOptions? options = null)
+    {
+        ThrowIfDisposed();
+        int flags = options?.ToFlags() ?? 0;
+        var ptr = NativeMethods.unpdf_page_to_markdown(_handle, pageNumber, flags);
+        if (ptr == IntPtr.Zero)
+            throw new UnpdfException($"Failed to convert page {pageNumber} to markdown: {GetLastError()}");
+
+        try
+        {
+            return PtrToStringUtf8(ptr);
+        }
+        finally
+        {
+            NativeMethods.unpdf_free_string(ptr);
+        }
+    }
+
+    /// <summary>
+    /// Get the plain text of a single page.
+    /// </summary>
+    /// <param name="pageNumber">Page number (1-indexed)</param>
+    /// <returns>Plain text string for the specified page</returns>
+    /// <exception cref="UnpdfException">If the page number is out of range</exception>
+    public string PageToText(int pageNumber)
+    {
+        ThrowIfDisposed();
+        var ptr = NativeMethods.unpdf_page_to_text(_handle, pageNumber);
+        if (ptr == IntPtr.Zero)
+            throw new UnpdfException($"Failed to get text for page {pageNumber}: {GetLastError()}");
+
+        try
+        {
+            return PtrToStringUtf8(ptr);
+        }
+        finally
+        {
+            NativeMethods.unpdf_free_string(ptr);
+        }
+    }
+
+    /// <summary>
     /// Get list of resource IDs in the document.
     /// </summary>
     /// <returns>Array of resource ID strings</returns>

@@ -133,6 +133,18 @@ internal static class NativeMethods
     public static extern IntPtr unpdf_get_author(IntPtr doc);
 
     /// <summary>
+    /// Convert a single page to Markdown.
+    /// </summary>
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern IntPtr unpdf_page_to_markdown(IntPtr doc, int pageNum, int flags);
+
+    /// <summary>
+    /// Get plain text of a single page.
+    /// </summary>
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern IntPtr unpdf_page_to_text(IntPtr doc, int pageNum);
+
+    /// <summary>
     /// Free a string allocated by the library.
     /// </summary>
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]

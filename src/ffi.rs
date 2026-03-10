@@ -636,6 +636,116 @@ pub unsafe extern "C" fn unpdf_get_resource_data(
     }
 }
 
+/// Convert a single page to Markdown.
+///
+/// # Safety
+///
+/// - `doc` must be a valid document handle.
+/// - `page_num` is 1-indexed.
+/// - `flags` is a bitwise OR of `UNPDF_FLAG_*` constants.
+/// - Returns null on error. Use `unpdf_last_error` to get the error message.
+/// - The returned string must be freed with `unpdf_free_string`.
+#[no_mangle]
+pub unsafe extern "C" fn unpdf_page_to_markdown(
+    doc: *const UnpdfDocument,
+    page_num: c_int,
+    flags: u32,
+) -> *mut c_char {
+    clear_last_error();
+
+    if doc.is_null() {
+        set_last_error("document is null");
+        return ptr::null_mut();
+    }
+
+    let result = catch_unwind(|| {
+        let document = &(*doc).inner;
+        let page = document
+            .get_page(page_num as u32)
+            .ok_or_else(|| format!("page {} out of range (document has {} pages)", page_num, document.page_count()))?;
+
+        let mut options = RenderOptions::new();
+        if flags & UNPDF_FLAG_FRONTMATTER != 0 {
+            options.include_frontmatter = true;
+        }
+        if flags & UNPDF_FLAG_ESCAPE_SPECIAL != 0 {
+            options.escape_special_chars = true;
+        }
+
+        // Create a single-page document for rendering
+        let mut single_page_doc = Document::new();
+        single_page_doc.add_page(page.clone());
+
+        crate::render::to_markdown(&single_page_doc, &options).map_err(|e| e.to_string())
+    });
+
+    match result {
+        Ok(Ok(md)) => match CString::new(md) {
+            Ok(s) => s.into_raw(),
+            Err(_) => {
+                set_last_error("output contains null byte");
+                ptr::null_mut()
+            }
+        },
+        Ok(Err(e)) => {
+            set_last_error(&e);
+            ptr::null_mut()
+        }
+        Err(_) => {
+            set_last_error("panic occurred during page rendering");
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Get the plain text of a single page.
+///
+/// # Safety
+///
+/// - `doc` must be a valid document handle.
+/// - `page_num` is 1-indexed.
+/// - Returns null on error. Use `unpdf_last_error` to get the error message.
+/// - The returned string must be freed with `unpdf_free_string`.
+#[no_mangle]
+pub unsafe extern "C" fn unpdf_page_to_text(
+    doc: *const UnpdfDocument,
+    page_num: c_int,
+) -> *mut c_char {
+    clear_last_error();
+
+    if doc.is_null() {
+        set_last_error("document is null");
+        return ptr::null_mut();
+    }
+
+    let result = catch_unwind(|| {
+        let document = &(*doc).inner;
+        let page = document
+            .get_page(page_num as u32)
+            .ok_or_else(|| format!("page {} out of range (document has {} pages)", page_num, document.page_count()))?;
+
+        Ok::<String, String>(page.plain_text())
+    });
+
+    match result {
+        Ok(Ok(text)) => match CString::new(text) {
+            Ok(s) => s.into_raw(),
+            Err(_) => {
+                set_last_error("output contains null byte");
+                ptr::null_mut()
+            }
+        },
+        Ok(Err(e)) => {
+            set_last_error(&e);
+            ptr::null_mut()
+        }
+        Err(_) => {
+            set_last_error("panic occurred");
+            ptr::null_mut()
+        }
+    }
+}
+
 /// Free a string allocated by this library.
 ///
 /// # Safety
@@ -746,6 +856,15 @@ mod tests {
 
         let res_count = unsafe { unpdf_resource_count(ptr::null()) };
         assert_eq!(res_count, -1);
+    }
+
+    #[test]
+    fn test_page_null_document() {
+        let md = unsafe { unpdf_page_to_markdown(ptr::null(), 1, 0) };
+        assert!(md.is_null());
+
+        let text = unsafe { unpdf_page_to_text(ptr::null(), 1) };
+        assert!(text.is_null());
     }
 
     #[test]
