@@ -453,6 +453,374 @@ impl LopdfBackend {
 
         parse_to_unicode_cmap(&data)
     }
+
+    /// Get or parse the embedded TrueType cmap table for a font.
+    fn get_embedded_cmap(&self, font_obj_id: ObjectId) -> Option<ToUnicodeMap> {
+        // We reuse cmap_cache — the key is the CIDFont's ObjectId (not the Type0 font's).
+        // To avoid collisions, we look up the descendant font ID and use that as key.
+        let cid_font_id = self.get_cid_font_id(font_obj_id)?;
+
+        // Check cache
+        {
+            let cache = self.cmap_cache.borrow();
+            if let Some(cached) = cache.get(&cid_font_id) {
+                return cached.clone();
+            }
+        }
+
+        let result = self.parse_embedded_truetype_cmap(font_obj_id);
+        self.cmap_cache
+            .borrow_mut()
+            .insert(cid_font_id, result.clone());
+        result
+    }
+
+    /// Get the CIDFont's object ID from a Type0 font.
+    fn get_cid_font_id(&self, font_obj_id: ObjectId) -> Option<ObjectId> {
+        let font_dict = match self.doc.get_object(font_obj_id).ok()? {
+            Object::Dictionary(d) => d,
+            _ => return None,
+        };
+
+        let descendants = font_dict.get(b"DescendantFonts").ok()?;
+        let arr = match descendants {
+            Object::Array(a) => a,
+            Object::Reference(r) => match self.doc.get_object(*r).ok()? {
+                Object::Array(a) => a,
+                _ => return None,
+            },
+            _ => return None,
+        };
+
+        arr.first()?.as_reference().ok()
+    }
+
+    /// Parse the TrueType cmap table from an embedded font to build a GID→Unicode map.
+    ///
+    /// Path: Type0 Font → DescendantFonts[0] (CIDFont) → FontDescriptor → FontFile2 → cmap table.
+    /// For Identity-H encoding, content stream bytes are GIDs, so reversing the cmap gives us
+    /// a GID→Unicode mapping we can use like a ToUnicode CMap.
+    fn parse_embedded_truetype_cmap(&self, font_obj_id: ObjectId) -> Option<ToUnicodeMap> {
+        let font_dict = match self.doc.get_object(font_obj_id).ok()? {
+            Object::Dictionary(d) => d,
+            _ => return None,
+        };
+
+        // Check this is a Type0 font with Identity-H encoding
+        let encoding = font_dict
+            .get(b"Encoding")
+            .ok()
+            .and_then(|e| e.as_name().ok())
+            .map(|n| String::from_utf8_lossy(n).to_string())?;
+
+        if encoding != "Identity-H" && encoding != "Identity-V" {
+            return None;
+        }
+
+        // Get CIDFont from DescendantFonts
+        let cid_font_id = self.get_cid_font_id(font_obj_id)?;
+        let cid_font_dict = match self.doc.get_object(cid_font_id).ok()? {
+            Object::Dictionary(d) => d,
+            _ => return None,
+        };
+
+        // Get FontDescriptor
+        let fd_ref = cid_font_dict.get(b"FontDescriptor").ok()?.as_reference().ok()?;
+        let fd_dict = match self.doc.get_object(fd_ref).ok()? {
+            Object::Dictionary(d) => d,
+            _ => return None,
+        };
+
+        // Get FontFile2 (TrueType) or FontFile3 (CFF/OpenType)
+        let font_stream = if let Ok(ff2) = fd_dict.get(b"FontFile2") {
+            let ff2_ref = ff2.as_reference().ok()?;
+            match self.doc.get_object(ff2_ref).ok()? {
+                Object::Stream(s) => s,
+                _ => return None,
+            }
+        } else {
+            return None; // Only TrueType (FontFile2) supported for now
+        };
+
+        let font_data = safe_decompress(font_stream);
+        parse_truetype_cmap_table(&font_data)
+    }
+
+    /// Check if a font uses Identity-H or Identity-V CID encoding.
+    fn is_identity_cid_font(&self, font_obj_id: ObjectId) -> bool {
+        let font_dict = match self.doc.get_object(font_obj_id).ok() {
+            Some(Object::Dictionary(d)) => d,
+            _ => return false,
+        };
+
+        font_dict
+            .get(b"Encoding")
+            .ok()
+            .and_then(|e| e.as_name().ok())
+            .map(|n| n == b"Identity-H" || n == b"Identity-V")
+            .unwrap_or(false)
+    }
+}
+
+/// Parse a TrueType font's cmap table to build a GID→Unicode mapping.
+///
+/// For Identity-H CID fonts, the character codes in the content stream are 2-byte
+/// glyph IDs (GIDs). The TrueType cmap table maps Unicode code points → GIDs.
+/// We reverse this to get GID → Unicode.
+fn parse_truetype_cmap_table(data: &[u8]) -> Option<ToUnicodeMap> {
+    if data.len() < 12 {
+        return None;
+    }
+
+    // Read TrueType offset table
+    let num_tables = u16::from_be_bytes([data[4], data[5]]) as usize;
+
+    // Find the 'cmap' table
+    let mut cmap_offset = 0u32;
+    let mut cmap_length = 0u32;
+    for i in 0..num_tables {
+        let record_offset = 12 + i * 16;
+        if record_offset + 16 > data.len() {
+            break;
+        }
+        let tag = &data[record_offset..record_offset + 4];
+        if tag == b"cmap" {
+            cmap_offset = u32::from_be_bytes([
+                data[record_offset + 8],
+                data[record_offset + 9],
+                data[record_offset + 10],
+                data[record_offset + 11],
+            ]);
+            cmap_length = u32::from_be_bytes([
+                data[record_offset + 12],
+                data[record_offset + 13],
+                data[record_offset + 14],
+                data[record_offset + 15],
+            ]);
+            break;
+        }
+    }
+
+    if cmap_offset == 0 || cmap_offset as usize + 4 > data.len() {
+        return None;
+    }
+
+    let cmap = &data[cmap_offset as usize..];
+    let cmap_len = cmap_length as usize;
+    if cmap_len < 4 {
+        return None;
+    }
+
+    // cmap header: version (u16), numTables (u16)
+    let num_subtables = u16::from_be_bytes([cmap[2], cmap[3]]) as usize;
+
+    // Find the best subtable: prefer (3,1) Windows Unicode BMP, fallback to (0,3) Unicode BMP
+    let mut best_offset: Option<u32> = None;
+    let mut best_priority = 0u8;
+
+    for i in 0..num_subtables {
+        let rec = 4 + i * 8;
+        if rec + 8 > cmap_len {
+            break;
+        }
+        let platform_id = u16::from_be_bytes([cmap[rec], cmap[rec + 1]]);
+        let encoding_id = u16::from_be_bytes([cmap[rec + 2], cmap[rec + 3]]);
+        let offset = u32::from_be_bytes([cmap[rec + 4], cmap[rec + 5], cmap[rec + 6], cmap[rec + 7]]);
+
+        let priority = match (platform_id, encoding_id) {
+            (3, 1) => 3, // Windows Unicode BMP — best
+            (0, 3) => 2, // Unicode BMP
+            (0, _) => 1, // Any Unicode
+            _ => 0,
+        };
+
+        if priority > best_priority {
+            best_priority = priority;
+            best_offset = Some(offset);
+        }
+    }
+
+    let subtable_offset = best_offset? as usize;
+    if subtable_offset + 2 > cmap_len {
+        return None;
+    }
+
+    let subtable = &cmap[subtable_offset..];
+    let format = u16::from_be_bytes([subtable[0], subtable[1]]);
+
+    // Build Unicode→GID map, then reverse to GID→Unicode
+    let unicode_to_gid = match format {
+        4 => parse_cmap_format4(subtable)?,
+        12 => parse_cmap_format12(subtable)?,
+        _ => {
+            log::debug!("Unsupported cmap subtable format {}", format);
+            return None;
+        }
+    };
+
+    // Reverse: GID → Unicode
+    let mut gid_to_unicode: HashMap<u32, String> = HashMap::new();
+    for (unicode_cp, gid) in &unicode_to_gid {
+        if *gid > 0 {
+            // Only keep the first mapping for each GID (lowest Unicode code point)
+            gid_to_unicode
+                .entry(*gid as u32)
+                .or_insert_with(|| char::from_u32(*unicode_cp).map(|c| c.to_string()).unwrap_or_default());
+        }
+    }
+
+    if gid_to_unicode.is_empty() {
+        return None;
+    }
+
+    log::debug!(
+        "Parsed embedded TrueType cmap: {} GID→Unicode mappings",
+        gid_to_unicode.len()
+    );
+
+    Some(ToUnicodeMap {
+        code_width: 2, // Identity-H always uses 2-byte codes
+        mappings: gid_to_unicode,
+    })
+}
+
+/// Parse cmap format 4 (Segment mapping to delta values).
+/// Returns a map of Unicode code point → glyph ID.
+fn parse_cmap_format4(data: &[u8]) -> Option<HashMap<u32, u16>> {
+    if data.len() < 14 {
+        return None;
+    }
+
+    let seg_count_x2 = u16::from_be_bytes([data[6], data[7]]) as usize;
+    let seg_count = seg_count_x2 / 2;
+
+    // Offsets into the subtable
+    let end_codes_offset = 14;
+    let start_codes_offset = end_codes_offset + seg_count_x2 + 2; // +2 for reservedPad
+    let id_delta_offset = start_codes_offset + seg_count_x2;
+    let id_range_offset_offset = id_delta_offset + seg_count_x2;
+
+    let needed = id_range_offset_offset + seg_count_x2;
+    if needed > data.len() {
+        return None;
+    }
+
+    let mut result = HashMap::new();
+
+    for seg in 0..seg_count {
+        let end_code = u16::from_be_bytes([
+            data[end_codes_offset + seg * 2],
+            data[end_codes_offset + seg * 2 + 1],
+        ]);
+        let start_code = u16::from_be_bytes([
+            data[start_codes_offset + seg * 2],
+            data[start_codes_offset + seg * 2 + 1],
+        ]);
+        let id_delta = i16::from_be_bytes([
+            data[id_delta_offset + seg * 2],
+            data[id_delta_offset + seg * 2 + 1],
+        ]);
+        let id_range_offset = u16::from_be_bytes([
+            data[id_range_offset_offset + seg * 2],
+            data[id_range_offset_offset + seg * 2 + 1],
+        ]);
+
+        if start_code == 0xFFFF {
+            break;
+        }
+
+        for code in start_code..=end_code {
+            let gid = if id_range_offset == 0 {
+                (code as i32 + id_delta as i32) as u16
+            } else {
+                // glyphId = *(idRangeOffset[i]/2 + (c - startCode[i]) + &idRangeOffset[i])
+                let glyph_idx_offset = id_range_offset_offset
+                    + seg * 2
+                    + id_range_offset as usize
+                    + (code - start_code) as usize * 2;
+                if glyph_idx_offset + 1 < data.len() {
+                    let gid_raw =
+                        u16::from_be_bytes([data[glyph_idx_offset], data[glyph_idx_offset + 1]]);
+                    if gid_raw != 0 {
+                        (gid_raw as i32 + id_delta as i32) as u16
+                    } else {
+                        0
+                    }
+                } else {
+                    0
+                }
+            };
+
+            if gid != 0 {
+                result.insert(code as u32, gid);
+            }
+        }
+    }
+
+    Some(result)
+}
+
+/// Parse cmap format 12 (Segmented coverage, 32-bit).
+/// Returns a map of Unicode code point → glyph ID.
+fn parse_cmap_format12(data: &[u8]) -> Option<HashMap<u32, u16>> {
+    if data.len() < 16 {
+        return None;
+    }
+
+    let n_groups = u32::from_be_bytes([data[12], data[13], data[14], data[15]]) as usize;
+    let mut result = HashMap::new();
+
+    for i in 0..n_groups {
+        let offset = 16 + i * 12;
+        if offset + 12 > data.len() {
+            break;
+        }
+        let start_char = u32::from_be_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]);
+        let end_char = u32::from_be_bytes([data[offset + 4], data[offset + 5], data[offset + 6], data[offset + 7]]);
+        let start_gid = u32::from_be_bytes([data[offset + 8], data[offset + 9], data[offset + 10], data[offset + 11]]);
+
+        // Limit range to prevent excessive memory usage
+        if end_char - start_char > 0x10000 {
+            continue;
+        }
+
+        for code in start_char..=end_char {
+            let gid = start_gid + (code - start_char);
+            if gid != 0 && gid <= 0xFFFF {
+                result.insert(code, gid as u16);
+            }
+        }
+    }
+
+    Some(result)
+}
+
+/// Check if a decoded string is likely binary garbage (CID bytes interpreted as Latin-1).
+///
+/// Heuristic: if a significant proportion of characters are in the Latin-1 supplement
+/// range (0x80–0xFF) and not common accented characters, it's probably garbage.
+fn is_likely_binary(text: &str) -> bool {
+    if text.is_empty() {
+        return false;
+    }
+
+    let total_chars = text.chars().count();
+    if total_chars == 0 {
+        return false;
+    }
+
+    let suspicious_count = text.chars().filter(|&c| {
+        let code = c as u32;
+        // Control characters (except common whitespace)
+        (code < 0x20 && !matches!(c, '\n' | '\r' | '\t'))
+        // High Latin-1 supplement characters that rarely appear in real text
+        || (0x80..0xA0).contains(&code)
+        // Private Use Area
+        || (0xE000..=0xF8FF).contains(&code)
+    }).count();
+
+    // If more than 30% of characters are suspicious, it's likely garbage
+    suspicious_count as f32 / total_chars as f32 > 0.3
 }
 
 impl PdfBackend for LopdfBackend {
@@ -543,20 +911,49 @@ impl PdfBackend for LopdfBackend {
     }
 
     fn decode_text(&self, page: PageId, font_name: &[u8], bytes: &[u8]) -> String {
-        // 1. Try lopdf's built-in font encoding
+        let font_obj_id = self.find_font_dict(page, font_name);
+        let mut is_identity_h = false;
+
+        // 1. Try ToUnicode CMap first (most reliable for CID/composite fonts)
+        if let Some(fid) = font_obj_id {
+            if let Some(cmap) = self.get_to_unicode_map(fid) {
+                let decoded = cmap.decode(bytes);
+                if !decoded.is_empty() {
+                    return decoded;
+                }
+            }
+            is_identity_h = self.is_identity_cid_font(fid);
+        }
+
+        // 2. Try lopdf's built-in font encoding
         if let Ok(lopdf_fonts) = self.doc.get_page_fonts(page) {
             if let Some(font_dict) = lopdf_fonts.get(font_name) {
-                if let Ok(enc) = font_dict.get_font_encoding(&self.doc) {
-                    if let Ok(text) = LopdfDocument::decode_text(&enc, bytes) {
-                        return text;
+                // Also detect Identity-H from lopdf's font dict
+                // (covers cases where find_font_dict fails)
+                if !is_identity_h {
+                    is_identity_h = font_dict
+                        .get(b"Encoding")
+                        .ok()
+                        .and_then(|e| e.as_name().ok())
+                        .map(|n| n == b"Identity-H" || n == b"Identity-V")
+                        .unwrap_or(false);
+                }
+                // For Identity-H CID fonts, lopdf's encoding will decode
+                // glyph IDs as if they were character codes, producing garbage.
+                // Skip this step for such fonts.
+                if !is_identity_h {
+                    if let Ok(enc) = font_dict.get_font_encoding(&self.doc) {
+                        if let Ok(text) = LopdfDocument::decode_text(&enc, bytes) {
+                            return text;
+                        }
                     }
                 }
             }
         }
 
-        // 2. Try ToUnicode CMap (handles Identity-H fonts from Typst, etc.)
-        if let Some(font_obj_id) = self.find_font_dict(page, font_name) {
-            if let Some(cmap) = self.get_to_unicode_map(font_obj_id) {
+        // 3. Try embedded TrueType cmap table (for Identity-H CID fonts without ToUnicode)
+        if let Some(fid) = font_obj_id {
+            if let Some(cmap) = self.get_embedded_cmap(fid) {
                 let decoded = cmap.decode(bytes);
                 if !decoded.is_empty() {
                     return decoded;
@@ -564,8 +961,19 @@ impl PdfBackend for LopdfBackend {
             }
         }
 
-        // 3. Final fallback
-        decode_text_simple(bytes)
+        // For Identity-H/V fonts, simple fallback always produces garbage because
+        // the bytes are 2-byte glyph IDs, not character codes.
+        if is_identity_h {
+            return String::new();
+        }
+
+        // 4. Final fallback — decode as simple text but filter out likely binary garbage
+        let simple = decode_text_simple(bytes);
+        if is_likely_binary(&simple) {
+            String::new()
+        } else {
+            simple
+        }
     }
 }
 
