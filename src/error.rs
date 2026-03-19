@@ -78,16 +78,6 @@ pub enum Error {
     Other(String),
 }
 
-impl From<lopdf::Error> for Error {
-    fn from(err: lopdf::Error) -> Self {
-        match err {
-            lopdf::Error::IO(e) => Error::Io(e),
-            lopdf::Error::Decryption(_) => Error::Encrypted,
-            _ => Error::PdfParse(err.to_string()),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
