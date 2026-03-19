@@ -1004,4 +1004,20 @@ mod raw_backend_tests {
         let raw = RawBackend::load_file("test-files/cjk/korean-test.pdf").unwrap();
         assert!(!raw.pages().is_empty());
     }
+
+    #[test]
+    fn test_iphone_korean_text_decode() {
+        let raw = RawBackend::load_file("test-files/realworld/iphone-info.pdf").unwrap();
+        let pages = raw.pages();
+        let first_page = *pages.values().next().unwrap();
+
+        // Verify Korean text decoding works for Type1 fonts with custom encoding
+        // Bytes 31,30,29,28,27 should decode to "사용설명서"
+        let decoded = raw.decode_text(first_page, b"T1_1", &[31, 30, 29, 28, 27]);
+        assert!(
+            decoded.contains('사') && decoded.contains('서'),
+            "Korean text should be decoded: got {:?}",
+            decoded
+        );
+    }
 }

@@ -10,8 +10,6 @@ use super::xref::{self, XrefEntry};
 
 /// A parsed PDF document.
 pub struct RawDocument {
-    /// Raw PDF file data (needed for lazy object loading).
-    data: Vec<u8>,
     /// All loaded objects, keyed by (object_number, generation_number).
     objects: HashMap<(u32, u16), PdfObject>,
     /// The trailer dictionary (from the newest xref section).
@@ -73,7 +71,6 @@ impl RawDocument {
         }
 
         Ok(RawDocument {
-            data: data.to_vec(),
             objects,
             trailer,
             version,

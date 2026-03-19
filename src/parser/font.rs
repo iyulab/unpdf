@@ -213,6 +213,17 @@ pub(crate) fn parse_to_unicode_cmap(data: &[u8]) -> Option<ToUnicodeMap> {
         return None;
     }
 
+    // Auto-correct code_width based on actual mapping keys.
+    // Some CMaps declare a 2-byte codespace (e.g., <0000> <FFFF>) but
+    // actually only use single-byte codes (max key <= 0xFF). This is common
+    // for Type1 fonts with custom encodings.
+    if code_width == 2 {
+        let max_key = mappings.keys().copied().max().unwrap_or(0);
+        if max_key <= 0xFF {
+            code_width = 1;
+        }
+    }
+
     Some(ToUnicodeMap {
         code_width,
         mappings,
@@ -544,10 +555,26 @@ endcodespacerange
 endbfchar
 endcmap";
         let map = parse_to_unicode_cmap(cmap).unwrap();
-        assert_eq!(map.code_width, 2);
+        // code_width auto-corrected to 1 because max key (0x24=36) <= 0xFF
+        assert_eq!(map.code_width, 1);
         assert_eq!(map.mappings.get(&0x0003), Some(&" ".to_string()));
         assert_eq!(map.mappings.get(&0x001C), Some(&"9".to_string()));
         assert_eq!(map.mappings.get(&0x0024), Some(&"A".to_string()));
+    }
+
+    #[test]
+    fn test_parse_to_unicode_cmap_bfchar_2byte() {
+        // CMap with codes > 0xFF should keep code_width=2
+        let cmap = b"1 begincodespacerange
+<0000> <ffff>
+endcodespacerange
+2 beginbfchar
+<0100> <AC00>
+<0200> <AD00>
+endbfchar";
+        let map = parse_to_unicode_cmap(cmap).unwrap();
+        assert_eq!(map.code_width, 2);
+        assert_eq!(map.mappings.get(&0x0100), Some(&"\u{AC00}".to_string()));
     }
 
     #[test]
@@ -566,7 +593,8 @@ endbfrange";
     }
 
     #[test]
-    fn test_to_unicode_map_decode() {
+    fn test_to_unicode_map_decode_1byte() {
+        // CMap with small keys: auto-corrected to code_width=1
         let cmap = b"1 begincodespacerange
 <0000> <ffff>
 endcodespacerange
@@ -576,8 +604,26 @@ endcodespacerange
 <0024> <0041>
 endbfchar";
         let map = parse_to_unicode_cmap(cmap).unwrap();
-        // Decode bytes: 0x0003 0x001C 0x0024 → " 9A"
-        let result = map.decode(&[0x00, 0x03, 0x00, 0x1C, 0x00, 0x24]);
+        assert_eq!(map.code_width, 1);
+        // Decode single-byte codes: 0x03=space, 0x1C='9', 0x24='A'
+        let result = map.decode(&[0x03, 0x1C, 0x24]);
         assert_eq!(result, " 9A");
+    }
+
+    #[test]
+    fn test_to_unicode_map_decode_2byte() {
+        // CMap with large keys: stays code_width=2
+        let cmap = b"1 begincodespacerange
+<0000> <ffff>
+endcodespacerange
+2 beginbfchar
+<0100> <AC00>
+<0101> <AC01>
+endbfchar";
+        let map = parse_to_unicode_cmap(cmap).unwrap();
+        assert_eq!(map.code_width, 2);
+        // Decode 2-byte codes
+        let result = map.decode(&[0x01, 0x00, 0x01, 0x01]);
+        assert_eq!(result, "\u{AC00}\u{AC01}");
     }
 }

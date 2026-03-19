@@ -509,7 +509,6 @@ impl<'a> LayoutAnalyzer<'a> {
                             // Large negative values (like -200 to -300) often indicate word spaces
                             if let Some(PdfValue::Array(arr)) = op.operands.first() {
                                 let mut combined = String::new();
-                                let space_threshold = 200.0;
 
                                 for item in arr {
                                     match item {
@@ -522,15 +521,11 @@ impl<'a> LayoutAnalyzer<'a> {
                                         }
                                         PdfValue::Integer(n) => {
                                             let adjustment = -(*n as f32);
-                                            if adjustment > space_threshold {
-                                                maybe_insert_space(&mut combined);
-                                            }
+                                            maybe_insert_space_tj(&mut combined, adjustment);
                                         }
                                         PdfValue::Real(n) => {
                                             let adjustment = -n;
-                                            if adjustment > space_threshold {
-                                                maybe_insert_space(&mut combined);
-                                            }
+                                            maybe_insert_space_tj(&mut combined, adjustment);
                                         }
                                         _ => {}
                                     }
@@ -1135,14 +1130,43 @@ impl TextMatrix {
 
 /// Insert a space into `text` if it doesn't already end with one and the
 /// last character is not from a spaceless script (CJK/Japanese).
-fn maybe_insert_space(text: &mut String) {
-    if !text.is_empty() && !text.ends_with(' ') && !text.ends_with('\u{00A0}') {
-        if let Some(c) = text.chars().last() {
-            if !is_spaceless_script_char(c) {
-                text.push(' ');
-            }
+/// Insert a space in TJ array based on kerning adjustment, with script-aware thresholds.
+///
+/// TJ adjustments are in 1/1000 text space units. The threshold for inserting a space
+/// varies by script:
+/// - Latin: 200 units (~33% of typical char width ~600)
+/// - Hangul (Korean): 500 units (~50% of typical char width 1000)
+///   Korean uses word spaces, but kerning between syllables is typically 100-300 units.
+/// - CJK (Chinese/Japanese): never insert spaces (handled by is_spaceless_script_char)
+fn maybe_insert_space_tj(text: &mut String, adjustment: f32) {
+    if text.is_empty() || text.ends_with(' ') || text.ends_with('\u{00A0}') {
+        return;
+    }
+
+    if let Some(last_char) = text.chars().last() {
+        if is_spaceless_script_char(last_char) {
+            return;
+        }
+
+        let threshold = if is_hangul_char(last_char) { 500.0 } else { 200.0 };
+        if adjustment > threshold {
+            text.push(' ');
         }
     }
+}
+
+/// Check if a character is a Hangul (Korean) syllable or jamo.
+fn is_hangul_char(c: char) -> bool {
+    let code = c as u32;
+    // Hangul Syllables
+    (0xAC00..=0xD7AF).contains(&code)
+    // Hangul Jamo
+    || (0x1100..=0x11FF).contains(&code)
+    // Hangul Compatibility Jamo
+    || (0x3130..=0x318F).contains(&code)
+    // Hangul Jamo Extended-A/B
+    || (0xA960..=0xA97F).contains(&code)
+    || (0xD7B0..=0xD7FF).contains(&code)
 }
 
 /// Check if a character is a CJK (Chinese/Japanese/Korean) character.
