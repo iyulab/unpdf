@@ -1026,6 +1026,180 @@ impl PdfBackend for LopdfBackend {
             simple
         }
     }
+
+    fn metadata(&self) -> PdfMetadataRaw {
+        let mut meta = PdfMetadataRaw {
+            version: self.doc.version.to_string(),
+            encrypted: self.doc.is_encrypted(),
+            ..Default::default()
+        };
+
+        if let Ok(info) = self.doc.trailer.get(b"Info") {
+            if let Ok(info_ref) = info.as_reference() {
+                if let Ok(info_dict) = self.doc.get_dictionary(info_ref) {
+                    meta.title = Self::get_string_from_lopdf_dict(info_dict, b"Title");
+                    meta.author = Self::get_string_from_lopdf_dict(info_dict, b"Author");
+                    meta.subject = Self::get_string_from_lopdf_dict(info_dict, b"Subject");
+                    meta.keywords = Self::get_string_from_lopdf_dict(info_dict, b"Keywords");
+                    meta.creator = Self::get_string_from_lopdf_dict(info_dict, b"Creator");
+                    meta.producer = Self::get_string_from_lopdf_dict(info_dict, b"Producer");
+                    meta.creation_date =
+                        Self::get_string_from_lopdf_dict(info_dict, b"CreationDate");
+                    meta.mod_date = Self::get_string_from_lopdf_dict(info_dict, b"ModDate");
+                }
+            }
+        }
+
+        meta
+    }
+
+    fn page_dimensions(&self, page: PageId) -> (f32, f32) {
+        if let Ok(page_dict) = self.doc.get_dictionary(page) {
+            if let Ok(media_box) = page_dict.get(b"MediaBox") {
+                if let Ok(array) = media_box.as_array() {
+                    if array.len() >= 4 {
+                        let width = array[2].as_float().unwrap_or(612.0);
+                        let height = array[3].as_float().unwrap_or(792.0);
+                        return (width, height);
+                    }
+                }
+            }
+        }
+        (612.0, 792.0)
+    }
+
+    fn outline(&self) -> Result<Vec<RawOutlineItem>> {
+        const MAX_DEPTH: u8 = 64;
+        let mut items = Vec::new();
+        let mut visited = std::collections::HashSet::new();
+
+        if let Ok(catalog) = self.doc.catalog() {
+            if let Ok(outlines) = catalog.get(b"Outlines") {
+                if let Ok(outlines_ref) = outlines.as_reference() {
+                    if let Ok(outlines_dict) = self.doc.get_dictionary(outlines_ref) {
+                        if let Ok(first) = outlines_dict.get(b"First") {
+                            if let Ok(first_ref) = first.as_reference() {
+                                self.collect_outline_items(
+                                    first_ref,
+                                    0,
+                                    MAX_DEPTH,
+                                    &mut items,
+                                    &mut visited,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(items)
+    }
+
+    fn page_xobjects(&self, page: PageId) -> Result<Vec<RawXObject>> {
+        let mut xobjects = Vec::new();
+
+        let page_dict = self
+            .doc
+            .get_dictionary(page)
+            .map_err(|e| Error::PdfParse(e.to_string()))?;
+
+        let res = match page_dict.get(b"Resources") {
+            Ok(r) => r,
+            Err(_) => return Ok(xobjects),
+        };
+
+        let res_dict = match res {
+            Object::Reference(r) => match self.doc.get_dictionary(*r) {
+                Ok(d) => d,
+                Err(_) => return Ok(xobjects),
+            },
+            Object::Dictionary(d) => d,
+            _ => return Ok(xobjects),
+        };
+
+        let xobj_entry = match res_dict.get(b"XObject") {
+            Ok(x) => x,
+            Err(_) => return Ok(xobjects),
+        };
+
+        let xobj_dict = match xobj_entry {
+            Object::Reference(r) => match self.doc.get_dictionary(*r) {
+                Ok(d) => d,
+                Err(_) => return Ok(xobjects),
+            },
+            Object::Dictionary(d) => d,
+            _ => return Ok(xobjects),
+        };
+
+        for (name, obj) in xobj_dict.iter() {
+            if let Ok(obj_ref) = obj.as_reference() {
+                if let Ok(Object::Stream(stream)) = self.doc.get_object(obj_ref) {
+                    let dict = &stream.dict;
+
+                    let subtype = dict
+                        .get(b"Subtype")
+                        .ok()
+                        .and_then(|s| s.as_name().ok())
+                        .map(|n| String::from_utf8_lossy(n).to_string())
+                        .unwrap_or_default();
+
+                    if subtype != "Image" {
+                        continue;
+                    }
+
+                    let filter = dict
+                        .get(b"Filter")
+                        .ok()
+                        .and_then(|f| f.as_name().ok())
+                        .map(|n| String::from_utf8_lossy(n).to_string());
+
+                    let data = match filter.as_deref() {
+                        Some("DCTDecode") | Some("JPXDecode") => stream.content.clone(),
+                        _ => safe_decompress(stream),
+                    };
+
+                    let width = dict
+                        .get(b"Width")
+                        .ok()
+                        .and_then(|w| w.as_i64().ok())
+                        .map(|w| w as u32);
+                    let height = dict
+                        .get(b"Height")
+                        .ok()
+                        .and_then(|h| h.as_i64().ok())
+                        .map(|h| h as u32);
+                    let bits = dict
+                        .get(b"BitsPerComponent")
+                        .ok()
+                        .and_then(|b| b.as_i64().ok())
+                        .map(|b| b as u8);
+
+                    let color_space = dict.get(b"ColorSpace").ok().and_then(|cs| match cs {
+                        Object::Name(n) => Some(String::from_utf8_lossy(n).to_string()),
+                        Object::Array(arr) => arr
+                            .first()
+                            .and_then(|o| o.as_name().ok())
+                            .map(|n| String::from_utf8_lossy(n).to_string()),
+                        _ => None,
+                    });
+
+                    xobjects.push(RawXObject {
+                        name: String::from_utf8_lossy(name).to_string(),
+                        subtype,
+                        data,
+                        filter,
+                        width,
+                        height,
+                        bits_per_component: bits,
+                        color_space,
+                    });
+                }
+            }
+        }
+
+        Ok(xobjects)
+    }
 }
 
 impl LopdfBackend {
@@ -1096,6 +1270,120 @@ impl LopdfBackend {
         }
 
         Some(result)
+    }
+
+    fn get_string_from_lopdf_dict(dict: &lopdf::Dictionary, key: &[u8]) -> Option<String> {
+        dict.get(key).ok().and_then(|obj| match obj {
+            Object::String(bytes, _) => {
+                if bytes.len() >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF {
+                    let utf16: Vec<u16> = bytes[2..]
+                        .chunks(2)
+                        .filter_map(|c| {
+                            if c.len() == 2 {
+                                Some(u16::from_be_bytes([c[0], c[1]]))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    String::from_utf16(&utf16).ok()
+                } else {
+                    String::from_utf8(bytes.clone())
+                        .ok()
+                        .or_else(|| Some(bytes.iter().map(|&b| b as char).collect()))
+                }
+            }
+            Object::Name(bytes) => String::from_utf8(bytes.clone()).ok(),
+            _ => None,
+        })
+    }
+
+    fn collect_outline_items(
+        &self,
+        item_ref: ObjectId,
+        level: u8,
+        max_depth: u8,
+        items: &mut Vec<RawOutlineItem>,
+        visited: &mut std::collections::HashSet<ObjectId>,
+    ) {
+        if !visited.insert(item_ref) || level > max_depth {
+            return;
+        }
+
+        if let Ok(item_dict) = self.doc.get_dictionary(item_ref) {
+            let title =
+                Self::get_string_from_lopdf_dict(item_dict, b"Title").unwrap_or_default();
+            let page = self.resolve_outline_dest(item_dict);
+
+            let mut outline_item = RawOutlineItem {
+                title,
+                page,
+                level,
+                children: Vec::new(),
+            };
+
+            if let Ok(first) = item_dict.get(b"First") {
+                if let Ok(first_ref) = first.as_reference() {
+                    self.collect_outline_items(
+                        first_ref,
+                        level + 1,
+                        max_depth,
+                        &mut outline_item.children,
+                        visited,
+                    );
+                }
+            }
+
+            items.push(outline_item);
+
+            if let Ok(next) = item_dict.get(b"Next") {
+                if let Ok(next_ref) = next.as_reference() {
+                    self.collect_outline_items(next_ref, level, max_depth, items, visited);
+                }
+            }
+        }
+    }
+
+    fn resolve_outline_dest(&self, item_dict: &lopdf::Dictionary) -> Option<u32> {
+        let pages = self.doc.get_pages();
+
+        // Try Dest
+        if let Ok(dest) = item_dict.get(b"Dest") {
+            if let Ok(dest_array) = dest.as_array() {
+                if let Some(first) = dest_array.first() {
+                    if let Ok(page_ref) = first.as_reference() {
+                        for (num, id) in pages.iter() {
+                            if *id == page_ref {
+                                return Some(*num);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Try A (action) dictionary
+        if let Ok(action) = item_dict.get(b"A") {
+            if let Ok(action_ref) = action.as_reference() {
+                if let Ok(action_dict) = self.doc.get_dictionary(action_ref) {
+                    if let Ok(dest) = action_dict.get(b"D") {
+                        if let Ok(dest_array) = dest.as_array() {
+                            if let Some(first) = dest_array.first() {
+                                if let Ok(page_ref) = first.as_reference() {
+                                    for (num, id) in pages.iter() {
+                                        if *id == page_ref {
+                                            return Some(*num);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        None
     }
 }
 
