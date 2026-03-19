@@ -1,6 +1,6 @@
 //! PDF document parser.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::io::Read;
 use std::path::Path;
 
@@ -10,14 +10,14 @@ use crate::model::{
     Block, Document, Metadata, Outline, OutlineItem, Page, Paragraph, Resource, ResourceType,
 };
 
-use super::backend::LopdfBackend;
+use super::backend::{LopdfBackend, PdfBackend, RawOutlineItem, RawXObject};
 use super::layout::{BlockType, LayoutAnalyzer};
 use super::options::{ErrorMode, ExtractMode, ParseOptions};
 use super::table_detector::TableDetector;
 
 /// PDF document parser.
 pub struct PdfParser {
-    backend: LopdfBackend,
+    backend: Box<dyn PdfBackend>,
     options: ParseOptions,
 }
 
@@ -34,10 +34,10 @@ impl PdfParser {
         // Verify it's a PDF
         detect_format_from_path(path)?;
 
-        let backend = LopdfBackend::load_file(path)?;
+        let backend: Box<dyn PdfBackend> = Box::new(LopdfBackend::load_file(path)?);
 
-        if options.password.is_some() && backend.is_encrypted() {
-            log::warn!("Password was provided but lopdf doesn't support decryption");
+        if options.password.is_some() && backend.metadata().encrypted {
+            log::warn!("Password was provided but PDF decryption is not supported");
         }
 
         Ok(Self { backend, options })
@@ -50,10 +50,10 @@ impl PdfParser {
 
     /// Parse a PDF from bytes with custom options.
     pub fn from_bytes_with_options(data: &[u8], options: ParseOptions) -> Result<Self> {
-        let backend = LopdfBackend::load_bytes(data)?;
+        let backend: Box<dyn PdfBackend> = Box::new(LopdfBackend::load_bytes(data)?);
 
-        if options.password.is_some() && backend.is_encrypted() {
-            log::warn!("Password was provided but lopdf doesn't support decryption");
+        if options.password.is_some() && backend.metadata().encrypted {
+            log::warn!("Password was provided but PDF decryption is not supported");
         }
 
         Ok(Self { backend, options })
@@ -66,10 +66,10 @@ impl PdfParser {
 
     /// Parse a PDF from a reader with custom options.
     pub fn from_reader_with_options<R: Read>(reader: R, options: ParseOptions) -> Result<Self> {
-        let backend = LopdfBackend::load_reader(reader)?;
+        let backend: Box<dyn PdfBackend> = Box::new(LopdfBackend::load_reader(reader)?);
 
-        if options.password.is_some() && backend.is_encrypted() {
-            log::warn!("Password was provided but lopdf doesn't support decryption");
+        if options.password.is_some() && backend.metadata().encrypted {
+            log::warn!("Password was provided but PDF decryption is not supported");
         }
 
         Ok(Self { backend, options })
@@ -83,7 +83,7 @@ impl PdfParser {
         document.metadata = self.extract_metadata()?;
 
         // Extract pages
-        let page_ids = self.backend.raw_doc().get_pages();
+        let page_ids = self.backend.pages();
         let total_pages = page_ids.len() as u32;
         document.metadata.page_count = total_pages;
 
@@ -126,34 +126,21 @@ impl PdfParser {
 
     /// Extract document metadata.
     fn extract_metadata(&self) -> Result<Metadata> {
-        let doc = self.backend.raw_doc();
-        let mut metadata = Metadata::with_version(doc.version.to_string());
-
-        // Try to get document info dictionary
-        if let Ok(info) = doc.trailer.get(b"Info") {
-            if let Ok(info_ref) = info.as_reference() {
-                if let Ok(info_dict) = doc.get_dictionary(info_ref) {
-                    metadata.title = get_string_from_dict(info_dict, b"Title");
-                    metadata.author = get_string_from_dict(info_dict, b"Author");
-                    metadata.subject = get_string_from_dict(info_dict, b"Subject");
-                    metadata.keywords = get_string_from_dict(info_dict, b"Keywords");
-                    metadata.creator = get_string_from_dict(info_dict, b"Creator");
-                    metadata.producer = get_string_from_dict(info_dict, b"Producer");
-
-                    // Parse dates
-                    if let Some(date_str) = get_string_from_dict(info_dict, b"CreationDate") {
-                        metadata.created = parse_pdf_date(&date_str);
-                    }
-                    if let Some(date_str) = get_string_from_dict(info_dict, b"ModDate") {
-                        metadata.modified = parse_pdf_date(&date_str);
-                    }
-                }
-            }
+        let raw = self.backend.metadata();
+        let mut metadata = Metadata::with_version(raw.version);
+        metadata.title = raw.title;
+        metadata.author = raw.author;
+        metadata.subject = raw.subject;
+        metadata.keywords = raw.keywords;
+        metadata.creator = raw.creator;
+        metadata.producer = raw.producer;
+        metadata.encrypted = raw.encrypted;
+        if let Some(date_str) = raw.creation_date {
+            metadata.created = parse_pdf_date(&date_str);
         }
-
-        // Check if encrypted
-        metadata.encrypted = doc.is_encrypted();
-
+        if let Some(date_str) = raw.mod_date {
+            metadata.modified = parse_pdf_date(&date_str);
+        }
         Ok(metadata)
     }
 
@@ -188,7 +175,7 @@ impl PdfParser {
 
     /// Extract page content with table detection.
     fn extract_page_with_tables(&self, page_num: u32) -> Result<Vec<Block>> {
-        let analyzer = LayoutAnalyzer::new(&self.backend);
+        let analyzer = LayoutAnalyzer::new(&*self.backend);
 
         // Step 1: Extract all text spans
         let spans = analyzer.extract_page_spans(page_num)?;
@@ -224,7 +211,7 @@ impl PdfParser {
 
             // Process remaining spans into text blocks
             if !remaining_spans.is_empty() {
-                let mut analyzer = LayoutAnalyzer::new(&self.backend);
+                let mut analyzer = LayoutAnalyzer::new(&*self.backend);
                 // Manually add font stats from remaining spans
                 for span in &remaining_spans {
                     analyzer.font_stats_mut().add_size(span.font_size);
@@ -305,7 +292,7 @@ impl PdfParser {
 
     /// Extract page with layout analysis.
     fn extract_page_with_layout(&self, page_num: u32) -> Result<Vec<super::layout::TextBlock>> {
-        let mut analyzer = LayoutAnalyzer::new(&self.backend);
+        let mut analyzer = LayoutAnalyzer::new(&*self.backend);
         analyzer.extract_page_blocks(page_num)
     }
 
@@ -329,30 +316,16 @@ impl PdfParser {
 
     /// Get page dimensions.
     fn get_page_dimensions(&self, page_num: u32) -> Result<(f32, f32)> {
-        let pages = self.backend.raw_doc().get_pages();
+        let pages = self.backend.pages();
         let page_id = pages
             .get(&page_num)
             .ok_or(Error::PageOutOfRange(page_num, pages.len() as u32))?;
-
-        if let Ok(page_dict) = self.backend.raw_doc().get_dictionary(*page_id) {
-            if let Ok(media_box) = page_dict.get(b"MediaBox") {
-                if let Ok(array) = media_box.as_array() {
-                    if array.len() >= 4 {
-                        let width = array[2].as_float().unwrap_or(612.0);
-                        let height = array[3].as_float().unwrap_or(792.0);
-                        return Ok((width, height));
-                    }
-                }
-            }
-        }
-
-        // Default to Letter size
-        Ok((612.0, 792.0))
+        Ok(self.backend.page_dimensions(*page_id))
     }
 
     /// Extract text from a page using layout-aware span extraction.
     fn extract_page_text(&self, page_num: u32) -> Result<String> {
-        let analyzer = LayoutAnalyzer::new(&self.backend);
+        let analyzer = LayoutAnalyzer::new(&*self.backend);
         let spans = analyzer.extract_page_spans(page_num)?;
 
         if spans.is_empty() {
@@ -367,326 +340,78 @@ impl PdfParser {
             .join("\n"))
     }
 
-    /// Maximum depth for outline recursion to prevent stack overflow.
-    const MAX_OUTLINE_DEPTH: u8 = 64;
-
     /// Extract document outline (bookmarks).
     fn extract_outline(&self) -> Result<Outline> {
+        let raw_items = self.backend.outline()?;
         let mut outline = Outline::new();
-        let mut visited = HashSet::new();
-
-        // Get outline root from catalog
-        if let Ok(catalog) = self.backend.raw_doc().catalog() {
-            if let Ok(outlines) = catalog.get(b"Outlines") {
-                if let Ok(outlines_ref) = outlines.as_reference() {
-                    if let Ok(outlines_dict) = self.backend.raw_doc().get_dictionary(outlines_ref) {
-                        // Get first outline item
-                        if let Ok(first) = outlines_dict.get(b"First") {
-                            if let Ok(first_ref) = first.as_reference() {
-                                self.extract_outline_items(
-                                    first_ref,
-                                    0,
-                                    &mut outline.items,
-                                    &mut visited,
-                                )?;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
+        outline.items = raw_items
+            .into_iter()
+            .map(Self::convert_outline_item)
+            .collect();
         Ok(outline)
     }
 
-    /// Recursively extract outline items.
-    /// Uses a visited set to detect circular references and a depth limit
-    /// to prevent stack overflow on malformed PDFs.
-    fn extract_outline_items(
-        &self,
-        item_ref: lopdf::ObjectId,
-        level: u8,
-        items: &mut Vec<OutlineItem>,
-        visited: &mut HashSet<lopdf::ObjectId>,
-    ) -> Result<()> {
-        // Guard: cycle detection and depth limit
-        if !visited.insert(item_ref) || level > Self::MAX_OUTLINE_DEPTH {
-            return Ok(());
-        }
-
-        if let Ok(item_dict) = self.backend.raw_doc().get_dictionary(item_ref) {
-            // Get title
-            let title = get_string_from_dict(item_dict, b"Title").unwrap_or_default();
-
-            // Get destination page (simplified)
-            let page = self.get_outline_destination(item_dict);
-
-            let mut outline_item = OutlineItem::new(title, page, level);
-
-            // Process children (First)
-            if let Ok(first) = item_dict.get(b"First") {
-                if let Ok(first_ref) = first.as_reference() {
-                    self.extract_outline_items(
-                        first_ref,
-                        level + 1,
-                        &mut outline_item.children,
-                        visited,
-                    )?;
-                }
-            }
-
-            items.push(outline_item);
-
-            // Process siblings (Next)
-            if let Ok(next) = item_dict.get(b"Next") {
-                if let Ok(next_ref) = next.as_reference() {
-                    self.extract_outline_items(next_ref, level, items, visited)?;
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Get destination page from outline item.
-    fn get_outline_destination(&self, item_dict: &lopdf::Dictionary) -> Option<u32> {
-        // Try Dest first
-        if let Ok(dest) = item_dict.get(b"Dest") {
-            return self.resolve_destination(dest);
-        }
-
-        // Try A (action) dictionary
-        if let Ok(action) = item_dict.get(b"A") {
-            if let Ok(action_ref) = action.as_reference() {
-                if let Ok(action_dict) = self.backend.raw_doc().get_dictionary(action_ref) {
-                    if let Ok(dest) = action_dict.get(b"D") {
-                        return self.resolve_destination(dest);
-                    }
-                }
-            }
-        }
-
-        None
-    }
-
-    /// Resolve a destination to a page number.
-    fn resolve_destination(&self, dest: &lopdf::Object) -> Option<u32> {
-        let pages = self.backend.raw_doc().get_pages();
-
-        // Destination can be an array or a name
-        if let Ok(dest_array) = dest.as_array() {
-            if let Some(first) = dest_array.first() {
-                if let Ok(page_ref) = first.as_reference() {
-                    // Find page number from reference
-                    for (num, id) in pages.iter() {
-                        if *id == page_ref {
-                            return Some(*num);
-                        }
-                    }
-                }
-            }
-        }
-
-        None
+    /// Convert a raw outline item from the backend into a model OutlineItem.
+    fn convert_outline_item(raw: RawOutlineItem) -> OutlineItem {
+        let mut item = OutlineItem::new(raw.title, raw.page, raw.level);
+        item.children = raw
+            .children
+            .into_iter()
+            .map(Self::convert_outline_item)
+            .collect();
+        item
     }
 
     /// Extract embedded resources (images).
     fn extract_resources(&self) -> Result<HashMap<String, Resource>> {
         let mut resources = HashMap::new();
-
-        for (page_num, page_id) in self.backend.raw_doc().get_pages() {
-            if let Ok(page_resources) = self.extract_page_resources(page_id) {
-                for (id, resource) in page_resources {
-                    let key = format!("page{}_{}", page_num, id);
-                    resources.insert(key, resource);
-                }
-            }
-        }
-
-        Ok(resources)
-    }
-
-    /// Extract resources from a page.
-    fn extract_page_resources(&self, page_id: lopdf::ObjectId) -> Result<Vec<(String, Resource)>> {
-        let mut resources = Vec::new();
-
-        if let Ok(page_dict) = self.backend.raw_doc().get_dictionary(page_id) {
-            if let Ok(res) = page_dict.get(b"Resources") {
-                let res_dict = match res {
-                    lopdf::Object::Reference(r) => self.backend.raw_doc().get_dictionary(*r).ok(),
-                    lopdf::Object::Dictionary(d) => Some(d),
-                    _ => None,
-                };
-
-                if let Some(res_dict) = res_dict {
-                    // Extract XObjects (images)
-                    if let Ok(xobjects) = res_dict.get(b"XObject") {
-                        let xobj_dict = match xobjects {
-                            lopdf::Object::Reference(r) => {
-                                self.backend.raw_doc().get_dictionary(*r).ok()
-                            }
-                            lopdf::Object::Dictionary(d) => Some(d),
-                            _ => None,
-                        };
-
-                        if let Some(xobj_dict) = xobj_dict {
-                            for (name, obj) in xobj_dict.iter() {
-                                if let Ok(obj_ref) = obj.as_reference() {
-                                    if let Ok(resource) = self.extract_xobject(obj_ref) {
-                                        let name_str = String::from_utf8_lossy(name).to_string();
-                                        resources.push((name_str, resource));
-                                    }
-                                }
-                            }
-                        }
+        for (page_num, page_id) in self.backend.pages() {
+            if let Ok(xobjects) = self.backend.page_xobjects(page_id) {
+                for xobj in xobjects {
+                    let key = format!("page{}_{}", page_num, xobj.name);
+                    if let Some(resource) = Self::convert_xobject(xobj) {
+                        resources.insert(key, resource);
                     }
                 }
             }
         }
-
         Ok(resources)
     }
 
-    /// Extract an XObject (image).
-    fn extract_xobject(&self, obj_ref: lopdf::ObjectId) -> Result<Resource> {
-        let stream = self
-            .backend
-            .raw_doc()
-            .get_object(obj_ref)
-            .map_err(|e| Error::ImageExtract(e.to_string()))?;
-
-        if let lopdf::Object::Stream(stream) = stream {
-            let dict = &stream.dict;
-
-            // Check if it's an image
-            if let Ok(subtype) = dict.get(b"Subtype") {
-                match subtype.as_name() {
-                    Ok(name) if name == b"Image" => {}
-                    _ => return Err(Error::ImageExtract("Not an image XObject".to_string())),
-                }
-            }
-
-            // Get image properties
-            let width = dict
-                .get(b"Width")
-                .ok()
-                .and_then(|w| w.as_i64().ok())
-                .map(|w| w as u32);
-
-            let height = dict
-                .get(b"Height")
-                .ok()
-                .and_then(|h| h.as_i64().ok())
-                .map(|h| h as u32);
-
-            let bits = dict
-                .get(b"BitsPerComponent")
-                .ok()
-                .and_then(|b| b.as_i64().ok())
-                .map(|b| b as u8);
-
-            // Get filter to determine format
-            let filter = dict
-                .get(b"Filter")
-                .ok()
-                .and_then(|f| f.as_name().ok())
-                .map(|n| String::from_utf8_lossy(n).to_string())
-                .unwrap_or_default();
-
-            let (mime_type, data) = match filter.as_str() {
-                "DCTDecode" => {
-                    // JPEG - data can be used directly
-                    ("image/jpeg".to_string(), stream.content.clone())
-                }
-                "FlateDecode" | "LZWDecode" | "" => {
-                    // Need to decode and convert to PNG
-                    // For now, store raw data
-                    let decoded = super::backend::safe_decompress(stream);
-                    ("application/octet-stream".to_string(), decoded)
-                }
-                "JPXDecode" => ("image/jp2".to_string(), stream.content.clone()),
-                _ => (
-                    "application/octet-stream".to_string(),
-                    stream.content.clone(),
-                ),
-            };
-
-            let mut resource = Resource::new(data, mime_type, ResourceType::Image);
-
-            if let (Some(w), Some(h)) = (width, height) {
-                resource = resource.with_dimensions(w, h);
-            }
-
-            if let Some(b) = bits {
-                resource = resource.with_bits_per_component(b);
-            }
-
-            // Get color space
-            if let Ok(cs) = dict.get(b"ColorSpace") {
-                let cs_name = match cs {
-                    lopdf::Object::Name(n) => Some(String::from_utf8_lossy(n).to_string()),
-                    lopdf::Object::Array(arr) => arr
-                        .first()
-                        .and_then(|o| o.as_name().ok())
-                        .map(|n| String::from_utf8_lossy(n).to_string()),
-                    _ => None,
-                };
-                if let Some(cs_name) = cs_name {
-                    resource = resource.with_color_space(cs_name);
-                }
-            }
-
-            return Ok(resource);
+    /// Convert a raw XObject into a model Resource.
+    fn convert_xobject(xobj: RawXObject) -> Option<Resource> {
+        let mime_type = match xobj.filter.as_deref() {
+            Some("DCTDecode") => "image/jpeg",
+            Some("JPXDecode") => "image/jp2",
+            _ => "application/octet-stream",
+        };
+        let mut resource = Resource::new(xobj.data, mime_type.to_string(), ResourceType::Image);
+        if let (Some(w), Some(h)) = (xobj.width, xobj.height) {
+            resource = resource.with_dimensions(w, h);
         }
-
-        Err(Error::ImageExtract("Invalid XObject".to_string()))
+        if let Some(b) = xobj.bits_per_component {
+            resource = resource.with_bits_per_component(b);
+        }
+        if let Some(cs) = xobj.color_space {
+            resource = resource.with_color_space(cs);
+        }
+        Some(resource)
     }
 
     /// Get the number of pages.
     pub fn page_count(&self) -> u32 {
-        self.backend.raw_doc().get_pages().len() as u32
+        self.backend.pages().len() as u32
     }
 
     /// Check if the document is encrypted.
     pub fn is_encrypted(&self) -> bool {
-        self.backend.raw_doc().is_encrypted()
+        self.backend.metadata().encrypted
     }
 
     /// Get PDF version.
     pub fn version(&self) -> String {
-        self.backend.raw_doc().version.to_string()
+        self.backend.metadata().version
     }
-}
-
-/// Helper to get a string from a PDF dictionary.
-fn get_string_from_dict(dict: &lopdf::Dictionary, key: &[u8]) -> Option<String> {
-    dict.get(key).ok().and_then(|obj| {
-        match obj {
-            lopdf::Object::String(bytes, _) => {
-                // Try UTF-16BE first (PDF standard for Unicode)
-                if bytes.len() >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF {
-                    let utf16: Vec<u16> = bytes[2..]
-                        .chunks(2)
-                        .filter_map(|c| {
-                            if c.len() == 2 {
-                                Some(u16::from_be_bytes([c[0], c[1]]))
-                            } else {
-                                None
-                            }
-                        })
-                        .collect();
-                    String::from_utf16(&utf16).ok()
-                } else {
-                    // Try as Latin-1 or UTF-8
-                    String::from_utf8(bytes.clone())
-                        .ok()
-                        .or_else(|| Some(bytes.iter().map(|&b| b as char).collect()))
-                }
-            }
-            lopdf::Object::Name(bytes) => String::from_utf8(bytes.clone()).ok(),
-            _ => None,
-        }
-    })
 }
 
 /// Parse a PDF date string (D:YYYYMMDDHHmmSSOHH'mm').
