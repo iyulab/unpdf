@@ -37,6 +37,43 @@ pub struct ContentOp {
     pub operands: Vec<PdfValue>,
 }
 
+/// Raw metadata from the PDF backend.
+#[derive(Debug, Clone, Default)]
+pub struct PdfMetadataRaw {
+    pub version: String,
+    pub title: Option<String>,
+    pub author: Option<String>,
+    pub subject: Option<String>,
+    pub keywords: Option<String>,
+    pub creator: Option<String>,
+    pub producer: Option<String>,
+    pub creation_date: Option<String>,
+    pub mod_date: Option<String>,
+    pub encrypted: bool,
+}
+
+/// A raw outline (bookmark) item from the PDF.
+#[derive(Debug, Clone)]
+pub struct RawOutlineItem {
+    pub title: String,
+    pub page: Option<u32>,
+    pub level: u8,
+    pub children: Vec<RawOutlineItem>,
+}
+
+/// A raw XObject (image) extracted from a PDF page.
+#[derive(Debug, Clone)]
+pub struct RawXObject {
+    pub name: String,
+    pub subtype: String,
+    pub data: Vec<u8>,
+    pub filter: Option<String>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub bits_per_component: Option<u8>,
+    pub color_space: Option<String>,
+}
+
 /// Abstract interface for PDF document access.
 ///
 /// Implementations provide page enumeration, font info, content stream
@@ -57,6 +94,20 @@ pub trait PdfBackend {
     /// Decode a text byte sequence using the font's encoding on the given page.
     /// Falls back to simple decoding if the font or encoding is unavailable.
     fn decode_text(&self, page: PageId, font_name: &[u8], bytes: &[u8]) -> String;
+
+    /// Return raw metadata (version, info dict fields, encryption status).
+    fn metadata(&self) -> PdfMetadataRaw;
+
+    /// Return page dimensions (width, height) in points.
+    /// Falls back to Letter size (612, 792) if MediaBox is absent.
+    fn page_dimensions(&self, page: PageId) -> (f32, f32);
+
+    /// Return the document outline (bookmarks) as a tree.
+    /// Implementations must handle cycle detection and depth limits.
+    fn outline(&self) -> Result<Vec<RawOutlineItem>>;
+
+    /// Return XObjects (images) from a page.
+    fn page_xobjects(&self, page: PageId) -> Result<Vec<RawXObject>>;
 }
 
 /// Simple text decoding fallback when no encoding is available.
