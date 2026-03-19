@@ -1,6 +1,6 @@
 [package]
 name = "unpdf-cli"
-version = "0.2.3"
+version = "0.2.5"
 edition = "2021"
 authors = ["iyulab"]
 license = "MIT"
@@ -15,7 +15,7 @@ name = "unpdf"
 path = "src/main.rs"
 
 [dependencies]
-unpdf = { version = "0.2.2", path = ".." }
+unpdf = { version = "0.2.5", path = ".." }
 
 # CLI argument parsing
 clap = { version = "4.5", features = ["derive", "env"] }
@@ -28,6 +28,9 @@ indicatif = "0.17"
 
 # Self-update from GitHub releases
 self_update = { version = "0.41", features = ["archive-zip", "archive-tar", "compression-flate2"] }
+
+# HTTP client (re-used from self_update for manual asset download)
+reqwest = { version = "0.12", default-features = false, features = ["default-tls"] }
 
 # Async runtime (for update)
 tokio = { version = "1.42", features = ["rt-multi-thread", "macros"] }

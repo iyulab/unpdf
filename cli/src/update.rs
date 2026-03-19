@@ -1,7 +1,7 @@
 //! Self-update functionality using GitHub releases
 
 use colored::Colorize;
-use self_update::backends::github::{ReleaseList, Update};
+use self_update::backends::github::ReleaseList;
 use self_update::cargo_crate_version;
 use semver::Version;
 use std::sync::mpsc;
@@ -113,15 +113,6 @@ fn find_matching_asset(asset_names: &[String], patterns: &[String]) -> Option<St
     None
 }
 
-/// Get target strings to try for self_update matching (in priority order)
-fn get_target_strings(platform: &PlatformInfo) -> Vec<String> {
-    vec![
-        // Human-friendly format: windows-x86_64
-        format!("{}-{}", platform.os_name, platform.arch_name),
-        // Target triple: x86_64-pc-windows-msvc
-        platform.target_triple.to_string(),
-    ]
-}
 
 /// Detect if installed via cargo install (binary in .cargo/bin)
 fn is_cargo_install() -> bool {
@@ -319,50 +310,44 @@ pub fn run_update(check_only: bool, force: bool) -> Result<(), Box<dyn std::erro
     let asset_name = asset_name.unwrap();
     println!("{} {}", "Found asset:".dimmed(), asset_name.dimmed());
 
-    // Try multiple target strings for self_update matching
-    let target_strings = get_target_strings(&platform);
-    let mut last_error: Option<Box<dyn std::error::Error>> = None;
+    // Find the matching asset's download URL
+    let target_asset = latest
+        .assets
+        .iter()
+        .find(|a| a.name == asset_name)
+        .ok_or("Matched asset not found in release")?;
 
-    for target in &target_strings {
-        println!("{} target: {}", "Checking".dimmed(), target.dimmed());
+    // Download the archive to a temp directory
+    let tmp_dir = self_update::TempDir::new()?;
+    let tmp_archive_path = tmp_dir.path().join(&asset_name);
+    let mut tmp_archive = std::fs::File::create(&tmp_archive_path)?;
 
-        let result = Update::configure()
-            .repo_owner(REPO_OWNER)
-            .repo_name(REPO_NAME)
-            .bin_name(BIN_NAME)
-            .target(target)
-            .current_version(current_version)
-            .show_download_progress(true)
-            .no_confirm(true)
-            .build()
-            .and_then(|updater| updater.update());
+    let mut download = self_update::Download::from_url(&target_asset.download_url);
+    download.set_header(
+        reqwest::header::ACCEPT,
+        "application/octet-stream".parse().unwrap(),
+    );
+    download.show_progress(true);
+    download.download_to(&mut tmp_archive)?;
 
-        match result {
-            Ok(status) => {
-                match status {
-                    self_update::Status::UpToDate(v) => {
-                        println!("{} Already up to date (v{})", "✓".green().bold(), v);
-                    }
-                    self_update::Status::Updated(v) => {
-                        println!();
-                        println!("{} Successfully updated to v{}!", "✓".green().bold(), v);
-                        println!();
-                        println!("Restart unpdf to use the new version.");
-                    }
-                }
-                return Ok(());
-            }
-            Err(e) => {
-                last_error = Some(Box::new(e));
-                continue;
-            }
-        }
-    }
+    // Extract the binary from the archive
+    println!("{}", "Extracting archive...".dimmed());
+    let bin_name_with_ext = format!("{}{}", BIN_NAME, std::env::consts::EXE_SUFFIX);
+    self_update::Extract::from_source(&tmp_archive_path)
+        .extract_file(tmp_dir.path(), &bin_name_with_ext)?;
 
-    // All targets failed
-    if let Some(e) = last_error {
-        return Err(format!("Update failed: {}", e).into());
-    }
+    // Replace the current binary
+    let new_exe = tmp_dir.path().join(&bin_name_with_ext);
+    self_update::self_replace::self_replace(&new_exe)?;
+
+    println!();
+    println!(
+        "{} Successfully updated to v{}!",
+        "✓".green().bold(),
+        latest_version
+    );
+    println!();
+    println!("Restart unpdf to use the new version.");
 
     Ok(())
 }
