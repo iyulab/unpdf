@@ -963,6 +963,822 @@ pub fn get_number_from_value(val: &PdfValue) -> Option<f32> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// RawBackend — concrete implementation backed by custom parser
+// ---------------------------------------------------------------------------
+
+use super::raw::content as raw_content;
+use super::raw::stream as raw_stream;
+use super::raw::tokenizer::{
+    dict_get as raw_dict_get, PdfDict as RawPdfDict, PdfObject as RawPdfObject,
+};
+use super::raw::RawDocument;
+
+/// Concrete [`PdfBackend`] backed by the custom `RawDocument` parser.
+pub struct RawBackend {
+    doc: RawDocument,
+    font_resolver: RawFontResolver,
+}
+
+impl RawBackend {
+    /// Load from a file path.
+    pub fn load_file<P: AsRef<std::path::Path>>(path: P) -> Result<Self> {
+        let data = std::fs::read(path).map_err(Error::Io)?;
+        Self::load_bytes(&data)
+    }
+
+    /// Load from an in-memory byte slice.
+    pub fn load_bytes(data: &[u8]) -> Result<Self> {
+        let doc = RawDocument::load(data)?;
+        Ok(Self {
+            doc,
+            font_resolver: RawFontResolver::new(),
+        })
+    }
+
+    /// Load from a reader.
+    pub fn load_reader<R: std::io::Read>(mut reader: R) -> Result<Self> {
+        let mut data = Vec::new();
+        reader.read_to_end(&mut data)?;
+        Self::load_bytes(&data)
+    }
+
+    /// Check if the document is encrypted.
+    pub fn is_encrypted(&self) -> bool {
+        self.doc.is_encrypted()
+    }
+}
+
+impl PdfBackend for RawBackend {
+    fn pages(&self) -> BTreeMap<u32, PageId> {
+        self.doc.pages()
+    }
+
+    fn page_fonts(&self, page: PageId) -> Result<Vec<BackendFontInfo>> {
+        self.font_resolver.page_fonts(&self.doc, page)
+    }
+
+    fn page_content(&self, page_id: PageId) -> Result<Vec<u8>> {
+        let page_dict = self
+            .doc
+            .get_dict(page_id)
+            .map_err(|e| Error::PdfParse(e.to_string()))?;
+
+        let contents = raw_dict_get(page_dict, b"Contents")
+            .ok_or_else(|| Error::PdfParse("No Contents in page".to_string()))?;
+
+        let contents = self.doc.resolve(contents);
+
+        match contents {
+            RawPdfObject::Reference(n, g) => {
+                let obj = self
+                    .doc
+                    .get_object((*n, *g))
+                    .ok_or_else(|| Error::PdfParse("Content stream not found".to_string()))?;
+                let resolved = self.doc.resolve(obj);
+                if let Some(stream) = resolved.as_stream() {
+                    return raw_stream::decompress(stream);
+                }
+                Err(Error::PdfParse("Invalid content stream".to_string()))
+            }
+            RawPdfObject::Stream(stream) => raw_stream::decompress(stream),
+            RawPdfObject::Array(arr) => {
+                let mut content = Vec::new();
+                for item in arr {
+                    let resolved = self.doc.resolve(item);
+                    let stream_obj = match resolved {
+                        RawPdfObject::Stream(s) => s,
+                        RawPdfObject::Reference(n, g) => {
+                            if let Some(obj) = self.doc.get_object((*n, *g)) {
+                                let obj = self.doc.resolve(obj);
+                                match obj.as_stream() {
+                                    Some(s) => s,
+                                    None => continue,
+                                }
+                            } else {
+                                continue;
+                            }
+                        }
+                        _ => continue,
+                    };
+                    if let Ok(data) = raw_stream::decompress(stream_obj) {
+                        content.extend_from_slice(&data);
+                        content.push(b' ');
+                    }
+                }
+                Ok(content)
+            }
+            _ => Err(Error::PdfParse("Invalid content stream".to_string())),
+        }
+    }
+
+    fn decode_content(&self, data: &[u8]) -> Result<Vec<ContentOp>> {
+        raw_content::parse_content_stream(data)
+    }
+
+    fn decode_text(&self, page: PageId, font_name: &[u8], bytes: &[u8]) -> String {
+        self.font_resolver
+            .decode_text(&self.doc, page, font_name, bytes)
+    }
+
+    fn metadata(&self) -> PdfMetadataRaw {
+        let trailer = self.doc.trailer();
+        let mut meta = PdfMetadataRaw {
+            version: self.doc.version.clone(),
+            encrypted: self.doc.is_encrypted(),
+            ..Default::default()
+        };
+
+        if let Some(info_ref) = raw_dict_get(trailer, b"Info") {
+            if let Some((n, g)) = info_ref.as_reference() {
+                if let Ok(info_dict) = self.doc.get_dict((n, g)) {
+                    meta.title = raw_get_string(&self.doc, info_dict, b"Title");
+                    meta.author = raw_get_string(&self.doc, info_dict, b"Author");
+                    meta.subject = raw_get_string(&self.doc, info_dict, b"Subject");
+                    meta.keywords = raw_get_string(&self.doc, info_dict, b"Keywords");
+                    meta.creator = raw_get_string(&self.doc, info_dict, b"Creator");
+                    meta.producer = raw_get_string(&self.doc, info_dict, b"Producer");
+                    meta.creation_date = raw_get_string(&self.doc, info_dict, b"CreationDate");
+                    meta.mod_date = raw_get_string(&self.doc, info_dict, b"ModDate");
+                }
+            }
+        }
+
+        meta
+    }
+
+    fn page_dimensions(&self, page: PageId) -> (f32, f32) {
+        if let Some(dims) = self.find_media_box(page) {
+            return dims;
+        }
+        (612.0, 792.0)
+    }
+
+    fn outline(&self) -> Result<Vec<RawOutlineItem>> {
+        const MAX_DEPTH: u8 = 64;
+        let mut items = Vec::new();
+        let mut visited = std::collections::HashSet::new();
+
+        let catalog = self.doc.catalog()?;
+        if let Some(outlines_obj) = raw_dict_get(catalog, b"Outlines") {
+            let outlines_obj = self.doc.resolve(outlines_obj);
+            let outlines_dict = match outlines_obj {
+                RawPdfObject::Dict(d) => Some(d),
+                RawPdfObject::Reference(n, g) => self.doc.get_dict((*n, *g)).ok(),
+                _ => None,
+            };
+
+            if let Some(outlines_dict) = outlines_dict {
+                if let Some(first) = raw_dict_get(outlines_dict, b"First") {
+                    if let Some(first_ref) = first.as_reference() {
+                        self.collect_outline_items(
+                            first_ref,
+                            0,
+                            MAX_DEPTH,
+                            &mut items,
+                            &mut visited,
+                        );
+                    }
+                }
+            }
+        }
+
+        Ok(items)
+    }
+
+    fn page_xobjects(&self, page: PageId) -> Result<Vec<RawXObject>> {
+        let mut xobjects = Vec::new();
+
+        let page_dict = self
+            .doc
+            .get_dict(page)
+            .map_err(|e| Error::PdfParse(e.to_string()))?;
+
+        let resources = match raw_dict_get(page_dict, b"Resources") {
+            Some(r) => r,
+            None => return Ok(xobjects),
+        };
+
+        let res_dict = raw_resolve_dict(&self.doc, resources);
+        let res_dict = match res_dict {
+            Some(d) => d,
+            None => return Ok(xobjects),
+        };
+
+        let xobj_entry = match raw_dict_get(res_dict, b"XObject") {
+            Some(x) => x,
+            None => return Ok(xobjects),
+        };
+
+        let xobj_dict = raw_resolve_dict(&self.doc, xobj_entry);
+        let xobj_dict = match xobj_dict {
+            Some(d) => d,
+            None => return Ok(xobjects),
+        };
+
+        for (name, obj) in xobj_dict {
+            if let Some((n, g)) = obj.as_reference() {
+                if let Some(raw_obj) = self.doc.get_object((n, g)) {
+                    let resolved = self.doc.resolve(raw_obj);
+                    if let Some(stream) = resolved.as_stream() {
+                        let dict = &stream.dict;
+
+                        let subtype = raw_dict_get(dict, b"Subtype")
+                            .and_then(|s| s.as_name())
+                            .map(|n| String::from_utf8_lossy(n).to_string())
+                            .unwrap_or_default();
+
+                        if subtype != "Image" {
+                            continue;
+                        }
+
+                        let filter = raw_dict_get(dict, b"Filter")
+                            .and_then(|f| f.as_name())
+                            .map(|n| String::from_utf8_lossy(n).to_string());
+
+                        let data = match filter.as_deref() {
+                            Some("DCTDecode") | Some("JPXDecode") => stream.raw_data.clone(),
+                            _ => raw_stream::decompress(stream).unwrap_or_else(|_| stream.raw_data.clone()),
+                        };
+
+                        let width = raw_dict_get(dict, b"Width")
+                            .and_then(|w| w.as_i64())
+                            .map(|w| w as u32);
+                        let height = raw_dict_get(dict, b"Height")
+                            .and_then(|h| h.as_i64())
+                            .map(|h| h as u32);
+                        let bits = raw_dict_get(dict, b"BitsPerComponent")
+                            .and_then(|b| b.as_i64())
+                            .map(|b| b as u8);
+
+                        let color_space =
+                            raw_dict_get(dict, b"ColorSpace").and_then(|cs| match cs {
+                                RawPdfObject::Name(n) => {
+                                    Some(String::from_utf8_lossy(n).to_string())
+                                }
+                                RawPdfObject::Array(arr) => arr
+                                    .first()
+                                    .and_then(|o| o.as_name())
+                                    .map(|n| String::from_utf8_lossy(n).to_string()),
+                                _ => None,
+                            });
+
+                        xobjects.push(RawXObject {
+                            name: String::from_utf8_lossy(name).to_string(),
+                            subtype,
+                            data,
+                            filter,
+                            width,
+                            height,
+                            bits_per_component: bits,
+                            color_space,
+                        });
+                    }
+                }
+            }
+        }
+
+        Ok(xobjects)
+    }
+}
+
+impl RawBackend {
+    /// Find MediaBox for a page, walking up the page tree for inherited values.
+    fn find_media_box(&self, page_id: PageId) -> Option<(f32, f32)> {
+        let dict = self.doc.get_dict(page_id).ok()?;
+
+        if let Some(media_box) = raw_dict_get(dict, b"MediaBox") {
+            if let Some(dims) = extract_dimensions_from_array(media_box) {
+                return Some(dims);
+            }
+        }
+
+        // Walk up to parent
+        if let Some(parent) = raw_dict_get(dict, b"Parent") {
+            if let Some(parent_id) = parent.as_reference() {
+                return self.find_media_box_in_ancestor(parent_id);
+            }
+        }
+
+        None
+    }
+
+    fn find_media_box_in_ancestor(&self, id: PageId) -> Option<(f32, f32)> {
+        let dict = self.doc.get_dict(id).ok()?;
+
+        if let Some(media_box) = raw_dict_get(dict, b"MediaBox") {
+            if let Some(dims) = extract_dimensions_from_array(media_box) {
+                return Some(dims);
+            }
+        }
+
+        if let Some(parent) = raw_dict_get(dict, b"Parent") {
+            if let Some(parent_id) = parent.as_reference() {
+                return self.find_media_box_in_ancestor(parent_id);
+            }
+        }
+
+        None
+    }
+
+    /// Collect outline items by following First/Next chain.
+    fn collect_outline_items(
+        &self,
+        item_ref: PageId,
+        level: u8,
+        max_depth: u8,
+        items: &mut Vec<RawOutlineItem>,
+        visited: &mut std::collections::HashSet<PageId>,
+    ) {
+        if !visited.insert(item_ref) || level > max_depth {
+            return;
+        }
+
+        if let Ok(item_dict) = self.doc.get_dict(item_ref) {
+            let title = raw_get_string(&self.doc, item_dict, b"Title").unwrap_or_default();
+            let page = self.resolve_outline_dest(item_dict);
+
+            let mut outline_item = RawOutlineItem {
+                title,
+                page,
+                level,
+                children: Vec::new(),
+            };
+
+            if let Some(first) = raw_dict_get(item_dict, b"First") {
+                if let Some(first_ref) = first.as_reference() {
+                    self.collect_outline_items(
+                        first_ref,
+                        level + 1,
+                        max_depth,
+                        &mut outline_item.children,
+                        visited,
+                    );
+                }
+            }
+
+            items.push(outline_item);
+
+            if let Some(next) = raw_dict_get(item_dict, b"Next") {
+                if let Some(next_ref) = next.as_reference() {
+                    self.collect_outline_items(next_ref, level, max_depth, items, visited);
+                }
+            }
+        }
+    }
+
+    /// Resolve an outline destination to a page number.
+    fn resolve_outline_dest(&self, item_dict: &RawPdfDict) -> Option<u32> {
+        let pages = self.doc.pages();
+
+        // Try Dest
+        if let Some(dest) = raw_dict_get(item_dict, b"Dest") {
+            let dest = self.doc.resolve(dest);
+            if let Some(arr) = dest.as_array() {
+                if let Some(first) = arr.first() {
+                    if let Some(page_ref) = first.as_reference() {
+                        for (num, id) in pages.iter() {
+                            if *id == page_ref {
+                                return Some(*num);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Try A (action) dictionary
+        if let Some(action) = raw_dict_get(item_dict, b"A") {
+            let action = self.doc.resolve(action);
+            let action_dict = match action {
+                RawPdfObject::Dict(d) => Some(d),
+                RawPdfObject::Reference(n, g) => self.doc.get_dict((*n, *g)).ok(),
+                _ => None,
+            };
+
+            if let Some(action_dict) = action_dict {
+                if let Some(dest) = raw_dict_get(action_dict, b"D") {
+                    let dest = self.doc.resolve(dest);
+                    if let Some(arr) = dest.as_array() {
+                        if let Some(first) = arr.first() {
+                            if let Some(page_ref) = first.as_reference() {
+                                for (num, id) in pages.iter() {
+                                    if *id == page_ref {
+                                        return Some(*num);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        None
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RawFontResolver — font resolution for RawBackend
+// ---------------------------------------------------------------------------
+
+struct RawFontResolver {
+    cmap_cache: RefCell<HashMap<PageId, Option<ToUnicodeMap>>>,
+}
+
+impl RawFontResolver {
+    fn new() -> Self {
+        Self {
+            cmap_cache: RefCell::new(HashMap::new()),
+        }
+    }
+
+    fn decode_text(
+        &self,
+        doc: &RawDocument,
+        page: PageId,
+        font_name: &[u8],
+        bytes: &[u8],
+    ) -> String {
+        let font_obj_id = self.find_font_dict(doc, page, font_name);
+        let mut is_identity_h = false;
+
+        // 1. Try ToUnicode CMap first
+        if let Some(fid) = font_obj_id {
+            if let Some(cmap) = self.get_to_unicode_map(doc, fid) {
+                let decoded = cmap.decode(bytes);
+                if !decoded.is_empty() {
+                    return decoded;
+                }
+            }
+            is_identity_h = self.is_identity_cid_font(doc, fid);
+        }
+
+        // 2. (No lopdf encoding fallback — skip to step 3)
+
+        // 3. Try embedded TrueType cmap table (for Identity-H CID fonts without ToUnicode)
+        if let Some(fid) = font_obj_id {
+            if let Some(cmap) = self.get_embedded_cmap(doc, fid) {
+                let decoded = cmap.decode(bytes);
+                if !decoded.is_empty() {
+                    return decoded;
+                }
+            }
+        }
+
+        // For Identity-H/V fonts, simple fallback always produces garbage
+        if is_identity_h {
+            return String::new();
+        }
+
+        // 4. Final fallback
+        let simple = decode_text_simple(bytes);
+        if is_likely_binary(&simple) {
+            String::new()
+        } else {
+            simple
+        }
+    }
+
+    /// Find the font dictionary object ID for a given font name on a page.
+    fn find_font_dict(
+        &self,
+        doc: &RawDocument,
+        page: PageId,
+        font_name: &[u8],
+    ) -> Option<PageId> {
+        // Try the page's own Resources
+        if let Some(fid) = self.find_font_in_resources(doc, page, font_name) {
+            return Some(fid);
+        }
+
+        // Walk up the Pages tree for inherited Resources
+        if let Ok(page_dict) = doc.get_dict(page) {
+            if let Some(parent) = raw_dict_get(page_dict, b"Parent") {
+                if let Some(parent_id) = parent.as_reference() {
+                    return self.find_font_in_ancestor(doc, parent_id, font_name);
+                }
+            }
+        }
+
+        None
+    }
+
+    fn find_font_in_resources(
+        &self,
+        doc: &RawDocument,
+        obj_id: PageId,
+        font_name: &[u8],
+    ) -> Option<PageId> {
+        let dict = doc.get_dict(obj_id).ok()?;
+        let resources = raw_dict_get(dict, b"Resources")?;
+        self.find_font_in_resource_obj(doc, resources, font_name)
+    }
+
+    fn find_font_in_resource_obj(
+        &self,
+        doc: &RawDocument,
+        resources: &RawPdfObject,
+        font_name: &[u8],
+    ) -> Option<PageId> {
+        let res_dict = raw_resolve_dict(doc, resources)?;
+        let font_obj = raw_dict_get(res_dict, b"Font")?;
+        let font_dict = raw_resolve_dict(doc, font_obj)?;
+        let font_entry = raw_dict_get(font_dict, font_name)?;
+        font_entry.as_reference()
+    }
+
+    fn find_font_in_ancestor(
+        &self,
+        doc: &RawDocument,
+        ancestor_id: PageId,
+        font_name: &[u8],
+    ) -> Option<PageId> {
+        let dict = doc.get_dict(ancestor_id).ok()?;
+
+        if let Some(resources) = raw_dict_get(dict, b"Resources") {
+            if let Some(fid) = self.find_font_in_resource_obj(doc, resources, font_name) {
+                return Some(fid);
+            }
+        }
+
+        if let Some(parent) = raw_dict_get(dict, b"Parent") {
+            if let Some(parent_id) = parent.as_reference() {
+                return self.find_font_in_ancestor(doc, parent_id, font_name);
+            }
+        }
+
+        None
+    }
+
+    /// Get or parse the ToUnicode CMap for a font.
+    fn get_to_unicode_map(&self, doc: &RawDocument, font_obj_id: PageId) -> Option<ToUnicodeMap> {
+        {
+            let cache = self.cmap_cache.borrow();
+            if let Some(cached) = cache.get(&font_obj_id) {
+                return cached.clone();
+            }
+        }
+
+        let result = self.parse_font_to_unicode(doc, font_obj_id);
+        self.cmap_cache
+            .borrow_mut()
+            .insert(font_obj_id, result.clone());
+        result
+    }
+
+    fn parse_font_to_unicode(
+        &self,
+        doc: &RawDocument,
+        font_obj_id: PageId,
+    ) -> Option<ToUnicodeMap> {
+        let font_dict = doc.get_dict(font_obj_id).ok()?;
+        let to_unicode = raw_dict_get(font_dict, b"ToUnicode")?;
+        let to_unicode = doc.resolve(to_unicode);
+
+        let stream = match to_unicode {
+            RawPdfObject::Stream(s) => s,
+            RawPdfObject::Reference(n, g) => {
+                let obj = doc.get_object((*n, *g))?;
+                let resolved = doc.resolve(obj);
+                resolved.as_stream()?
+            }
+            _ => return None,
+        };
+
+        let data = raw_stream::decompress(stream).unwrap_or_else(|_| stream.raw_data.clone());
+        parse_to_unicode_cmap(&data)
+    }
+
+    /// Check if a font uses Identity-H or Identity-V CID encoding.
+    fn is_identity_cid_font(&self, doc: &RawDocument, font_obj_id: PageId) -> bool {
+        let font_dict = match doc.get_dict(font_obj_id) {
+            Ok(d) => d,
+            Err(_) => return false,
+        };
+
+        raw_dict_get(font_dict, b"Encoding")
+            .and_then(|e| e.as_name())
+            .map(|n| n == b"Identity-H" || n == b"Identity-V")
+            .unwrap_or(false)
+    }
+
+    /// Get the CIDFont's object ID from a Type0 font.
+    fn get_cid_font_id(&self, doc: &RawDocument, font_obj_id: PageId) -> Option<PageId> {
+        let font_dict = doc.get_dict(font_obj_id).ok()?;
+        let descendants = raw_dict_get(font_dict, b"DescendantFonts")?;
+        let descendants = doc.resolve(descendants);
+
+        let arr = descendants.as_array()?;
+        arr.first()?.as_reference()
+    }
+
+    /// Get or parse embedded TrueType cmap for Identity-H fonts.
+    fn get_embedded_cmap(&self, doc: &RawDocument, font_obj_id: PageId) -> Option<ToUnicodeMap> {
+        let cid_font_id = self.get_cid_font_id(doc, font_obj_id)?;
+
+        {
+            let cache = self.cmap_cache.borrow();
+            if let Some(cached) = cache.get(&cid_font_id) {
+                return cached.clone();
+            }
+        }
+
+        let result = self.parse_embedded_truetype_cmap(doc, font_obj_id);
+        self.cmap_cache
+            .borrow_mut()
+            .insert(cid_font_id, result.clone());
+        result
+    }
+
+    fn parse_embedded_truetype_cmap(
+        &self,
+        doc: &RawDocument,
+        font_obj_id: PageId,
+    ) -> Option<ToUnicodeMap> {
+        let font_dict = doc.get_dict(font_obj_id).ok()?;
+
+        // Check Identity-H/V encoding
+        let encoding = raw_dict_get(font_dict, b"Encoding")
+            .and_then(|e| e.as_name())
+            .map(|n| String::from_utf8_lossy(n).to_string())?;
+
+        if encoding != "Identity-H" && encoding != "Identity-V" {
+            return None;
+        }
+
+        // Get CIDFont from DescendantFonts
+        let cid_font_id = self.get_cid_font_id(doc, font_obj_id)?;
+        let cid_font_dict = doc.get_dict(cid_font_id).ok()?;
+
+        // Get FontDescriptor
+        let fd_ref = raw_dict_get(cid_font_dict, b"FontDescriptor")?
+            .as_reference()?;
+        let fd_dict = doc.get_dict(fd_ref).ok()?;
+
+        // Get FontFile2 (TrueType)
+        let ff2 = raw_dict_get(fd_dict, b"FontFile2")?;
+        let ff2 = doc.resolve(ff2);
+        let font_stream = match ff2 {
+            RawPdfObject::Stream(s) => s,
+            RawPdfObject::Reference(n, g) => {
+                let obj = doc.get_object((*n, *g))?;
+                let resolved = doc.resolve(obj);
+                resolved.as_stream()?
+            }
+            _ => return None,
+        };
+
+        let font_data =
+            raw_stream::decompress(font_stream).unwrap_or_else(|_| font_stream.raw_data.clone());
+        parse_truetype_cmap_table(&font_data)
+    }
+
+    /// Collect font info for a page (with inherited resources fallback).
+    fn page_fonts(&self, doc: &RawDocument, page: PageId) -> Result<Vec<BackendFontInfo>> {
+        if let Some(fonts) = self.collect_fonts_from_page(doc, page) {
+            if !fonts.is_empty() {
+                return Ok(fonts);
+            }
+        }
+
+        // Try inherited resources
+        if let Ok(page_dict) = doc.get_dict(page) {
+            if let Some(parent) = raw_dict_get(page_dict, b"Parent") {
+                if let Some(parent_id) = parent.as_reference() {
+                    if let Some(fonts) = self.collect_fonts_from_ancestor(doc, parent_id) {
+                        return Ok(fonts);
+                    }
+                }
+            }
+        }
+
+        Ok(Vec::new())
+    }
+
+    fn collect_fonts_from_page(
+        &self,
+        doc: &RawDocument,
+        page: PageId,
+    ) -> Option<Vec<BackendFontInfo>> {
+        let dict = doc.get_dict(page).ok()?;
+        let resources = raw_dict_get(dict, b"Resources")?;
+        self.collect_fonts_from_resource_obj(doc, resources)
+    }
+
+    fn collect_fonts_from_ancestor(
+        &self,
+        doc: &RawDocument,
+        ancestor_id: PageId,
+    ) -> Option<Vec<BackendFontInfo>> {
+        let dict = doc.get_dict(ancestor_id).ok()?;
+
+        if let Some(resources) = raw_dict_get(dict, b"Resources") {
+            if let Some(fonts) = self.collect_fonts_from_resource_obj(doc, resources) {
+                if !fonts.is_empty() {
+                    return Some(fonts);
+                }
+            }
+        }
+
+        if let Some(parent) = raw_dict_get(dict, b"Parent") {
+            if let Some(parent_id) = parent.as_reference() {
+                return self.collect_fonts_from_ancestor(doc, parent_id);
+            }
+        }
+
+        None
+    }
+
+    fn collect_fonts_from_resource_obj(
+        &self,
+        doc: &RawDocument,
+        resources: &RawPdfObject,
+    ) -> Option<Vec<BackendFontInfo>> {
+        let res_dict = raw_resolve_dict(doc, resources)?;
+        let font_obj = raw_dict_get(res_dict, b"Font")?;
+        let font_dict = raw_resolve_dict(doc, font_obj)?;
+
+        let mut result = Vec::new();
+        for (name, val) in font_dict {
+            let font_id = match val.as_reference() {
+                Some(r) => r,
+                None => continue,
+            };
+            let fd = match doc.get_dict(font_id) {
+                Ok(d) => d,
+                Err(_) => continue,
+            };
+            let base_font = raw_dict_get(fd, b"BaseFont")
+                .and_then(|o| o.as_name())
+                .map(|n| String::from_utf8_lossy(n).to_string())
+                .unwrap_or_else(|| "Unknown".to_string());
+            result.push(BackendFontInfo {
+                name: name.clone(),
+                base_font,
+            });
+        }
+
+        Some(result)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RawBackend helper functions
+// ---------------------------------------------------------------------------
+
+/// Resolve a PdfObject to a dictionary reference (following references).
+fn raw_resolve_dict<'a>(doc: &'a RawDocument, obj: &'a RawPdfObject) -> Option<&'a RawPdfDict> {
+    let resolved = doc.resolve(obj);
+    match resolved {
+        RawPdfObject::Dict(d) => Some(d),
+        RawPdfObject::Stream(s) => Some(&s.dict),
+        _ => None,
+    }
+}
+
+/// Extract a string value from a raw PDF dictionary.
+fn raw_get_string(doc: &RawDocument, dict: &RawPdfDict, key: &[u8]) -> Option<String> {
+    let obj = raw_dict_get(dict, key)?;
+    let obj = doc.resolve(obj);
+    match obj {
+        RawPdfObject::Str(bytes) => {
+            if bytes.len() >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF {
+                // UTF-16BE with BOM
+                let utf16: Vec<u16> = bytes[2..]
+                    .chunks(2)
+                    .filter_map(|c| {
+                        if c.len() == 2 {
+                            Some(u16::from_be_bytes([c[0], c[1]]))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                String::from_utf16(&utf16).ok()
+            } else {
+                String::from_utf8(bytes.clone())
+                    .ok()
+                    .or_else(|| Some(bytes.iter().map(|&b| b as char).collect()))
+            }
+        }
+        RawPdfObject::Name(bytes) => String::from_utf8(bytes.clone()).ok(),
+        _ => None,
+    }
+}
+
+/// Extract (width, height) from a MediaBox array.
+fn extract_dimensions_from_array(obj: &RawPdfObject) -> Option<(f32, f32)> {
+    let arr = obj.as_array()?;
+    if arr.len() >= 4 {
+        let width = arr[2].as_f32().unwrap_or(612.0);
+        let height = arr[3].as_f32().unwrap_or(792.0);
+        Some((width, height))
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -972,5 +1788,58 @@ mod tests {
         assert_eq!(get_number_from_value(&PdfValue::Integer(42)), Some(42.0));
         assert_eq!(get_number_from_value(&PdfValue::Real(3.14)), Some(3.14));
         assert_eq!(get_number_from_value(&PdfValue::Other), None);
+    }
+}
+
+#[cfg(test)]
+mod raw_backend_tests {
+    use super::*;
+
+    #[test]
+    fn test_raw_backend_pages() {
+        let raw = RawBackend::load_file("test-files/basic/trivial.pdf").unwrap();
+        let pages = raw.pages();
+        assert!(!pages.is_empty());
+    }
+
+    #[test]
+    fn test_raw_backend_page_content() {
+        let raw = RawBackend::load_file("test-files/basic/trivial.pdf").unwrap();
+        let pages = raw.pages();
+        let first_page = *pages.values().next().unwrap();
+        let content = raw.page_content(first_page).unwrap();
+        assert!(!content.is_empty());
+    }
+
+    #[test]
+    fn test_raw_backend_decode_content() {
+        let raw = RawBackend::load_file("test-files/basic/trivial.pdf").unwrap();
+        let pages = raw.pages();
+        let first_page = *pages.values().next().unwrap();
+        let content = raw.page_content(first_page).unwrap();
+        let ops = raw.decode_content(&content).unwrap();
+        assert!(!ops.is_empty());
+    }
+
+    #[test]
+    fn test_raw_backend_metadata() {
+        let raw = RawBackend::load_file("test-files/basic/trivial.pdf").unwrap();
+        let meta = raw.metadata();
+        assert!(!meta.version.is_empty());
+    }
+
+    #[test]
+    fn test_raw_backend_page_dimensions() {
+        let raw = RawBackend::load_file("test-files/basic/trivial.pdf").unwrap();
+        let pages = raw.pages();
+        let first_page = *pages.values().next().unwrap();
+        let (w, h) = raw.page_dimensions(first_page);
+        assert!(w > 0.0 && h > 0.0);
+    }
+
+    #[test]
+    fn test_raw_backend_korean_pages() {
+        let raw = RawBackend::load_file("test-files/cjk/korean-test.pdf").unwrap();
+        assert!(!raw.pages().is_empty());
     }
 }
