@@ -11,6 +11,7 @@ debug/
 # Test files
 test-files/
 test-output/
+*_output/
 tests/fixtures/*.pdf
 
 # OS files

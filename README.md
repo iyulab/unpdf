@@ -395,17 +395,14 @@ let markdown = render::to_markdown(&doc, &options)?;
 
 ### Handling Encrypted PDFs
 
-```rust
-use unpdf::{parse_file_with_password, Error};
+> **Note**: PDF decryption is not yet supported. Encrypted PDFs will load but content streams cannot be decoded.
 
-match parse_file("encrypted.pdf") {
-    Ok(doc) => println!("Document parsed"),
-    Err(Error::Encrypted) => {
-        // Try with password
-        let doc = parse_file_with_password("encrypted.pdf", "secret")?;
-        println!("Document decrypted and parsed");
-    }
-    Err(e) => return Err(e),
+```rust
+use unpdf::parse_file;
+
+let doc = parse_file("document.pdf")?;
+if doc.metadata.encrypted {
+    eprintln!("Warning: document is encrypted, content may be incomplete");
 }
 ```
 
@@ -646,19 +643,20 @@ Complete document structure with metadata:
 | Feature | Status |
 |---------|--------|
 | PDF 1.0 - 2.0 | Supported |
-| Compressed object streams | Supported |
+| Compressed object streams (ObjStm) | Supported |
+| Cross-reference streams (XRef streams) | Supported |
+| Linearized PDFs | Supported |
 | Text extraction | Supported |
+| CJK text (Korean, Chinese, Japanese) | Supported |
+| ToUnicode CMap decoding | Supported |
+| Embedded TrueType font decoding | Supported |
 | Table detection | Supported |
-| Image extraction | Supported |
-| Hyperlinks | Supported |
+| Image extraction (JPEG, JP2) | Supported |
 | Bookmarks/Outlines | Supported |
-| Password-protected (user password) | Supported |
-| Password-protected (owner password) | Supported |
-| AES-256 encryption | Supported |
+| Encrypted PDFs | Not yet supported |
 | Digital signatures | Metadata only |
 | Form fields (AcroForms) | Planned |
-| XFA forms | Planned |
-| OCR (image-based PDFs) | Planned (feature flag) |
+| OCR (image-based PDFs) | Planned |
 
 ---
 
@@ -669,20 +667,19 @@ Complete document structure with metadata:
 | `default` | Core PDF parsing and rendering | Yes |
 | `ffi` | C-ABI foreign function interface | No |
 | `async` | Async I/O with Tokio | No |
-| `ocr` | OCR support via Tesseract | No |
 
 ```toml
 # Cargo.toml - enable features
 [dependencies]
-unpdf = { version = "0.1", features = ["ffi", "async"] }
+unpdf = { version = "0.2", features = ["ffi", "async"] }
 ```
 
 ---
 
 ## Performance
 
+- Custom zero-dependency PDF parser (no external C libraries)
 - Parallel page processing with Rayon
-- Efficient PDF parsing with lopdf
 - Memory-efficient handling of large documents
 - Streaming support for very large files
 
