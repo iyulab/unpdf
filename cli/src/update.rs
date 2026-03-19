@@ -113,7 +113,6 @@ fn find_matching_asset(asset_names: &[String], patterns: &[String]) -> Option<St
     None
 }
 
-
 /// Detect if installed via cargo install (binary in .cargo/bin)
 fn is_cargo_install() -> bool {
     if let Ok(exe_path) = std::env::current_exe() {

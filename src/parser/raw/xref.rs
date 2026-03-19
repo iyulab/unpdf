@@ -94,7 +94,9 @@ pub fn parse_xref_chain(data: &[u8]) -> Result<(XrefTable, PdfDict)> {
         }
 
         // Get /Prev for the next iteration
-        offset = dict_get(&trailer, b"Prev").and_then(|o| o.as_i64()).map(|v| v as usize);
+        offset = dict_get(&trailer, b"Prev")
+            .and_then(|o| o.as_i64())
+            .map(|v| v as usize);
 
         if newest_trailer.is_none() {
             newest_trailer = Some(trailer);
@@ -109,10 +111,7 @@ pub fn parse_xref_chain(data: &[u8]) -> Result<(XrefTable, PdfDict)> {
 
 /// Parse an xref section at the given offset, returning entries and the trailer dict.
 /// Handles both traditional xref tables and xref streams.
-fn parse_xref_at(
-    data: &[u8],
-    offset: usize,
-) -> Result<(Vec<((u32, u16), XrefEntry)>, PdfDict)> {
+fn parse_xref_at(data: &[u8], offset: usize) -> Result<(Vec<((u32, u16), XrefEntry)>, PdfDict)> {
     let pos = skip_whitespace_simple(data, offset);
 
     // Check if this is a traditional xref table or an xref stream
@@ -185,7 +184,10 @@ fn parse_traditional_xref(
 
             match entry_type {
                 b'n' => {
-                    entries.push(((obj_num as u32, gen_val as u16), XrefEntry::Uncompressed(offset_val)));
+                    entries.push((
+                        (obj_num as u32, gen_val as u16),
+                        XrefEntry::Uncompressed(offset_val),
+                    ));
                 }
                 b'f' => {
                     // Free entry, skip
@@ -214,19 +216,14 @@ fn parse_traditional_xref(
 }
 
 /// Parse an xref stream object at the given position.
-fn parse_xref_stream(
-    data: &[u8],
-    pos: usize,
-) -> Result<(Vec<((u32, u16), XrefEntry)>, PdfDict)> {
+fn parse_xref_stream(data: &[u8], pos: usize) -> Result<(Vec<((u32, u16), XrefEntry)>, PdfDict)> {
     // Parse the indirect object (N 0 obj << ... >> stream ... endstream endobj)
     let (obj, _) = tokenizer::parse_object(data, pos)?;
 
     let stream = match &obj {
         PdfObject::Stream(s) => s,
         _ => {
-            return Err(Error::PdfParse(
-                "expected xref stream object".into(),
-            ));
+            return Err(Error::PdfParse("expected xref stream object".into()));
         }
     };
 
@@ -257,22 +254,23 @@ fn parse_xref_stream(
         .unwrap_or(0) as usize;
 
     // Get /Index array (default: [0 Size])
-    let index_ranges: Vec<(usize, usize)> = if let Some(idx_arr) = dict_get(&dict, b"Index").and_then(|o| o.as_array()) {
-        idx_arr
-            .chunks(2)
-            .filter_map(|chunk| {
-                if chunk.len() == 2 {
-                    let first = chunk[0].as_i64()? as usize;
-                    let count = chunk[1].as_i64()? as usize;
-                    Some((first, count))
-                } else {
-                    None
-                }
-            })
-            .collect()
-    } else {
-        vec![(0, size)]
-    };
+    let index_ranges: Vec<(usize, usize)> =
+        if let Some(idx_arr) = dict_get(&dict, b"Index").and_then(|o| o.as_array()) {
+            idx_arr
+                .chunks(2)
+                .filter_map(|chunk| {
+                    if chunk.len() == 2 {
+                        let first = chunk[0].as_i64()? as usize;
+                        let count = chunk[1].as_i64()? as usize;
+                        Some((first, count))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        } else {
+            vec![(0, size)]
+        };
 
     // Decompress stream data
     let stream_data = stream::decompress(stream)?;

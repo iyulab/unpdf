@@ -429,7 +429,7 @@ fn skip_inline_image(data: &[u8], start: usize) -> usize {
             let preceded = i == 0 || is_whitespace(data[i - 1]);
             if preceded {
                 i += 2; // skip "ID"
-                // Skip the single whitespace after ID
+                        // Skip the single whitespace after ID
                 if i < len && is_whitespace(data[i]) {
                     i += 1;
                 }
