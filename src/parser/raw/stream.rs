@@ -58,10 +58,78 @@ fn decompress_flate(data: &[u8]) -> Result<Vec<u8>> {
 
     // Fallback: raw deflate (some PDF producers omit zlib header)
     output.clear();
-    flate2::read::DeflateDecoder::new(data)
+    if flate2::read::DeflateDecoder::new(data)
         .read_to_end(&mut output)
-        .map_err(|e| Error::PdfParse(format!("decompression failed: {}", e)))?;
-    Ok(output)
+        .is_ok()
+    {
+        return Ok(output);
+    }
+
+    // Lenient fallback: read as much as we can from partial/corrupt streams.
+    // Some PDFs have trailing garbage, wrong /Length values, or minor stream
+    // corruption. We try both zlib and raw deflate in chunked reads and return
+    // whatever partial data was successfully decompressed.
+    output.clear();
+    if let Some(partial) = decompress_flate_partial(data) {
+        if !partial.is_empty() {
+            return Ok(partial);
+        }
+    }
+
+    Err(Error::PdfParse(
+        "decompression failed: corrupt deflate stream".to_string(),
+    ))
+}
+
+/// Attempt to decompress as much data as possible from a potentially
+/// corrupt or truncated flate stream. Returns `Some(data)` with whatever
+/// bytes were successfully decompressed, or `None` on total failure.
+fn decompress_flate_partial(data: &[u8]) -> Option<Vec<u8>> {
+    // Try zlib partial read
+    let mut best = try_partial_read(flate2::read::ZlibDecoder::new(data));
+
+    // Try raw deflate partial read
+    let raw = try_partial_read(flate2::read::DeflateDecoder::new(data));
+    if raw.len() > best.len() {
+        best = raw;
+    }
+
+    // Also try trimming trailing bytes (some PDFs append extra zeros/garbage).
+    // Try stripping up to 8 trailing bytes.
+    for trim in 1..=std::cmp::min(8, data.len().saturating_sub(1)) {
+        let trimmed = &data[..data.len() - trim];
+
+        let z = try_partial_read(flate2::read::ZlibDecoder::new(trimmed));
+        if z.len() > best.len() {
+            best = z;
+        }
+
+        let d = try_partial_read(flate2::read::DeflateDecoder::new(trimmed));
+        if d.len() > best.len() {
+            best = d;
+        }
+    }
+
+    if best.is_empty() {
+        None
+    } else {
+        Some(best)
+    }
+}
+
+/// Read from a decoder in small chunks, returning whatever was successfully
+/// decompressed before an error occurs.
+fn try_partial_read<R: Read>(mut reader: R) -> Vec<u8> {
+    let mut output = Vec::new();
+    let mut buf = [0u8; 8192];
+    loop {
+        match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => output.extend_from_slice(&buf[..n]),
+            Err(_) => break, // stop at first error, keep what we have
+        }
+    }
+    output
 }
 
 /// Apply predictor decoding as specified by DecodeParms.

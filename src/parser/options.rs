@@ -115,7 +115,7 @@ impl Default for ParseOptions {
     fn default() -> Self {
         #[allow(deprecated)]
         Self {
-            error_mode: ErrorMode::Strict,
+            error_mode: ErrorMode::Lenient,
             extract_mode: ExtractMode::Full,
             memory_limit_mb: 0,
             extract_resources: true,
@@ -130,9 +130,9 @@ impl Default for ParseOptions {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ErrorMode {
     /// Fail on any error
-    #[default]
     Strict,
     /// Skip invalid content and continue
+    #[default]
     Lenient,
 }
 
@@ -170,7 +170,7 @@ mod tests {
     #[test]
     fn test_default_options() {
         let options = ParseOptions::default();
-        assert_eq!(options.error_mode, ErrorMode::Strict);
+        assert_eq!(options.error_mode, ErrorMode::Lenient);
         assert!(options.parallel);
         assert!(options.extract_resources);
     }
