@@ -4,6 +4,7 @@ pub mod backend;
 mod layout;
 mod options;
 mod pdf_parser;
+pub mod raw;
 mod table_detector;
 
 pub use layout::{
