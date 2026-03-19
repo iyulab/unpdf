@@ -41,6 +41,9 @@ thiserror = "2.0"
 # Parallel processing
 rayon = "1.10"
 
+# Compression
+flate2 = "1.1"
+
 # Text processing
 regex = "1.11"
 unicode-normalization = "0.1"
