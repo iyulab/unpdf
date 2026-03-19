@@ -10,7 +10,7 @@ use crate::model::{
     Block, Document, Metadata, Outline, OutlineItem, Page, Paragraph, Resource, ResourceType,
 };
 
-use super::backend::{LopdfBackend, PdfBackend, RawOutlineItem, RawXObject};
+use super::backend::{PdfBackend, RawBackend, RawOutlineItem, RawXObject};
 use super::layout::{BlockType, LayoutAnalyzer};
 use super::options::{ErrorMode, ExtractMode, ParseOptions};
 use super::table_detector::TableDetector;
@@ -34,7 +34,7 @@ impl PdfParser {
         // Verify it's a PDF
         detect_format_from_path(path)?;
 
-        let backend: Box<dyn PdfBackend> = Box::new(LopdfBackend::load_file(path)?);
+        let backend: Box<dyn PdfBackend> = Box::new(RawBackend::load_file(path)?);
 
         if options.password.is_some() && backend.metadata().encrypted {
             log::warn!("Password was provided but PDF decryption is not supported");
@@ -50,7 +50,7 @@ impl PdfParser {
 
     /// Parse a PDF from bytes with custom options.
     pub fn from_bytes_with_options(data: &[u8], options: ParseOptions) -> Result<Self> {
-        let backend: Box<dyn PdfBackend> = Box::new(LopdfBackend::load_bytes(data)?);
+        let backend: Box<dyn PdfBackend> = Box::new(RawBackend::load_bytes(data)?);
 
         if options.password.is_some() && backend.metadata().encrypted {
             log::warn!("Password was provided but PDF decryption is not supported");
@@ -66,7 +66,7 @@ impl PdfParser {
 
     /// Parse a PDF from a reader with custom options.
     pub fn from_reader_with_options<R: Read>(reader: R, options: ParseOptions) -> Result<Self> {
-        let backend: Box<dyn PdfBackend> = Box::new(LopdfBackend::load_reader(reader)?);
+        let backend: Box<dyn PdfBackend> = Box::new(RawBackend::load_reader(reader)?);
 
         if options.password.is_some() && backend.metadata().encrypted {
             log::warn!("Password was provided but PDF decryption is not supported");
