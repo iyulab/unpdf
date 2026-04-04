@@ -26,13 +26,15 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - name: Cache cargo registry
+      - name: Cache cargo
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
@@ -88,9 +90,3 @@ jobs:
       - name: Build FFI library
         run: cargo build --release --features ffi --target ${{ matrix.target }}
 
-      - name: Upload FFI artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ffi-${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/${{ matrix.lib }}
-          if-no-files-found: warn

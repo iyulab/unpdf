@@ -122,6 +122,7 @@ jobs:
         with:
           name: ${{ matrix.archive_name }}
           path: target/${{ matrix.target }}/release/${{ matrix.archive_name }}-${{ needs.check-version.outputs.version }}.${{ matrix.archive_ext }}
+          retention-days: 1
 
   build-ffi:
     name: Build FFI Library
@@ -194,6 +195,7 @@ jobs:
         with:
           name: ${{ matrix.archive_name }}
           path: target/${{ matrix.target }}/release/${{ matrix.archive_name }}-${{ needs.check-version.outputs.version }}.${{ matrix.archive_ext }}
+          retention-days: 1
 
   create-release:
     name: Create Release
@@ -224,6 +226,13 @@ jobs:
           generate_release_notes: true
           draft: false
           prerelease: ${{ contains(needs.check-version.outputs.version, 'alpha') || contains(needs.check-version.outputs.version, 'beta') || contains(needs.check-version.outputs.version, 'rc') }}
+
+      - name: Delete artifacts after release
+        uses: geekyeggo/delete-artifact@v5
+        with:
+          name: |
+            unpdf-*
+            libunpdf-*
 
   publish-crates:
     name: Publish to crates.io
