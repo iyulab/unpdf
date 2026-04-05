@@ -791,11 +791,74 @@ impl<'a> LayoutAnalyzer<'a> {
         ]
     }
 
-    /// Group spans into lines based on Y position, respecting column boundaries.
+    /// Group spans into lines based on Y position, using XY-Cut for layout segmentation.
     ///
-    /// In multi-column layouts, text on the same Y coordinate but in different
-    /// columns will be placed in separate lines, ordered by column (left to right).
+    /// Uses the recursive XY-Cut algorithm to detect multi-column layouts and
+    /// other complex structures. Each segmented region is processed independently
+    /// as a single-column block.
     fn group_spans_into_lines(&self, spans: Vec<TextSpan>) -> Vec<TextLine> {
+        if spans.is_empty() {
+            return vec![];
+        }
+
+        // Convert spans to XY-cut blocks
+        let blocks: Vec<super::xycut::Block> = spans
+            .iter()
+            .map(|s| super::xycut::Block {
+                x: s.x,
+                y: s.y,
+                width: s.width,
+                height: s.font_size,
+            })
+            .collect();
+
+        // Determine gap thresholds based on median font size
+        let median_font = median_font_size(&spans);
+        let min_x_gap = (median_font * 2.0).max(15.0);
+        let min_y_gap = (median_font * 1.5).max(10.0);
+
+        let groups = super::xycut::xycut_segment(&blocks, min_x_gap, min_y_gap);
+
+        log::debug!(
+            "XY-Cut segmented {} spans into {} groups (median_font={:.1}, min_x_gap={:.1}, min_y_gap={:.1})",
+            spans.len(),
+            groups.len(),
+            median_font,
+            min_x_gap,
+            min_y_gap,
+        );
+
+        if groups.len() <= 1 {
+            // Single column — use simple grouping
+            return self.group_spans_into_lines_single_column(spans);
+        }
+
+        // Multi-column: process each group independently
+        let mut all_lines = Vec::new();
+        for group in &groups {
+            // Match spans to this group's blocks by position
+            let group_spans: Vec<TextSpan> = spans
+                .iter()
+                .filter(|s| {
+                    group
+                        .iter()
+                        .any(|b| (s.x - b.x).abs() < 1.0 && (s.y - b.y).abs() < 1.0)
+                })
+                .cloned()
+                .collect();
+            let lines = self.group_spans_into_lines_single_column(group_spans);
+            all_lines.extend(lines);
+        }
+        all_lines
+    }
+
+    /// Group spans into lines using the legacy column-detection approach.
+    ///
+    /// This method uses `detect_columns()` to find a single gutter and split
+    /// spans into columns. Kept as fallback; the primary path now uses XY-Cut
+    /// via `group_spans_into_lines()`.
+    #[allow(dead_code)]
+    fn group_spans_into_lines_legacy_columns(&self, spans: Vec<TextSpan>) -> Vec<TextLine> {
         if spans.is_empty() {
             return vec![];
         }
@@ -1182,6 +1245,16 @@ fn is_hangul_char(c: char) -> bool {
 /// Check if a character is a CJK (Chinese/Japanese/Korean) character.
 ///
 /// CJK characters typically don't need spaces between them.
+/// Compute the median font size from a slice of spans.
+fn median_font_size(spans: &[TextSpan]) -> f32 {
+    if spans.is_empty() {
+        return 12.0;
+    }
+    let mut sizes: Vec<f32> = spans.iter().map(|s| s.font_size).collect();
+    sizes.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    sizes[sizes.len() / 2]
+}
+
 /// Check if character is from a script that doesn't use word spaces.
 /// Chinese and Japanese don't use spaces between words, but Korean does.
 fn is_spaceless_script_char(c: char) -> bool {

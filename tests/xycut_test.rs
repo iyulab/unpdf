@@ -68,3 +68,30 @@ fn test_single_block() {
     assert_eq!(groups.len(), 1);
     assert_eq!(groups[0].len(), 1);
 }
+
+// --- Integration tests: XY-Cut layout via parse_file ---
+
+use unpdf::parse_file;
+use std::path::Path;
+
+#[test]
+fn test_multicolumn_pdf_with_xycut() {
+    let path = Path::new("test-files/complex/multicolumn.pdf");
+    if !path.exists() {
+        return;
+    }
+    let doc = parse_file(path).unwrap();
+    let text = doc.plain_text();
+    assert!(!text.is_empty());
+}
+
+#[test]
+fn test_two_column_pdf_with_xycut() {
+    let path = Path::new("test-files/complex/two-column.pdf");
+    if !path.exists() {
+        return;
+    }
+    let doc = parse_file(path).unwrap();
+    let text = doc.plain_text();
+    assert!(!text.is_empty());
+}
