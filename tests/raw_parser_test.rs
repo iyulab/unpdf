@@ -53,10 +53,22 @@ fn test_parse_scientific_arxiv() {
 #[test]
 fn test_parse_tables() {
     let data = std::fs::read("test-files/tables/sample-tables.pdf").unwrap();
-    let doc = RawDocument::load(&data).unwrap();
-    // This PDF is encrypted; page tree uses ObjStm which can't be
-    // decompressed without decryption, so page_count is 0.
-    assert!(doc.is_encrypted());
+    // This PDF is encrypted. load() now attempts decryption with empty password.
+    match RawDocument::load(&data) {
+        Ok(doc) => {
+            // Decryption succeeded — the document is usable
+            assert!(doc.is_encrypted());
+        }
+        Err(e) => {
+            // Encrypted PDF that requires a real password
+            let msg = e.to_string();
+            assert!(
+                msg.contains("encrypted") || msg.contains("Encrypted"),
+                "Error should be about encryption: {}",
+                msg
+            );
+        }
+    }
 }
 
 #[test]

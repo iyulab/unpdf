@@ -35,14 +35,9 @@ impl PdfParser {
         // Verify it's a PDF
         detect_format_from_path(path)?;
 
+        // Decryption (empty password) is attempted inside RawDocument::load().
+        // If we get here, the PDF is usable (either not encrypted, or decrypted).
         let backend: Box<dyn PdfBackend> = Box::new(RawBackend::load_file(path)?);
-
-        if backend.metadata().encrypted {
-            if options.password.is_none() {
-                return Err(Error::Encrypted);
-            }
-            log::warn!("Password was provided but PDF decryption is not yet supported");
-        }
 
         Ok(Self { backend, options })
     }
@@ -55,14 +50,6 @@ impl PdfParser {
     /// Parse a PDF from bytes with custom options.
     pub fn from_bytes_with_options(data: &[u8], options: ParseOptions) -> Result<Self> {
         let backend: Box<dyn PdfBackend> = Box::new(RawBackend::load_bytes(data)?);
-
-        if backend.metadata().encrypted {
-            if options.password.is_none() {
-                return Err(Error::Encrypted);
-            }
-            log::warn!("Password was provided but PDF decryption is not yet supported");
-        }
-
         Ok(Self { backend, options })
     }
 
@@ -74,14 +61,6 @@ impl PdfParser {
     /// Parse a PDF from a reader with custom options.
     pub fn from_reader_with_options<R: Read>(reader: R, options: ParseOptions) -> Result<Self> {
         let backend: Box<dyn PdfBackend> = Box::new(RawBackend::load_reader(reader)?);
-
-        if backend.metadata().encrypted {
-            if options.password.is_none() {
-                return Err(Error::Encrypted);
-            }
-            log::warn!("Password was provided but PDF decryption is not yet supported");
-        }
-
         Ok(Self { backend, options })
     }
 

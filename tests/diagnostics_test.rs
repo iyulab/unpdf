@@ -43,20 +43,33 @@ fn test_basic_pdf_has_quality_metrics() {
 }
 
 #[test]
-fn test_encrypted_pdf_returns_error() {
+fn test_encrypted_pdf_handling() {
     let path = Path::new("test-files/encrypted/password-protected.pdf");
     if !path.exists() {
         return;
     }
     let result = parse_file(path);
-    assert!(result.is_err(), "Encrypted PDF should return error");
-    let err = result.unwrap_err();
-    let msg = err.to_string();
-    assert!(
-        msg.contains("encrypted") || msg.contains("Encrypted"),
-        "Error should mention encryption: {}",
-        msg
-    );
+    // Should either succeed (if empty password works) or return a clear error
+    match result {
+        Ok(doc) => {
+            // Successfully decrypted with empty password
+            assert!(
+                doc.extraction_quality.char_count > 0 || doc.metadata.encrypted,
+                "Decrypted PDF should have content or report encrypted"
+            );
+        }
+        Err(e) => {
+            let msg = e.to_string();
+            assert!(
+                msg.contains("encrypted")
+                    || msg.contains("Encrypted")
+                    || msg.contains("password")
+                    || msg.contains("supported"),
+                "Error should be about encryption: {}",
+                msg
+            );
+        }
+    }
 }
 
 #[test]

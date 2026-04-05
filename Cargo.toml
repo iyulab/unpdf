@@ -41,6 +41,12 @@ rayon = "1.10"
 # Compression
 flate2 = "1.1"
 
+# PDF decryption
+rc4 = "0.2"
+md-5 = "0.10"
+aes = "0.8"
+cbc = "0.1"
+
 # Text processing
 regex = "1.11"
 unicode-bidi = "0.3"
