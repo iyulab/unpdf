@@ -592,7 +592,24 @@ impl RawFontResolver {
             }
         }
 
-        // 3. Try encoding dictionary (BaseEncoding + Differences)
+        // 3. Try CIDSystemInfo-based CMap resource lookup (for Identity-H CID fonts)
+        if is_identity_h {
+            if let Some(fid) = font_obj_id {
+                if let Some((registry, ordering)) = self.get_cid_system_info(doc, fid) {
+                    if let Some(decoded) =
+                        crate::parser::cmap_table::decode_with_cid_system_info(
+                            &registry, &ordering, bytes,
+                        )
+                    {
+                        if !decoded.is_empty() {
+                            return decoded;
+                        }
+                    }
+                }
+            }
+        }
+
+        // 4. Try encoding dictionary (BaseEncoding + Differences)
         if let Some(fid) = font_obj_id {
             if let Some(enc_map) = self.get_encoding_map(doc, fid) {
                 let decoded = decode_with_encoding_map(bytes, &enc_map);
@@ -607,7 +624,7 @@ impl RawFontResolver {
             return String::new();
         }
 
-        // 4. Final fallback
+        // 5. Final fallback
         let simple = decode_text_simple(bytes);
         if is_likely_binary(&simple) {
             String::new()
@@ -742,6 +759,34 @@ impl RawFontResolver {
 
         let arr = descendants.as_array()?;
         arr.first()?.as_reference()
+    }
+
+    /// Extract CIDSystemInfo (Registry, Ordering) from a CIDFont.
+    fn get_cid_system_info(
+        &self,
+        doc: &RawDocument,
+        font_obj_id: PageId,
+    ) -> Option<(String, String)> {
+        let cid_font_id = self.get_cid_font_id(doc, font_obj_id)?;
+        let cid_font_dict = doc.get_dict(cid_font_id).ok()?;
+
+        let csi = raw_dict_get(cid_font_dict, b"CIDSystemInfo")?;
+        let csi = doc.resolve(csi);
+        let csi_dict = match csi {
+            RawPdfObject::Dict(d) => d,
+            RawPdfObject::Reference(n, g) => doc.get_dict((*n, *g)).ok()?,
+            _ => return None,
+        };
+
+        let registry = raw_dict_get(csi_dict, b"Registry")
+            .and_then(|o| o.as_str_bytes())
+            .map(|s| String::from_utf8_lossy(s).to_string())?;
+
+        let ordering = raw_dict_get(csi_dict, b"Ordering")
+            .and_then(|o| o.as_str_bytes())
+            .map(|s| String::from_utf8_lossy(s).to_string())?;
+
+        Some((registry, ordering))
     }
 
     /// Get or parse embedded TrueType cmap for Identity-H fonts.
