@@ -31,6 +31,10 @@ struct Cli {
     #[arg(long, value_enum)]
     cleanup: Option<CleanupLevel>,
 
+    /// Suppress warning messages
+    #[arg(short, long)]
+    quiet: bool,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -195,6 +199,19 @@ impl From<TableMode> for unpdf::TableFallback {
     }
 }
 
+/// Check extraction quality and print warnings to stderr.
+/// Returns true if quality warnings were emitted.
+fn check_quality(doc: &unpdf::Document, quiet: bool) -> bool {
+    if quiet {
+        return false;
+    }
+    if let Some(warning) = doc.extraction_quality.warning_message() {
+        eprintln!("{}: {}", "Warning".yellow().bold(), warning);
+        return true;
+    }
+    false
+}
+
 /// Check if we should perform background update check.
 /// Skip for update/version commands to avoid redundant checks.
 fn should_check_update(cli: &Cli) -> bool {
@@ -216,12 +233,14 @@ fn main() {
         None
     };
 
+    let quiet = cli.quiet;
+
     let result = match cli.command {
         Some(Commands::Convert {
             input,
             output,
             cleanup,
-        }) => cmd_convert(&input, output.as_deref(), cleanup),
+        }) => cmd_convert(&input, output.as_deref(), cleanup, quiet),
         Some(Commands::Markdown {
             input,
             output,
@@ -238,43 +257,44 @@ fn main() {
             cleanup,
             max_heading,
             pages.as_deref(),
+            quiet,
         ),
         Some(Commands::Text {
             input,
             output,
             cleanup,
             pages,
-        }) => cmd_text(&input, output.as_deref(), cleanup, pages.as_deref()),
+        }) => cmd_text(&input, output.as_deref(), cleanup, pages.as_deref(), quiet),
         Some(Commands::Json {
             input,
             output,
             compact,
-        }) => cmd_json(&input, output.as_deref(), compact),
-        Some(Commands::Info { input }) => cmd_info(&input),
+        }) => cmd_json(&input, output.as_deref(), compact, quiet),
+        Some(Commands::Info { input }) => cmd_info(&input, quiet),
         Some(Commands::Extract {
             input,
             output,
             pages,
-        }) => cmd_extract(&input, output.as_deref(), pages.as_deref()),
+        }) => cmd_extract(&input, output.as_deref(), pages.as_deref(), quiet),
         Some(Commands::Update { check, force }) => {
             if let Err(e) = update::run_update(check, force) {
                 eprintln!("{}: {}", "Error".red().bold(), e);
                 std::process::exit(1);
             }
-            Ok(())
+            Ok(false)
         }
         Some(Commands::Version) => {
             cmd_version();
-            Ok(())
+            Ok(false)
         }
         None => {
             // Default behavior: convert if input is provided
             if let Some(input) = cli.input {
-                cmd_convert(&input, cli.output.as_deref(), cli.cleanup)
+                cmd_convert(&input, cli.output.as_deref(), cli.cleanup, quiet)
             } else {
                 println!("{}", "Usage: unpdf <FILE> [OUTPUT]".yellow());
                 println!("       unpdf --help for more information");
-                Ok(())
+                Ok(false)
             }
         }
     };
@@ -286,9 +306,16 @@ fn main() {
         }
     }
 
-    if let Err(e) = result {
-        eprintln!("{}: {}", "Error".red().bold(), e);
-        std::process::exit(1);
+    match result {
+        Ok(had_warnings) => {
+            if had_warnings {
+                std::process::exit(2);
+            }
+        }
+        Err(e) => {
+            eprintln!("{}: {}", "Error".red().bold(), e);
+            std::process::exit(1);
+        }
     }
 }
 
@@ -296,7 +323,8 @@ fn cmd_convert(
     input: &Path,
     output: Option<&Path>,
     cleanup: Option<CleanupLevel>,
-) -> Result<(), Box<dyn std::error::Error>> {
+    quiet: bool,
+) -> Result<bool, Box<dyn std::error::Error>> {
     let output_dir = output.map(|p| p.to_path_buf()).unwrap_or_else(|| {
         let stem = input.file_stem().unwrap_or_default().to_string_lossy();
         PathBuf::from(format!("{}_output", stem))
@@ -316,6 +344,7 @@ fn cmd_convert(
     pb.set_message("Parsing PDF...");
     let options = ParseOptions::new().lenient();
     let doc = parse_file_with_options(input, options)?;
+    let had_warnings = check_quality(&doc, quiet);
     pb.inc(1);
 
     // Build render options
@@ -374,9 +403,10 @@ fn cmd_convert(
         println!("  {} content.json", "└─".dimmed());
     }
 
-    Ok(())
+    Ok(had_warnings)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_markdown(
     input: &Path,
     output: Option<&Path>,
@@ -385,7 +415,8 @@ fn cmd_markdown(
     cleanup: Option<CleanupLevel>,
     max_heading: u8,
     pages: Option<&str>,
-) -> Result<(), Box<dyn std::error::Error>> {
+    quiet: bool,
+) -> Result<bool, Box<dyn std::error::Error>> {
     let page_selection = if let Some(p) = pages {
         PageSelection::parse(p).map_err(|e| format!("Invalid page range: {}", e))?
     } else {
@@ -397,6 +428,7 @@ fn cmd_markdown(
         .lenient()
         .with_pages(page_selection.clone());
     let doc = parse_file_with_options(input, options)?;
+    let had_warnings = check_quality(&doc, quiet);
 
     let mut render_options = RenderOptions::new()
         .with_frontmatter(frontmatter)
@@ -417,7 +449,7 @@ fn cmd_markdown(
         println!("{}", markdown);
     }
 
-    Ok(())
+    Ok(had_warnings)
 }
 
 fn cmd_text(
@@ -425,7 +457,8 @@ fn cmd_text(
     output: Option<&Path>,
     cleanup: Option<CleanupLevel>,
     pages: Option<&str>,
-) -> Result<(), Box<dyn std::error::Error>> {
+    quiet: bool,
+) -> Result<bool, Box<dyn std::error::Error>> {
     let page_selection = if let Some(p) = pages {
         PageSelection::parse(p).map_err(|e| format!("Invalid page range: {}", e))?
     } else {
@@ -435,6 +468,7 @@ fn cmd_text(
     // Use lenient mode to continue even if some text extraction fails
     let options = ParseOptions::new().lenient().with_pages(page_selection);
     let doc = parse_file_with_options(input, options)?;
+    let had_warnings = check_quality(&doc, quiet);
 
     let mut render_options = RenderOptions::new();
     if let Some(level) = cleanup {
@@ -450,17 +484,19 @@ fn cmd_text(
         println!("{}", text);
     }
 
-    Ok(())
+    Ok(had_warnings)
 }
 
 fn cmd_json(
     input: &Path,
     output: Option<&Path>,
     compact: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+    quiet: bool,
+) -> Result<bool, Box<dyn std::error::Error>> {
     // Use lenient mode to continue even if some text extraction fails
     let options = ParseOptions::new().lenient();
     let doc = unpdf::parse_file_with_options(input, options)?;
+    let had_warnings = check_quality(&doc, quiet);
 
     let format = if compact {
         JsonFormat::Compact
@@ -477,13 +513,14 @@ fn cmd_json(
         println!("{}", json);
     }
 
-    Ok(())
+    Ok(had_warnings)
 }
 
-fn cmd_info(input: &Path) -> Result<(), Box<dyn std::error::Error>> {
+fn cmd_info(input: &Path, quiet: bool) -> Result<bool, Box<dyn std::error::Error>> {
     // Use lenient mode for info command - we want to show metadata even if text extraction fails
     let options = ParseOptions::new().lenient();
     let doc = parse_file_with_options(input, options)?;
+    let had_warnings = check_quality(&doc, quiet);
 
     println!("{}", "Document Information".cyan().bold());
     println!("{}", "─".repeat(40).dimmed());
@@ -533,14 +570,15 @@ fn cmd_info(input: &Path) -> Result<(), Box<dyn std::error::Error>> {
         println!("{}: {}", "Bookmarks".bold(), outline.total_items());
     }
 
-    Ok(())
+    Ok(had_warnings)
 }
 
 fn cmd_extract(
     input: &Path,
     output: Option<&Path>,
     pages: Option<&str>,
-) -> Result<(), Box<dyn std::error::Error>> {
+    quiet: bool,
+) -> Result<bool, Box<dyn std::error::Error>> {
     let page_selection = if let Some(p) = pages {
         PageSelection::parse(p).map_err(|e| format!("Invalid page range: {}", e))?
     } else {
@@ -550,6 +588,7 @@ fn cmd_extract(
     // Use lenient mode to continue even if some text extraction fails
     let options = ParseOptions::new().lenient().with_pages(page_selection);
     let doc = parse_file_with_options(input, options)?;
+    let had_warnings = check_quality(&doc, quiet);
 
     let output_dir = output
         .map(|p| p.to_path_buf())
@@ -569,7 +608,7 @@ fn cmd_extract(
 
     println!("\n{} {} images extracted", "Done!".green().bold(), count);
 
-    Ok(())
+    Ok(had_warnings)
 }
 
 fn cmd_version() {
