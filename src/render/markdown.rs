@@ -353,10 +353,9 @@ impl MarkdownRenderer {
         output.push_str("</tr>\n");
     }
 
-    fn render_image(&self, output: &mut String, resource_id: &str, alt_text: Option<&str>) {
-        let alt = alt_text.unwrap_or("");
-        let path = format!("{}{}", self.options.image_path_prefix, resource_id);
-        output.push_str(&format!("![{}]({})\n\n", alt, path));
+    fn render_image(&self, output: &mut String, _resource_id: &str, alt_text: Option<&str>) {
+        let alt = alt_text.unwrap_or("Image");
+        output.push_str(&format!("\n<!-- [{}] -->\n\n", alt));
     }
 }
 
