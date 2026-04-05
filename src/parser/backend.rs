@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use crate::error::{Error, Result};
 
+use super::encoding::{build_encoding_map, decode_with_encoding_map, BaseEncoding};
 use super::font::{
     is_likely_binary, parse_to_unicode_cmap, parse_truetype_cmap_table, ToUnicodeMap,
 };
@@ -362,7 +363,8 @@ impl PdfBackend for RawBackend {
 
                         let data = match filter.as_deref() {
                             Some("DCTDecode") | Some("JPXDecode") => stream.raw_data.clone(),
-                            _ => raw_stream::decompress(stream).unwrap_or_else(|_| stream.raw_data.clone()),
+                            _ => raw_stream::decompress(stream)
+                                .unwrap_or_else(|_| stream.raw_data.clone()),
                         };
 
                         let width = raw_dict_get(dict, b"Width")
@@ -548,12 +550,14 @@ impl RawBackend {
 
 struct RawFontResolver {
     cmap_cache: RefCell<HashMap<PageId, Option<ToUnicodeMap>>>,
+    encoding_cache: RefCell<HashMap<PageId, Option<HashMap<u8, char>>>>,
 }
 
 impl RawFontResolver {
     fn new() -> Self {
         Self {
             cmap_cache: RefCell::new(HashMap::new()),
+            encoding_cache: RefCell::new(HashMap::new()),
         }
     }
 
@@ -588,6 +592,16 @@ impl RawFontResolver {
             }
         }
 
+        // 3. Try encoding dictionary (BaseEncoding + Differences)
+        if let Some(fid) = font_obj_id {
+            if let Some(enc_map) = self.get_encoding_map(doc, fid) {
+                let decoded = decode_with_encoding_map(bytes, &enc_map);
+                if !decoded.is_empty() {
+                    return decoded;
+                }
+            }
+        }
+
         // For Identity-H/V fonts, simple fallback always produces garbage
         if is_identity_h {
             return String::new();
@@ -603,12 +617,7 @@ impl RawFontResolver {
     }
 
     /// Find the font dictionary object ID for a given font name on a page.
-    fn find_font_dict(
-        &self,
-        doc: &RawDocument,
-        page: PageId,
-        font_name: &[u8],
-    ) -> Option<PageId> {
+    fn find_font_dict(&self, doc: &RawDocument, page: PageId, font_name: &[u8]) -> Option<PageId> {
         // Try the page's own Resources
         if let Some(fid) = self.find_font_in_resources(doc, page, font_name) {
             return Some(fid);
@@ -774,8 +783,7 @@ impl RawFontResolver {
         let cid_font_dict = doc.get_dict(cid_font_id).ok()?;
 
         // Get FontDescriptor
-        let fd_ref = raw_dict_get(cid_font_dict, b"FontDescriptor")?
-            .as_reference()?;
+        let fd_ref = raw_dict_get(cid_font_dict, b"FontDescriptor")?.as_reference()?;
         let fd_dict = doc.get_dict(fd_ref).ok()?;
 
         // Get FontFile2 (TrueType)
@@ -794,6 +802,114 @@ impl RawFontResolver {
         let font_data =
             raw_stream::decompress(font_stream).unwrap_or_else(|_| font_stream.raw_data.clone());
         parse_truetype_cmap_table(&font_data)
+    }
+
+    /// Get or parse the encoding map for a font.
+    fn get_encoding_map(
+        &self,
+        doc: &RawDocument,
+        font_obj_id: PageId,
+    ) -> Option<HashMap<u8, char>> {
+        {
+            let cache = self.encoding_cache.borrow();
+            if let Some(cached) = cache.get(&font_obj_id) {
+                return cached.clone();
+            }
+        }
+
+        let result = self.parse_encoding_dict(doc, font_obj_id);
+        self.encoding_cache
+            .borrow_mut()
+            .insert(font_obj_id, result.clone());
+        result
+    }
+
+    /// Parse the /Encoding entry from a font dictionary.
+    ///
+    /// The /Encoding can be:
+    /// - A Name (e.g., /WinAnsiEncoding) → use that base encoding directly
+    /// - A Dict with /BaseEncoding and /Differences → build a custom encoding map
+    fn parse_encoding_dict(
+        &self,
+        doc: &RawDocument,
+        font_obj_id: PageId,
+    ) -> Option<HashMap<u8, char>> {
+        let font_dict = doc.get_dict(font_obj_id).ok()?;
+        let encoding_obj = raw_dict_get(font_dict, b"Encoding")?;
+        let encoding_obj = doc.resolve(encoding_obj);
+
+        match encoding_obj {
+            // Simple name: /WinAnsiEncoding, /MacRomanEncoding, /StandardEncoding
+            RawPdfObject::Name(name) => {
+                let base = BaseEncoding::from_name(name)?;
+                Some(build_encoding_map(Some(base), &[]))
+            }
+            // Encoding dictionary with optional BaseEncoding and Differences
+            RawPdfObject::Dict(dict) => {
+                let base = raw_dict_get(dict, b"BaseEncoding")
+                    .and_then(|b| b.as_name())
+                    .and_then(BaseEncoding::from_name);
+
+                let differences = self.parse_differences(doc, dict);
+                Some(build_encoding_map(base, &differences))
+            }
+            RawPdfObject::Reference(n, g) => {
+                let obj = doc.get_object((*n, *g))?;
+                let resolved = doc.resolve(obj);
+                match resolved {
+                    RawPdfObject::Name(name) => {
+                        let base = BaseEncoding::from_name(name)?;
+                        Some(build_encoding_map(Some(base), &[]))
+                    }
+                    RawPdfObject::Dict(dict) => {
+                        let base = raw_dict_get(dict, b"BaseEncoding")
+                            .and_then(|b| b.as_name())
+                            .and_then(BaseEncoding::from_name);
+                        let differences = self.parse_differences(doc, dict);
+                        Some(build_encoding_map(base, &differences))
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Parse a /Differences array from an encoding dictionary.
+    ///
+    /// Format: `[code1 /name1 /name2 ... codeN /nameN ...]`
+    /// Each integer sets the starting code, and subsequent names map consecutive codes.
+    fn parse_differences(&self, doc: &RawDocument, dict: &RawPdfDict) -> Vec<(u8, String)> {
+        let mut result = Vec::new();
+        let diff_obj = match raw_dict_get(dict, b"Differences") {
+            Some(d) => d,
+            None => return result,
+        };
+        let diff_obj = doc.resolve(diff_obj);
+        let arr = match diff_obj.as_array() {
+            Some(a) => a,
+            None => return result,
+        };
+
+        let mut current_code: u32 = 0;
+        for item in arr {
+            let item = doc.resolve(item);
+            match item {
+                RawPdfObject::Integer(n) => {
+                    current_code = *n as u32;
+                }
+                RawPdfObject::Name(name) => {
+                    if current_code <= 255 {
+                        let glyph_name = String::from_utf8_lossy(name).to_string();
+                        result.push((current_code as u8, glyph_name));
+                    }
+                    current_code += 1;
+                }
+                _ => {}
+            }
+        }
+
+        result
     }
 
     /// Collect font info for a page (with inherited resources fallback).

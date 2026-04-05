@@ -16,6 +16,9 @@ pub enum XrefEntry {
     Compressed(u32, u32),
 }
 
+/// Result of parsing a single xref section: entries + trailer dictionary.
+type XrefParseResult = Result<(Vec<((u32, u16), XrefEntry)>, PdfDict)>;
+
 /// Parsed xref table.
 #[derive(Debug, Default)]
 pub struct XrefTable {
@@ -111,7 +114,7 @@ pub fn parse_xref_chain(data: &[u8]) -> Result<(XrefTable, PdfDict)> {
 
 /// Parse an xref section at the given offset, returning entries and the trailer dict.
 /// Handles both traditional xref tables and xref streams.
-fn parse_xref_at(data: &[u8], offset: usize) -> Result<(Vec<((u32, u16), XrefEntry)>, PdfDict)> {
+fn parse_xref_at(data: &[u8], offset: usize) -> XrefParseResult {
     let pos = skip_whitespace_simple(data, offset);
 
     // Check if this is a traditional xref table or an xref stream
@@ -124,10 +127,7 @@ fn parse_xref_at(data: &[u8], offset: usize) -> Result<(Vec<((u32, u16), XrefEnt
 }
 
 /// Parse a traditional xref table starting with the `xref` keyword.
-fn parse_traditional_xref(
-    data: &[u8],
-    pos: usize,
-) -> Result<(Vec<((u32, u16), XrefEntry)>, PdfDict)> {
+fn parse_traditional_xref(data: &[u8], pos: usize) -> XrefParseResult {
     let mut p = pos + 4; // skip "xref"
     p = skip_whitespace_simple(data, p);
 
@@ -216,7 +216,7 @@ fn parse_traditional_xref(
 }
 
 /// Parse an xref stream object at the given position.
-fn parse_xref_stream(data: &[u8], pos: usize) -> Result<(Vec<((u32, u16), XrefEntry)>, PdfDict)> {
+fn parse_xref_stream(data: &[u8], pos: usize) -> XrefParseResult {
     // Parse the indirect object (N 0 obj << ... >> stream ... endstream endobj)
     let (obj, _) = tokenizer::parse_object(data, pos)?;
 

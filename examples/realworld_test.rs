@@ -65,10 +65,7 @@ fn main() {
 
     let ok_count = results.iter().filter(|r| r.2 == "OK").count();
     let err_count = results.len() - ok_count;
-    let zero_text = results
-        .iter()
-        .filter(|r| r.2 == "OK" && r.4 == 0)
-        .count();
+    let zero_text = results.iter().filter(|r| r.2 == "OK" && r.4 == 0).count();
     println!(
         "\n--- Summary ---\nTotal: {}, OK: {}, Errors: {}, Zero-text: {}",
         results.len(),

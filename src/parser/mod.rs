@@ -1,6 +1,7 @@
 //! PDF parsing module.
 
 pub mod backend;
+pub(crate) mod encoding;
 pub(crate) mod font;
 mod layout;
 mod options;

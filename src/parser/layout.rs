@@ -884,6 +884,11 @@ impl<'a> LayoutAnalyzer<'a> {
             }
         });
 
+        // Merge adjacent single/few-character spans that likely form words.
+        // This fixes the "w arranty", "M ac B ook" splitting caused by
+        // per-character text rendering in some PDFs.
+        spans = merge_fragmented_spans(spans);
+
         let mut lines: Vec<TextLine> = Vec::new();
         let mut current_line_spans: Vec<TextSpan> = Vec::new();
         let mut current_y: Option<f32> = None;
@@ -1148,7 +1153,11 @@ fn maybe_insert_space_tj(text: &mut String, adjustment: f32) {
             return;
         }
 
-        let threshold = if is_hangul_char(last_char) { 500.0 } else { 200.0 };
+        let threshold = if is_hangul_char(last_char) {
+            500.0
+        } else {
+            200.0
+        };
         if adjustment > threshold {
             text.push(' ');
         }
@@ -1194,6 +1203,84 @@ fn is_spaceless_script_char(c: char) -> bool {
     // NOTE: Hangul (Korean) is NOT included - Korean uses word spaces like English
     // CJK Symbols and Punctuation
     || (0x3000..=0x303F).contains(&code)
+}
+
+/// Merge adjacent fragmented spans that likely form words.
+///
+/// Some PDFs render text character-by-character with separate Tj operations,
+/// creating many single-character spans with width=0. This function merges
+/// consecutive short spans (≤3 chars) with width=0 that are:
+/// - On the same baseline (same Y within tolerance)
+/// - Using the same font at the same size
+/// - Positioned sequentially without large gaps
+///
+/// Only merges into width=0 spans — when the previous span also has width=0 or
+/// is itself a recently-merged fragment. This prevents merging normal
+/// multi-character spans that happen to be adjacent.
+fn merge_fragmented_spans(spans: Vec<TextSpan>) -> Vec<TextSpan> {
+    if spans.len() < 2 {
+        return spans;
+    }
+
+    let mut result: Vec<TextSpan> = Vec::with_capacity(spans.len());
+    // Track which result spans were created by merging (started as width=0)
+    let mut was_fragment: Vec<bool> = Vec::with_capacity(spans.len());
+
+    for span in spans {
+        let is_fragment = span.text.chars().count() <= 3 && span.width <= 0.0;
+
+        let should_merge =
+            if let Some((prev, prev_was_frag)) = result.last().zip(was_fragment.last()) {
+                // Only merge if BOTH are fragments (or prev was already merged from fragments)
+                if !is_fragment || !prev_was_frag {
+                    false
+                } else {
+                    // Same baseline (Y within tolerance)
+                    let y_tolerance = span.font_size * 0.3;
+                    let same_y = (prev.y - span.y).abs() <= y_tolerance;
+
+                    // Same font and size
+                    let same_font = prev.font_name == span.font_name
+                        && (prev.font_size - span.font_size).abs() < 0.1;
+
+                    if !same_y || !same_font {
+                        false
+                    } else {
+                        // Estimate character width from font size
+                        let est_char_width = prev.font_size * 0.6;
+
+                        // Estimate where the previous span ends
+                        let prev_end = if prev.width > 0.0 {
+                            prev.x + prev.width
+                        } else {
+                            prev.x + est_char_width * prev.text.chars().count() as f32
+                        };
+
+                        let gap = span.x - prev_end;
+
+                        // Merge if gap is small enough to not be a word space.
+                        // Character-to-character gap within a word: 0 to ~0.3 * char_width
+                        // Word space gap: ~0.4 * char_width or more
+                        gap < est_char_width * 0.4 && gap > -est_char_width * 0.5
+                    }
+                }
+            } else {
+                false
+            };
+
+        if should_merge {
+            let prev = result.last_mut().unwrap();
+            // Update width to cover the merged extent
+            let new_end = span.x + span.font_size * 0.6 * span.text.chars().count() as f32;
+            prev.width = new_end - prev.x;
+            prev.text.push_str(&span.text);
+        } else {
+            was_fragment.push(is_fragment);
+            result.push(span);
+        }
+    }
+
+    result
 }
 
 #[cfg(test)]
@@ -1244,6 +1331,60 @@ mod tests {
         );
         assert!(!span2.is_bold);
         assert!(span2.is_italic);
+    }
+
+    #[test]
+    fn test_merge_fragmented_spans_single_chars() {
+        // Simulate per-character rendering: "Hello" as 5 separate spans
+        let spans: Vec<TextSpan> = "Hello"
+            .chars()
+            .enumerate()
+            .map(|(i, c)| TextSpan {
+                text: c.to_string(),
+                x: 100.0 + i as f32 * 6.0,
+                y: 500.0,
+                width: 0.0, // width=0 is the fragmentation signal
+                font_size: 12.0,
+                font_name: "Helvetica".to_string(),
+                is_bold: false,
+                is_italic: false,
+            })
+            .collect();
+
+        let merged = merge_fragmented_spans(spans);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].text, "Hello");
+    }
+
+    #[test]
+    fn test_merge_fragmented_spans_preserves_normal() {
+        // Normal multi-character spans should not be merged unnecessarily
+        let spans = vec![
+            TextSpan {
+                text: "Hello".to_string(),
+                x: 100.0,
+                y: 500.0,
+                width: 30.0,
+                font_size: 12.0,
+                font_name: "Helvetica".to_string(),
+                is_bold: false,
+                is_italic: false,
+            },
+            TextSpan {
+                text: "World".to_string(),
+                x: 145.0, // gap indicates word space
+                y: 500.0,
+                width: 30.0,
+                font_size: 12.0,
+                font_name: "Helvetica".to_string(),
+                is_bold: false,
+                is_italic: false,
+            },
+        ];
+
+        let merged = merge_fragmented_spans(spans);
+        // Should not merge because fragmentation threshold is not met
+        assert_eq!(merged.len(), 2);
     }
 
     #[test]

@@ -57,10 +57,10 @@ impl Default for TableDetectorConfig {
         Self {
             min_rows: 2,
             min_columns: 2,
-            max_columns: 6,
+            max_columns: 10,
             y_tolerance_factor: 0.4,
-            min_alignment_ratio: 0.3, // Lowered from 0.5 to detect more tables
-            min_column_gap: 15.0,     // Increased to avoid false positives
+            min_alignment_ratio: 0.3,
+            min_column_gap: 20.0, // Increased from 15 to prevent splitting within cells
         }
     }
 }

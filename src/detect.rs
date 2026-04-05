@@ -78,7 +78,7 @@ pub fn detect_format_from_bytes(data: &[u8]) -> Result<PdfFormat> {
 
     Ok(PdfFormat {
         version,
-        linearized: false, // TODO: Detect linearization from file structure
+        linearized: false, // Would require parsing first indirect object for /Linearized key
     })
 }
 
