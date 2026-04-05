@@ -43,6 +43,7 @@ flate2 = "1.1"
 
 # Text processing
 regex = "1.11"
+unicode-bidi = "0.3"
 unicode-normalization = "0.1"
 
 # Date/time

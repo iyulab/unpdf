@@ -191,6 +191,11 @@ impl TextLine {
             result.push_str(&span.text);
         }
 
+        // Apply BiDi reordering for RTL scripts (Arabic, Hebrew, etc.)
+        if super::bidi::contains_rtl(&result) {
+            result = super::bidi::reorder_bidi(&result);
+        }
+
         result
     }
 
@@ -417,7 +422,17 @@ impl<'a> LayoutAnalyzer<'a> {
 
     /// Extract structured text blocks from a page.
     pub fn extract_page_blocks(&mut self, page_num: u32) -> Result<Vec<TextBlock>> {
-        let spans = self.extract_page_spans(page_num)?;
+        // Get page dimensions for header/footer filtering
+        let pages = self.backend.pages();
+        let page_id = pages
+            .get(&page_num)
+            .ok_or(Error::PageOutOfRange(page_num, pages.len() as u32))?;
+        let (_page_width, page_height) = self.backend.page_dimensions(*page_id);
+
+        let mut spans = self.extract_page_spans(page_num)?;
+
+        // Filter out page numbers / running headers from top/bottom margins
+        filter_header_footer_spans(&mut spans, page_height);
 
         // Update font statistics
         for span in &spans {
