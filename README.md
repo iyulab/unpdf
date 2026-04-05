@@ -12,10 +12,15 @@ A high-performance Rust library for extracting content from PDF documents to str
 ## Features
 
 - **Comprehensive PDF support**: PDF 1.0-2.0, including compressed object streams
+- **Encrypted PDF support**: RC4 and AES-128 decryption (auto-tries empty password)
 - **Multiple output formats**: Markdown, Plain Text, JSON (with full metadata)
 - **Structure preservation**: Headings, paragraphs, lists, tables, inline formatting
-- **CJK text support**: Smart spacing for Korean, Chinese, Japanese content
+- **CJK text support**: Smart spacing for Korean, Chinese, Japanese with Adobe CMap resources
+- **RTL text support**: Arabic and Hebrew with Unicode BiDi reordering
+- **Form field extraction**: AcroForm fields (text, checkbox, radio, dropdown) with values
+- **Multi-column layout**: Recursive XY-Cut algorithm for N-column detection
 - **Asset extraction**: Images, fonts, and embedded resources
+- **Extraction quality diagnostics**: Automatic detection and reporting of extraction issues
 - **Text cleanup**: Multiple presets for LLM training data preparation
 - **Self-update**: Built-in update mechanism via GitHub releases
 - **C-ABI FFI**: Native library for C#, Python, and other languages
@@ -205,6 +210,7 @@ unpdf markdown document.pdf --pages 1-10 -o output.md
 | `--cleanup` | Text cleanup: `minimal`, `standard`, `aggressive` | none |
 | `--max-heading` | Maximum heading level (1-6) | 6 |
 | `--pages` | Page range (e.g., `1-10`, `1,3,5`) | all |
+| `-q, --quiet` | Suppress quality warnings | false |
 
 ### Convert to Plain Text
 
@@ -395,14 +401,32 @@ let markdown = render::to_markdown(&doc, &options)?;
 
 ### Handling Encrypted PDFs
 
-> **Note**: PDF decryption is not yet supported. Encrypted PDFs will load but content streams cannot be decoded.
+unpdf automatically decrypts PDFs that use empty user passwords (owner-password-only protection). For password-protected PDFs, provide the password:
+
+```rust
+use unpdf::{parse_file, parse_file_with_options, ParseOptions};
+
+// Auto-decrypts owner-password-only PDFs
+let doc = parse_file("restricted.pdf")?;
+
+// Provide a password for user-password-protected PDFs
+let options = ParseOptions::new().with_password("secret");
+let doc = parse_file_with_options("protected.pdf", options)?;
+
+// Check extraction quality
+if let Some(warning) = doc.extraction_quality.warning_message() {
+    eprintln!("{}", warning);
+}
+```
+
+### Working with Form Fields
 
 ```rust
 use unpdf::parse_file;
 
-let doc = parse_file("document.pdf")?;
-if doc.metadata.encrypted {
-    eprintln!("Warning: document is encrypted, content may be incomplete");
+let doc = parse_file("form.pdf")?;
+for field in &doc.form_fields {
+    println!("{}: {}", field.name, field.display_value());
 }
 ```
 
@@ -646,16 +670,20 @@ Complete document structure with metadata:
 | Compressed object streams (ObjStm) | Supported |
 | Cross-reference streams (XRef streams) | Supported |
 | Linearized PDFs | Supported |
+| Encrypted PDFs (RC4, AES-128) | Supported |
 | Text extraction | Supported |
-| CJK text (Korean, Chinese, Japanese) | Supported |
-| ToUnicode CMap decoding | Supported |
+| CJK text (Korean, Chinese, Japanese) | Supported (Adobe CMap) |
+| RTL text (Arabic, Hebrew) | Supported (BiDi) |
+| CIDFont / ToUnicode CMap decoding | Supported |
 | Embedded TrueType font decoding | Supported |
+| Multi-column layout detection | Supported (XY-Cut) |
 | Table detection | Supported |
+| Form fields (AcroForms) | Supported |
 | Image extraction (JPEG, JP2) | Supported |
 | Bookmarks/Outlines | Supported |
-| Encrypted PDFs | Not yet supported |
+| Extraction quality diagnostics | Supported |
+| AES-256 encryption (R5-R6) | Not yet supported |
 | Digital signatures | Metadata only |
-| Form fields (AcroForms) | Planned |
 | OCR (image-based PDFs) | Planned |
 
 ---
