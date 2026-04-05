@@ -851,16 +851,17 @@ impl<'a> LayoutAnalyzer<'a> {
             }
         }
 
-        // Sort by Y (descending for top-to-bottom), then by column index (left to right)
+        // Read each column sequentially: all lines from column 0, then column 1, etc.
+        // Within each column, maintain top-to-bottom order (Y descending).
         all_lines.sort_by(|(col_a, line_a), (col_b, line_b)| {
-            let y_cmp = line_b
-                .y
-                .partial_cmp(&line_a.y)
-                .unwrap_or(std::cmp::Ordering::Equal);
-            if y_cmp == std::cmp::Ordering::Equal {
-                col_a.cmp(col_b)
+            let col_cmp = col_a.cmp(col_b);
+            if col_cmp != std::cmp::Ordering::Equal {
+                col_cmp
             } else {
-                y_cmp
+                line_b
+                    .y
+                    .partial_cmp(&line_a.y)
+                    .unwrap_or(std::cmp::Ordering::Equal)
             }
         });
 

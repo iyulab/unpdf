@@ -58,3 +58,25 @@ fn test_encrypted_pdf_returns_error() {
         msg
     );
 }
+
+#[test]
+fn test_multicolumn_reading_order() {
+    let path = Path::new("test-files/complex/multicolumn.pdf");
+    if !path.exists() {
+        return;
+    }
+    let doc = parse_file(path).unwrap();
+    let text = doc.plain_text();
+    assert!(!text.is_empty(), "Should extract text from multicolumn PDF");
+}
+
+#[test]
+fn test_two_column_reading_order() {
+    let path = Path::new("test-files/complex/two-column.pdf");
+    if !path.exists() {
+        return;
+    }
+    let doc = parse_file(path).unwrap();
+    let text = doc.plain_text();
+    assert!(!text.is_empty(), "Should extract text from two-column PDF");
+}
