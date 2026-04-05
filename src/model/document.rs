@@ -1,6 +1,6 @@
 //! Document-level types.
 
-use super::{Page, Resource};
+use super::{ExtractionQuality, Page, Resource};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -19,6 +19,9 @@ pub struct Document {
 
     /// Document outline (bookmarks)
     pub outline: Option<Outline>,
+
+    /// Extraction quality diagnostics
+    pub extraction_quality: ExtractionQuality,
 }
 
 impl Document {
@@ -29,6 +32,7 @@ impl Document {
             pages: Vec::new(),
             resources: HashMap::new(),
             outline: None,
+            extraction_quality: ExtractionQuality::default(),
         }
     }
 

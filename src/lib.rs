@@ -49,8 +49,9 @@ pub use convert::{
 pub use detect::{detect_format_from_bytes, detect_format_from_path, is_pdf, PdfFormat};
 pub use error::{Error, Result};
 pub use model::{
-    Alignment, Block, Document, InlineContent, ListInfo, Metadata, Outline, Page, Paragraph,
-    ParagraphStyle, Resource, ResourceType, Table, TableCell, TableRow, TextRun, TextStyle,
+    Alignment, Block, Document, ExtractionQuality, InlineContent, ListInfo, Metadata, Outline,
+    Page, Paragraph, ParagraphStyle, Resource, ResourceType, Table, TableCell, TableRow, TextRun,
+    TextStyle,
 };
 pub use parser::{ParseOptions, PdfParser};
 pub use render::{

@@ -7,6 +7,7 @@
 mod document;
 mod page;
 mod paragraph;
+mod quality;
 mod resource;
 mod table;
 
@@ -16,5 +17,6 @@ pub use paragraph::{
     Alignment, InlineContent, ListInfo, ListStyle, NumberStyle, Paragraph, ParagraphStyle, TextRun,
     TextStyle,
 };
+pub use quality::ExtractionQuality;
 pub use resource::{Resource, ResourceType};
 pub use table::{Table, TableCell, TableRow};
