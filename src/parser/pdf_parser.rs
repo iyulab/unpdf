@@ -131,6 +131,9 @@ impl PdfParser {
             }
         }
 
+        // Extract AcroForm fields
+        document.form_fields = self.backend.acroform_fields();
+
         // Compute extraction quality metrics
         let full_text = document.plain_text();
         let mut quality = ExtractionQuality::from_text(&full_text);

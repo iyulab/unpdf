@@ -1,4 +1,6 @@
+use std::path::Path;
 use unpdf::model::{FieldType, FieldValue, FormField};
+use unpdf::parse_file;
 
 #[test]
 fn test_form_field_text() {
@@ -53,4 +55,40 @@ fn test_form_field_no_value_no_default() {
         default_value: None,
     };
     assert_eq!(field.display_value(), "");
+}
+
+#[test]
+fn test_form_pdf_extracts_fields() {
+    let path = Path::new("test-files/forms/pdf-form-sample.pdf");
+    if !path.exists() {
+        return;
+    }
+    let doc = parse_file(path).unwrap();
+    assert!(
+        !doc.form_fields.is_empty(),
+        "Should extract form fields from PDF with AcroForm"
+    );
+}
+
+#[test]
+fn test_pdflatex_form_fields() {
+    let path = Path::new("test-files/forms/pdflatex-form.pdf");
+    if !path.exists() {
+        return;
+    }
+    let doc = parse_file(path).unwrap();
+    assert!(
+        !doc.form_fields.is_empty(),
+        "Should extract form fields from LaTeX-generated PDF"
+    );
+}
+
+#[test]
+fn test_non_form_pdf_has_no_fields() {
+    let path = Path::new("test-files/basic/trivial.pdf");
+    if !path.exists() {
+        return;
+    }
+    let doc = parse_file(path).unwrap();
+    assert!(doc.form_fields.is_empty(), "Non-form PDF should have no form fields");
 }

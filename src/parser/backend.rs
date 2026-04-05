@@ -7,6 +7,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 
 use crate::error::{Error, Result};
+use crate::model::{FieldType, FieldValue, FormField};
 
 use super::encoding::{build_encoding_map, decode_with_encoding_map, BaseEncoding};
 use super::font::{
@@ -114,6 +115,11 @@ pub trait PdfBackend {
 
     /// Return XObjects (images) from a page.
     fn page_xobjects(&self, page: PageId) -> Result<Vec<RawXObject>>;
+
+    /// Extract AcroForm fields from the document.
+    fn acroform_fields(&self) -> Vec<FormField> {
+        vec![]
+    }
 }
 
 // Re-export decode_text_simple as pub for external consumers.
@@ -406,9 +412,181 @@ impl PdfBackend for RawBackend {
 
         Ok(xobjects)
     }
+
+    fn acroform_fields(&self) -> Vec<FormField> {
+        self.extract_acroform_fields()
+    }
 }
 
 impl RawBackend {
+    /// Extract AcroForm fields from the document.
+    fn extract_acroform_fields(&self) -> Vec<FormField> {
+        let catalog = match self.doc.catalog() {
+            Ok(c) => c,
+            Err(_) => return vec![],
+        };
+
+        let acroform = match raw_dict_get(catalog, b"AcroForm") {
+            Some(obj) => self.doc.resolve(obj),
+            None => return vec![],
+        };
+
+        let acroform_dict = match acroform {
+            RawPdfObject::Dict(d) => d,
+            RawPdfObject::Reference(n, g) => match self.doc.get_dict((*n, *g)) {
+                Ok(d) => d,
+                Err(_) => return vec![],
+            },
+            _ => return vec![],
+        };
+
+        let fields = match raw_dict_get(acroform_dict, b"Fields") {
+            Some(obj) => self.doc.resolve(obj),
+            None => return vec![],
+        };
+
+        let field_refs = match fields {
+            RawPdfObject::Array(arr) => arr,
+            RawPdfObject::Reference(n, g) => {
+                match self.doc.get_object((*n, *g)) {
+                    Some(obj) => match self.doc.resolve(obj).as_array() {
+                        Some(arr) => arr,
+                        None => return vec![],
+                    },
+                    None => return vec![],
+                }
+            }
+            _ => return vec![],
+        };
+
+        let mut result = Vec::new();
+        for field_ref in field_refs {
+            if let Some(id) = field_ref.as_reference() {
+                self.traverse_field_tree(id, String::new(), None, &mut result);
+            }
+        }
+        result
+    }
+
+    fn traverse_field_tree(
+        &self,
+        field_id: PageId,
+        parent_name: String,
+        inherited_ft: Option<Vec<u8>>,
+        result: &mut Vec<FormField>,
+    ) {
+        let dict = match self.doc.get_dict(field_id) {
+            Ok(d) => d,
+            Err(_) => return,
+        };
+
+        // Build qualified name
+        let partial_name = raw_dict_get(dict, b"T")
+            .and_then(|o| o.as_str_bytes())
+            .map(|s| String::from_utf8_lossy(s).to_string());
+
+        let qualified_name = match &partial_name {
+            Some(name) if parent_name.is_empty() => name.clone(),
+            Some(name) => format!("{}.{}", parent_name, name),
+            None => parent_name.clone(),
+        };
+
+        // Get field type (may be inherited from parent)
+        let ft = raw_dict_get(dict, b"FT")
+            .and_then(|o| o.as_name())
+            .map(|n| n.to_vec())
+            .or(inherited_ft.clone());
+
+        // Check for Kids (non-terminal field)
+        if let Some(kids) = raw_dict_get(dict, b"Kids") {
+            let kids = self.doc.resolve(kids);
+            if let Some(kids_arr) = kids.as_array() {
+                for kid in kids_arr {
+                    if let Some(kid_id) = kid.as_reference() {
+                        self.traverse_field_tree(kid_id, qualified_name.clone(), ft.clone(), result);
+                    }
+                }
+                return;
+            }
+        }
+
+        // Terminal field — extract value
+        let ft_bytes = match &ft {
+            Some(ft) => ft.as_slice(),
+            None => return,
+        };
+
+        let ff = raw_dict_get(dict, b"Ff")
+            .and_then(|o| o.as_i64())
+            .unwrap_or(0) as u32;
+
+        let field_type = match ft_bytes {
+            b"Tx" => FieldType::Text,
+            b"Btn" => {
+                if ff & (1 << 16) != 0 {
+                    FieldType::RadioButton
+                } else if ff & (1 << 17) != 0 {
+                    FieldType::PushButton
+                } else {
+                    FieldType::Checkbox
+                }
+            }
+            b"Ch" => {
+                if ff & (1 << 17) != 0 {
+                    FieldType::Dropdown
+                } else {
+                    FieldType::ListBox
+                }
+            }
+            b"Sig" => FieldType::Signature,
+            _ => return,
+        };
+
+        let value = self.extract_field_value(dict, &field_type);
+        let default_value = raw_dict_get(dict, b"DV")
+            .and_then(|o| self.pdf_obj_to_field_value(o, &field_type));
+
+        result.push(FormField {
+            name: qualified_name,
+            field_type,
+            value,
+            default_value,
+        });
+    }
+
+    fn extract_field_value(&self, dict: &RawPdfDict, field_type: &FieldType) -> Option<FieldValue> {
+        let v = raw_dict_get(dict, b"V")?;
+        self.pdf_obj_to_field_value(v, field_type)
+    }
+
+    fn pdf_obj_to_field_value(&self, obj: &RawPdfObject, field_type: &FieldType) -> Option<FieldValue> {
+        let obj = self.doc.resolve(obj);
+        match field_type {
+            FieldType::Text => {
+                obj.as_str_bytes()
+                    .map(|s| FieldValue::Text(String::from_utf8_lossy(s).to_string()))
+            }
+            FieldType::Checkbox | FieldType::RadioButton => {
+                obj.as_name().map(|n| FieldValue::Boolean(n != b"Off"))
+            }
+            FieldType::Dropdown | FieldType::ListBox => {
+                if let Some(s) = obj.as_str_bytes() {
+                    Some(FieldValue::Choice(String::from_utf8_lossy(s).to_string()))
+                } else if let Some(arr) = obj.as_array() {
+                    let choices: Vec<String> = arr
+                        .iter()
+                        .filter_map(|o| o.as_str_bytes())
+                        .map(|s| String::from_utf8_lossy(s).to_string())
+                        .collect();
+                    Some(FieldValue::Choices(choices))
+                } else {
+                    None
+                }
+            }
+            FieldType::PushButton | FieldType::Signature => None,
+        }
+    }
+
     /// Find MediaBox for a page, walking up the page tree for inherited values.
     fn find_media_box(&self, page_id: PageId) -> Option<(f32, f32)> {
         let dict = self.doc.get_dict(page_id).ok()?;
