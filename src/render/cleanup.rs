@@ -106,7 +106,7 @@ impl CleanupOptions {
             standardize_bullets: true,
             remove_page_numbers: true,
             remove_headers_footers: true,
-            remove_toc: false,
+            remove_toc: true,
             fix_ligatures: true,
             fix_hyphenation: true,
             detect_mojibake: false,
@@ -154,6 +154,7 @@ impl Default for CleanupOptions {
 pub struct CleanupPipeline {
     options: CleanupOptions,
     page_number_regex: Regex,
+    toc_dot_leader_regex: Regex,
     ligature_map: Vec<(&'static str, &'static str)>,
 }
 
@@ -163,6 +164,7 @@ impl CleanupPipeline {
         Self {
             options,
             page_number_regex: Regex::new(r"(?m)^[\s]*[-–—]?\s*\d+\s*[-–—]?\s*$").unwrap(),
+            toc_dot_leader_regex: Regex::new(r"\s*\.{4,}\s*(\d+)?\s*$").unwrap(),
             ligature_map: vec![
                 ("\u{FB00}", "ff"),  // ﬀ
                 ("\u{FB01}", "fi"),  // ﬁ
@@ -236,6 +238,11 @@ impl CleanupPipeline {
         // Stage 2: Line-level cleanup
         if self.options.remove_page_numbers {
             result = self.page_number_regex.replace_all(&result, "").to_string();
+        }
+
+        // Remove TOC dot leaders (e.g. "Chapter 1 .......... 6" → "Chapter 1 (p.6)")
+        if self.options.remove_toc {
+            result = self.remove_toc_dot_leaders(&result);
         }
 
         // Fix hyphenation
@@ -426,6 +433,26 @@ impl CleanupPipeline {
         result = re_circled.replace_all(&result, "$1 ").to_string();
 
         result
+    }
+
+    fn remove_toc_dot_leaders(&self, text: &str) -> String {
+        // Remove dot leaders from TOC entries per line.
+        // "Chapter 1 ................................ 6"  → "Chapter 1 (p.6)"
+        // "Introduction ............................"      → "Introduction"
+        text.lines()
+            .map(|line| {
+                self.toc_dot_leader_regex
+                    .replace(line, |caps: &regex::Captures| {
+                        if let Some(page) = caps.get(1) {
+                            format!(" (p.{})", page.as_str())
+                        } else {
+                            String::new()
+                        }
+                    })
+                    .into_owned()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     fn merge_cjk_lines(&self, text: &str) -> String {

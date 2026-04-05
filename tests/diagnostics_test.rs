@@ -80,3 +80,27 @@ fn test_two_column_reading_order() {
     let text = doc.plain_text();
     assert!(!text.is_empty(), "Should extract text from two-column PDF");
 }
+
+#[test]
+fn test_toc_dot_leader_removal() {
+    use unpdf::render::{CleanupPipeline, CleanupPreset};
+    let pipeline = CleanupPipeline::from_preset(CleanupPreset::Standard);
+    let input = "Chapter 1: Introduction ................................ 6\n\
+                 Chapter 2: Methods ...................................... 12\n\
+                 Normal paragraph text without dots.";
+    let output = pipeline.process(input);
+    assert!(!output.contains("................................"), "Dot leaders should be removed");
+    assert!(output.contains("Introduction"));
+    assert!(output.contains("Normal paragraph text"));
+}
+
+#[test]
+fn test_image_pdf_has_content() {
+    let path = Path::new("test-files/images/sample-with-images.pdf");
+    if !path.exists() {
+        return;
+    }
+    let doc = parse_file(path).unwrap();
+    let text = doc.plain_text();
+    assert!(!text.is_empty(), "Should extract text from PDF with images");
+}
