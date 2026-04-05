@@ -1,6 +1,7 @@
 //! PDF parsing module.
 
 pub mod backend;
+pub mod cmap_table;
 pub(crate) mod encoding;
 pub(crate) mod font;
 mod layout;
