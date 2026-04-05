@@ -551,6 +551,7 @@ impl RawBackend {
 struct RawFontResolver {
     cmap_cache: RefCell<HashMap<PageId, Option<ToUnicodeMap>>>,
     encoding_cache: RefCell<HashMap<PageId, Option<HashMap<u8, char>>>>,
+    cid_system_info_cache: RefCell<HashMap<PageId, Option<(String, String)>>>,
 }
 
 impl RawFontResolver {
@@ -558,6 +559,7 @@ impl RawFontResolver {
         Self {
             cmap_cache: RefCell::new(HashMap::new()),
             encoding_cache: RefCell::new(HashMap::new()),
+            cid_system_info_cache: RefCell::new(HashMap::new()),
         }
     }
 
@@ -595,7 +597,7 @@ impl RawFontResolver {
         // 3. Try CIDSystemInfo-based CMap resource lookup (for Identity-H CID fonts)
         if is_identity_h {
             if let Some(fid) = font_obj_id {
-                if let Some((registry, ordering)) = self.get_cid_system_info(doc, fid) {
+                if let Some((registry, ordering)) = self.get_cid_system_info_cached(doc, fid) {
                     if let Some(decoded) =
                         crate::parser::cmap_table::decode_with_cid_system_info(
                             &registry, &ordering, bytes,
@@ -787,6 +789,24 @@ impl RawFontResolver {
             .map(|s| String::from_utf8_lossy(s).to_string())?;
 
         Some((registry, ordering))
+    }
+
+    fn get_cid_system_info_cached(
+        &self,
+        doc: &RawDocument,
+        font_obj_id: PageId,
+    ) -> Option<(String, String)> {
+        {
+            let cache = self.cid_system_info_cache.borrow();
+            if let Some(cached) = cache.get(&font_obj_id) {
+                return cached.clone();
+            }
+        }
+        let result = self.get_cid_system_info(doc, font_obj_id);
+        self.cid_system_info_cache
+            .borrow_mut()
+            .insert(font_obj_id, result.clone());
+        result
     }
 
     /// Get or parse embedded TrueType cmap for Identity-H fonts.

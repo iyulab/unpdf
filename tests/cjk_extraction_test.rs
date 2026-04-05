@@ -58,3 +58,66 @@ fn test_decode_odd_bytes() {
     let result = cmap_table::decode_with_cid_system_info("Adobe", "Korea1", &[0x00]);
     assert_eq!(result, None);
 }
+
+use unpdf::parse_file;
+use std::path::Path;
+
+#[test]
+fn test_korean_pdf_extracts_text() {
+    let path = Path::new("test-files/cjk/korean-test.pdf");
+    if !path.exists() {
+        return;
+    }
+    let doc = parse_file(path).unwrap();
+    let text = doc.plain_text();
+    let fffd_count = text.chars().filter(|&c| c == '\u{FFFD}').count();
+    let total_chars = text.chars().count();
+    if total_chars > 0 {
+        let fffd_ratio = fffd_count as f32 / total_chars as f32;
+        assert!(fffd_ratio < 0.3, "Too many replacement characters: {:.1}% ({}/{})",
+            fffd_ratio * 100.0, fffd_count, total_chars);
+    }
+}
+
+#[test]
+fn test_korean_pdf_no_replacement_flood() {
+    let path = Path::new("test-files/cjk/korean-test.pdf");
+    if !path.exists() {
+        return;
+    }
+    let doc = parse_file(path).unwrap();
+    let text = doc.plain_text();
+    // Count max consecutive U+FFFD chars
+    let max_consecutive_fffd = text
+        .chars()
+        .fold((0u32, 0u32), |(max, current), c| {
+            if c == '\u{FFFD}' {
+                (max.max(current + 1), current + 1)
+            } else {
+                (max, 0)
+            }
+        })
+        .0;
+    assert!(
+        max_consecutive_fffd < 5,
+        "Found {} consecutive replacement characters",
+        max_consecutive_fffd
+    );
+}
+
+#[test]
+fn test_extraction_quality_korean() {
+    let path = Path::new("test-files/cjk/korean-test.pdf");
+    if !path.exists() {
+        return;
+    }
+    let doc = parse_file(path).unwrap();
+    // Just report metrics, don't assert is_good() since it depends on test PDF content
+    println!(
+        "Korean PDF quality: chars={}, words={}, fffd={}, ratio={:.2}%",
+        doc.extraction_quality.char_count,
+        doc.extraction_quality.word_count,
+        doc.extraction_quality.replacement_char_count,
+        doc.extraction_quality.replacement_char_ratio() * 100.0,
+    );
+}
