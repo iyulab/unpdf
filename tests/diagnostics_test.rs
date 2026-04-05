@@ -1,4 +1,5 @@
-use unpdf::ExtractionQuality;
+use std::path::Path;
+use unpdf::{parse_file, ExtractionQuality};
 
 #[test]
 fn test_extraction_quality_from_text() {
@@ -28,4 +29,32 @@ fn test_extraction_quality_empty() {
     assert_eq!(q.word_count, 0);
     assert!(!q.is_good());
     assert!(q.warning_message().is_some());
+}
+
+#[test]
+fn test_basic_pdf_has_quality_metrics() {
+    let path = Path::new("test-files/basic/trivial.pdf");
+    if !path.exists() {
+        return;
+    }
+    let doc = parse_file(path).unwrap();
+    assert!(doc.extraction_quality.char_count > 0);
+    assert!(doc.extraction_quality.word_count > 0);
+}
+
+#[test]
+fn test_encrypted_pdf_returns_error() {
+    let path = Path::new("test-files/encrypted/password-protected.pdf");
+    if !path.exists() {
+        return;
+    }
+    let result = parse_file(path);
+    assert!(result.is_err(), "Encrypted PDF should return error");
+    let err = result.unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("encrypted") || msg.contains("Encrypted"),
+        "Error should mention encryption: {}",
+        msg
+    );
 }

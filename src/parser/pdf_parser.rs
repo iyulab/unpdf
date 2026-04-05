@@ -7,7 +7,8 @@ use std::path::Path;
 use crate::detect::detect_format_from_path;
 use crate::error::{Error, Result};
 use crate::model::{
-    Block, Document, Metadata, Outline, OutlineItem, Page, Paragraph, Resource, ResourceType,
+    Block, Document, ExtractionQuality, Metadata, Outline, OutlineItem, Page, Paragraph, Resource,
+    ResourceType,
 };
 
 use super::backend::{PdfBackend, RawBackend, RawOutlineItem, RawXObject};
@@ -36,8 +37,11 @@ impl PdfParser {
 
         let backend: Box<dyn PdfBackend> = Box::new(RawBackend::load_file(path)?);
 
-        if options.password.is_some() && backend.metadata().encrypted {
-            log::warn!("Password was provided but PDF decryption is not supported");
+        if backend.metadata().encrypted {
+            if options.password.is_none() {
+                return Err(Error::Encrypted);
+            }
+            log::warn!("Password was provided but PDF decryption is not yet supported");
         }
 
         Ok(Self { backend, options })
@@ -52,8 +56,11 @@ impl PdfParser {
     pub fn from_bytes_with_options(data: &[u8], options: ParseOptions) -> Result<Self> {
         let backend: Box<dyn PdfBackend> = Box::new(RawBackend::load_bytes(data)?);
 
-        if options.password.is_some() && backend.metadata().encrypted {
-            log::warn!("Password was provided but PDF decryption is not supported");
+        if backend.metadata().encrypted {
+            if options.password.is_none() {
+                return Err(Error::Encrypted);
+            }
+            log::warn!("Password was provided but PDF decryption is not yet supported");
         }
 
         Ok(Self { backend, options })
@@ -68,8 +75,11 @@ impl PdfParser {
     pub fn from_reader_with_options<R: Read>(reader: R, options: ParseOptions) -> Result<Self> {
         let backend: Box<dyn PdfBackend> = Box::new(RawBackend::load_reader(reader)?);
 
-        if options.password.is_some() && backend.metadata().encrypted {
-            log::warn!("Password was provided but PDF decryption is not supported");
+        if backend.metadata().encrypted {
+            if options.password.is_none() {
+                return Err(Error::Encrypted);
+            }
+            log::warn!("Password was provided but PDF decryption is not yet supported");
         }
 
         Ok(Self { backend, options })
@@ -120,6 +130,12 @@ impl PdfParser {
                 document.resources = resources;
             }
         }
+
+        // Compute extraction quality metrics
+        let full_text = document.plain_text();
+        let mut quality = ExtractionQuality::from_text(&full_text);
+        quality.encrypted = document.metadata.encrypted;
+        document.extraction_quality = quality;
 
         Ok(document)
     }
