@@ -121,3 +121,25 @@ fn test_extraction_quality_korean() {
         doc.extraction_quality.replacement_char_ratio() * 100.0,
     );
 }
+
+#[test]
+fn test_cjk_table_no_oversplit() {
+    let path = Path::new("test-files/cjk/korean-test.pdf");
+    if !path.exists() {
+        return;
+    }
+    let doc = parse_file(path).unwrap();
+    for page in &doc.pages {
+        for block in &page.elements {
+            if let unpdf::model::Block::Table(table) = block {
+                for row in &table.rows {
+                    assert!(
+                        row.cells.len() <= 10,
+                        "Table row has {} cells — likely CJK oversplit",
+                        row.cells.len()
+                    );
+                }
+            }
+        }
+    }
+}

@@ -65,6 +65,24 @@ impl Default for TableDetectorConfig {
     }
 }
 
+/// Check if any span in the slice contains CJK characters.
+fn has_cjk_text(spans: &[TextSpan]) -> bool {
+    spans.iter().any(|s| {
+        s.text.chars().any(|c| {
+            matches!(c,
+                // CJK Radicals Supplement through CJK Unified Ideographs (covers CJK, Kana, Bopomofo, etc.)
+                '\u{2E80}'..='\u{9FFF}' |
+                // CJK Compatibility Ideographs
+                '\u{F900}'..='\u{FAFF}' |
+                // Hangul Syllables
+                '\u{AC00}'..='\u{D7AF}' |
+                // Halfwidth and Fullwidth Forms
+                '\u{FF00}'..='\u{FFEF}'
+            )
+        })
+    })
+}
+
 /// Detects tables in a list of text spans.
 pub struct TableDetector {
     config: TableDetectorConfig,
@@ -81,6 +99,26 @@ impl TableDetector {
     /// Create a new table detector with custom configuration.
     pub fn with_config(config: TableDetectorConfig) -> Self {
         Self { config }
+    }
+
+    /// Return the effective minimum column gap, adjusted upward for CJK text.
+    ///
+    /// CJK characters are fullwidth (~font_size wide), so gaps between characters
+    /// within a single cell can look like column separators with the default threshold.
+    fn effective_min_column_gap(&self, spans: &[TextSpan]) -> f32 {
+        if has_cjk_text(spans) {
+            let median_font = if spans.is_empty() {
+                12.0
+            } else {
+                let mut sizes: Vec<f32> = spans.iter().map(|s| s.font_size).collect();
+                sizes.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                sizes[sizes.len() / 2]
+            };
+            // CJK chars are fullwidth (~font_size wide), so require larger gaps
+            (median_font * 1.5).max(self.config.min_column_gap)
+        } else {
+            self.config.min_column_gap
+        }
     }
 
     /// Detect tables in the given spans.
@@ -338,14 +376,16 @@ impl TableDetector {
 
         column_edges.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
-        // Merge close edges
+        // Merge close edges — use a CJK-aware gap threshold
+        let all_spans: Vec<TextSpan> = rows.iter().flat_map(|r| r.spans.iter().cloned()).collect();
+        let min_gap = self.effective_min_column_gap(&all_spans);
         let mut merged_edges: Vec<f32> = Vec::new();
         for edge in column_edges {
             if merged_edges.is_empty() {
                 merged_edges.push(edge);
             } else {
                 let last = *merged_edges.last().unwrap();
-                if edge - last >= self.config.min_column_gap {
+                if edge - last >= min_gap {
                     merged_edges.push(edge);
                 }
             }
@@ -383,13 +423,15 @@ impl TableDetector {
 
         column_edges.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
+        let all_spans: Vec<TextSpan> = rows.iter().flat_map(|r| r.spans.iter().cloned()).collect();
+        let min_gap = self.effective_min_column_gap(&all_spans);
         let mut merged_edges: Vec<f32> = Vec::new();
         for edge in column_edges {
             if merged_edges.is_empty() {
                 merged_edges.push(edge);
             } else {
                 let last = *merged_edges.last().unwrap();
-                if edge - last >= self.config.min_column_gap {
+                if edge - last >= min_gap {
                     merged_edges.push(edge);
                 }
             }
