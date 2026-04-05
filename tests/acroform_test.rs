@@ -1,6 +1,7 @@
 use std::path::Path;
 use unpdf::model::{FieldType, FieldValue, FormField};
 use unpdf::parse_file;
+use unpdf::to_markdown;
 
 #[test]
 fn test_form_field_text() {
@@ -91,4 +92,15 @@ fn test_non_form_pdf_has_no_fields() {
     }
     let doc = parse_file(path).unwrap();
     assert!(doc.form_fields.is_empty(), "Non-form PDF should have no form fields");
+}
+
+#[test]
+fn test_form_fields_in_markdown() {
+    let path = Path::new("test-files/forms/pdf-form-sample.pdf");
+    if !path.exists() {
+        return;
+    }
+    let md = to_markdown(path).unwrap();
+    // Form fields section should be present
+    assert!(md.contains("Form Fields"), "Markdown should contain Form Fields section");
 }

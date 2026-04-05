@@ -69,6 +69,20 @@ impl MarkdownRenderer {
             }
         }
 
+        // Render form fields section
+        if !doc.form_fields.is_empty() {
+            output.push_str("\n---\n\n");
+            output.push_str("## Form Fields\n\n");
+            for field in &doc.form_fields {
+                let value = field.display_value();
+                if value.is_empty() {
+                    output.push_str(&format!("- **{}**: _(empty)_\n", field.name));
+                } else {
+                    output.push_str(&format!("- **{}**: {}\n", field.name, value));
+                }
+            }
+        }
+
         // Apply cleanup if configured
         if let Some(ref cleanup_options) = self.options.cleanup {
             let pipeline = CleanupPipeline::new(cleanup_options.clone());
