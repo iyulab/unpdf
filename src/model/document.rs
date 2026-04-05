@@ -1,6 +1,6 @@
 //! Document-level types.
 
-use super::{ExtractionQuality, Page, Resource};
+use super::{ExtractionQuality, FormField, Page, Resource};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -22,6 +22,9 @@ pub struct Document {
 
     /// Extraction quality diagnostics
     pub extraction_quality: ExtractionQuality,
+
+    /// Form fields extracted from AcroForm
+    pub form_fields: Vec<FormField>,
 }
 
 impl Document {
@@ -33,6 +36,7 @@ impl Document {
             resources: HashMap::new(),
             outline: None,
             extraction_quality: ExtractionQuality::default(),
+            form_fields: Vec::new(),
         }
     }
 

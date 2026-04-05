@@ -5,6 +5,7 @@
 //! can represent content from any PDF document.
 
 mod document;
+mod form;
 mod page;
 mod paragraph;
 mod quality;
@@ -12,6 +13,7 @@ mod resource;
 mod table;
 
 pub use document::{Document, Metadata, Outline, OutlineItem};
+pub use form::{FieldType, FieldValue, FormField};
 pub use page::{Block, Page};
 pub use paragraph::{
     Alignment, InlineContent, ListInfo, ListStyle, NumberStyle, Paragraph, ParagraphStyle, TextRun,
