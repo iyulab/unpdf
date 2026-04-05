@@ -24,6 +24,8 @@ pub struct DetectedTable {
     pub columns: Vec<f32>,
     /// Rows of text spans grouped by Y position
     pub rows: Vec<TableRowData>,
+    /// Confidence score (0.0 - 1.0) for this table detection
+    pub confidence: f32,
 }
 
 /// A row of text spans in a table.
@@ -223,6 +225,13 @@ impl TableDetector {
                     continue;
                 }
 
+                // Compute confidence before marking spans as used
+                let confidence = Self::table_confidence(&table_rows, table_columns.len());
+                log::debug!(
+                    "TableDetector: region [{start_row}..{end_row}] confidence={:.2}",
+                    confidence
+                );
+
                 // Mark spans as used
                 for row in &table_rows {
                     for span in &row.spans {
@@ -245,6 +254,7 @@ impl TableDetector {
                     right_x,
                     columns: table_columns,
                     rows: table_rows,
+                    confidence,
                 });
             }
         }
@@ -590,6 +600,41 @@ impl TableDetector {
         closest_col
     }
 
+    /// Compute confidence score (0.0 - 1.0) for a detected table.
+    fn table_confidence(rows: &[TableRowData], num_columns: usize) -> f32 {
+        if rows.is_empty() || num_columns < 2 {
+            return 0.0;
+        }
+
+        let mut score = 1.0_f32;
+
+        // Penalize very few rows
+        if rows.len() < 3 {
+            score *= 0.7;
+        }
+
+        // Penalize excessive columns (likely false detection)
+        if num_columns > 6 {
+            score *= 0.6;
+        }
+        if num_columns > 8 {
+            score *= 0.5;
+        }
+
+        // Check column occupancy: how many cells are actually filled
+        let total_cells = rows.len() * num_columns;
+        let filled_cells: usize = rows
+            .iter()
+            .map(|r| r.spans.len().min(num_columns))
+            .sum();
+        let occupancy = filled_cells as f32 / total_cells as f32;
+        if occupancy < 0.3 {
+            score *= 0.5; // Sparse table is likely not a real table
+        }
+
+        score.clamp(0.0, 1.0)
+    }
+
     /// Check if detected table rows actually represent a numbered or bulleted list.
     ///
     /// When a PDF has a numbered list like "1. Item", the number and text often
@@ -843,6 +888,7 @@ mod tests {
                     spans: vec![make_span("Alice", 10.0, 85.0), make_span("30", 60.0, 85.0)],
                 },
             ],
+            confidence: 1.0,
         };
 
         let table = detector.to_table_model(&detected);

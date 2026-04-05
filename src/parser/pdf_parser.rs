@@ -220,11 +220,34 @@ impl PdfParser {
             // Collect all elements with their Y position for proper ordering
             let mut elements: Vec<(f32, Block)> = Vec::new();
 
-            // Add detected tables
+            // Add detected tables (fall back to paragraphs for low-confidence detections)
+            const TABLE_CONFIDENCE_THRESHOLD: f32 = 0.4;
             for detected in &detected_tables {
-                let table = table_detector.to_table_model(detected);
-                if !table.is_empty() {
-                    elements.push((detected.top_y, Block::Table(table)));
+                if detected.confidence < TABLE_CONFIDENCE_THRESHOLD {
+                    log::debug!(
+                        "Table at y={} has low confidence ({:.2}), converting to paragraphs",
+                        detected.top_y,
+                        detected.confidence
+                    );
+                    for row in &detected.rows {
+                        let text = row
+                            .spans
+                            .iter()
+                            .map(|s| s.text.as_str())
+                            .collect::<Vec<_>>()
+                            .join("  ");
+                        if !text.trim().is_empty() {
+                            elements.push((
+                                row.y,
+                                Block::Paragraph(Paragraph::with_text(text)),
+                            ));
+                        }
+                    }
+                } else {
+                    let table = table_detector.to_table_model(detected);
+                    if !table.is_empty() {
+                        elements.push((detected.top_y, Block::Table(table)));
+                    }
                 }
             }
 

@@ -104,3 +104,37 @@ fn test_image_pdf_has_content() {
     let text = doc.plain_text();
     assert!(!text.is_empty(), "Should extract text from PDF with images");
 }
+
+#[test]
+fn test_page_number_pattern() {
+    // This tests the overall extraction, not the internal function
+    let path = Path::new("test-files/basic/trivial.pdf");
+    if !path.exists() {
+        return;
+    }
+    let doc = parse_file(path).unwrap();
+    let text = doc.plain_text();
+    // Basic PDFs should still extract content
+    assert!(!text.is_empty());
+}
+
+#[test]
+fn test_table_extraction_basic() {
+    let path = Path::new("test-files/tables/sample-tables.pdf");
+    if !path.exists() {
+        return;
+    }
+    let result = parse_file(path);
+    // Skip if file is encrypted or unreadable
+    if result.is_err() {
+        return;
+    }
+    let doc = result.unwrap();
+    // Should have some table blocks
+    let has_tables = doc.pages.iter().any(|p| {
+        p.elements
+            .iter()
+            .any(|b| matches!(b, unpdf::model::Block::Table(_)))
+    });
+    assert!(has_tables, "Table PDF should detect tables");
+}

@@ -1145,6 +1145,98 @@ impl<'a> LayoutAnalyzer<'a> {
     }
 }
 
+/// Filter out header/footer text spans (page numbers, running headers).
+///
+/// Removes spans in the top/bottom margin that contain only numbers or short
+/// page-number patterns (e.g. "- 3 -", "Page 5", "2 / 10").
+fn filter_header_footer_spans(spans: &mut Vec<TextSpan>, page_height: f32) {
+    if spans.is_empty() || page_height <= 0.0 {
+        return;
+    }
+
+    // Define margin regions: top/bottom 5% of page height.
+    // PDF Y axis is bottom-up: Y=0 is at the bottom of the page.
+    let margin = page_height * 0.05;
+    let top_threshold = page_height - margin; // Near the top edge
+    let bottom_threshold = margin; // Near the bottom edge
+
+    spans.retain(|span| {
+        let in_header = span.y >= top_threshold;
+        let in_footer = span.y <= bottom_threshold;
+
+        if !in_header && !in_footer {
+            return true; // Keep spans that are not in the margins
+        }
+
+        let text = span.text.trim();
+        if text.is_empty() {
+            return false; // Remove empty spans in margins
+        }
+
+        // Keep the span unless it looks like a bare page number
+        let is_page_num = text.chars().all(|c| c.is_ascii_digit())
+            || is_page_number_pattern(text);
+
+        !is_page_num
+    });
+}
+
+/// Return `true` if `text` matches a common page-number decoration pattern.
+///
+/// Recognised patterns:
+/// - `"- N -"` / `"– N –"` / `"— N —"` (hyphen/dash-surrounded numbers)
+/// - `"Page N"` / `"page N"`
+/// - `"N / M"` or `"N of M"` (fraction-style)
+fn is_page_number_pattern(text: &str) -> bool {
+    let text = text.trim();
+
+    // Pattern: "- N -" or "– N –" or "— N —"
+    for dash in &['-', '–', '—'] {
+        let dash_str = dash.to_string();
+        if let Some(inner) = text.strip_prefix(dash_str.as_str()) {
+            if let Some(inner) = inner.trim().strip_suffix(dash_str.as_str()) {
+                if inner.trim().chars().all(|c| c.is_ascii_digit()) {
+                    return true;
+                }
+            }
+        }
+    }
+
+    // Pattern: "Page N" or "page N"
+    if let Some(rest) = text
+        .strip_prefix("Page ")
+        .or_else(|| text.strip_prefix("page "))
+    {
+        if rest.trim().chars().all(|c| c.is_ascii_digit()) {
+            return true;
+        }
+    }
+
+    // Pattern: "N / M" or "N of M"
+    // Split on whitespace and '/', keep non-empty tokens
+    let tokens: Vec<&str> = text
+        .split(|c: char| c == '/' || c.is_ascii_whitespace())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if tokens.len() == 3
+        && tokens[0].chars().all(|c| c.is_ascii_digit())
+        && (tokens[1] == "of" || tokens[1] == "/")
+        && tokens[2].chars().all(|c| c.is_ascii_digit())
+    {
+        return true;
+    }
+    // "N / M" where slash is surrounded by spaces → tokens = ["N", "M"] after filtering
+    if tokens.len() == 2
+        && tokens[0].chars().all(|c| c.is_ascii_digit())
+        && tokens[1].chars().all(|c| c.is_ascii_digit())
+        && text.contains('/')
+    {
+        return true;
+    }
+
+    false
+}
+
 /// Font information.
 #[derive(Debug, Clone)]
 struct FontInfo {
