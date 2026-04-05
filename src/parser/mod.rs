@@ -8,6 +8,7 @@ mod layout;
 mod options;
 mod pdf_parser;
 pub mod raw;
+pub mod xycut;
 mod table_detector;
 
 pub use layout::{
