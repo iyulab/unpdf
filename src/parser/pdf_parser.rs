@@ -183,6 +183,42 @@ impl PdfParser {
     pub fn version(&self) -> String {
         self.backend.metadata().version
     }
+
+    /// Stream pages in `page_num` ASC order via the provided callback.
+    ///
+    /// The callback receives `ParseEvent::DocumentStart`, then `PageParsed` /
+    /// `PageFailed` / `Progress` events, and finally `DocumentEnd`. Return
+    /// `ControlFlow::Break(())` from the callback to terminate early.
+    ///
+    /// Memory stays bounded because the pipeline consumes pages as the callback
+    /// drains them — unlike [`PdfParser::parse`], the whole document is never
+    /// materialized. Intended for very large PDFs.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use std::ops::ControlFlow;
+    /// use unpdf::{PdfParser, PageStreamOptions, ParseEvent};
+    ///
+    /// let parser = PdfParser::open("large.pdf")?;
+    /// parser.for_each_page(PageStreamOptions::default(), |ev| {
+    ///     if let ParseEvent::PageParsed(page) = ev {
+    ///         println!("page {}: {} blocks", page.number, page.elements.len());
+    ///     }
+    ///     ControlFlow::Continue(())
+    /// })?;
+    /// # Ok::<(), unpdf::Error>(())
+    /// ```
+    pub fn for_each_page<F>(
+        &self,
+        opts: super::stream::PageStreamOptions,
+        f: F,
+    ) -> Result<crate::model::ExtractionQuality>
+    where
+        F: FnMut(super::stream::ParseEvent) -> std::ops::ControlFlow<()>,
+    {
+        super::stream::run_stream(&*self.backend, &opts, f)
+    }
 }
 
 // ---------------------------------------------------------------------------

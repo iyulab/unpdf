@@ -53,7 +53,7 @@ pub use model::{
     ListInfo, Metadata, Outline, Page, Paragraph, ParagraphStyle, QualityAccumulator, Resource,
     ResourceType, Table, TableCell, TableRow, TextRun, TextStyle,
 };
-pub use parser::{ParseOptions, PdfParser};
+pub use parser::{PageStreamOptions, ParseEvent, ParseOptions, PdfParser};
 pub use render::{
     CleanupOptions, CleanupPreset, HeadingConfig, JsonFormat, PageSelection, RenderOptions,
     TableFallback,

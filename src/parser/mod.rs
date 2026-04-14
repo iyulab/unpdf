@@ -18,4 +18,5 @@ pub use layout::{
 };
 pub use options::{ErrorMode, ExtractMode, ParseOptions};
 pub use pdf_parser::PdfParser;
+pub use stream::{PageStreamOptions, ParseEvent};
 pub use table_detector::{DetectedTable, TableDetector, TableDetectorConfig, TableRowData};
