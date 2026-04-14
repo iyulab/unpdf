@@ -249,7 +249,71 @@ pub(crate) fn parse_single_page(
         }
     }
 
+    // 이미지(XObject) 수집 — extract_resources 가 활성화된 경우.
+    // 현재는 정확한 Y 좌표 해석이 안 되어 페이지 말미에 순서대로 append.
+    // 향후 Phase 2 에서 content-stream 의 Do 연산자 위치 해석으로 interleave 예정.
+    // id 는 확장자 포함: `page{N}_{name}.{ext}`. 이 id 를 곧 이미지의
+    // 파일명으로도 사용하므로 writer 측에서 별도 suggested_filename 호출 불필요.
+    if options.extract_resources && options.extract_mode != ExtractMode::StructureOnly {
+        let pages = backend.pages();
+        if let Some(page_id) = pages.get(&page_num) {
+            if let Ok(xobjects) = backend.page_xobjects(*page_id) {
+                for xobj in xobjects {
+                    let base_id = format!("page{}_{}", page_num, xobj.name);
+                    if let Some(resource) = convert_xobject_pub(xobj) {
+                        // 뷰어가 렌더할 수 있는 이미지 포맷만 MD/디스크에 포함.
+                        // `.raw` (FlateDecode 등 미디코딩 픽셀버퍼) 는 대부분의
+                        // MD 뷰어가 표시 못하므로 broken icon 을 피하기 위해 제외.
+                        // 추후 Phase 에서 color_space + bits_per_component 기반
+                        // PNG 재구성으로 포괄 예정.
+                        if !resource.is_image() {
+                            continue;
+                        }
+                        let ext = resource.extension();
+                        if ext == "raw" || ext == "bin" {
+                            continue;
+                        }
+                        let id = resource.suggested_filename(&base_id);
+                        let mut img_block = Block::image(id.clone());
+                        if let Block::Image {
+                            width: bw,
+                            height: bh,
+                            ..
+                        } = &mut img_block
+                        {
+                            *bw = resource.width.map(|w| w as f32);
+                            *bh = resource.height.map(|h| h as f32);
+                        }
+                        page.add_block(img_block);
+                        page.images.push((id, resource));
+                    }
+                }
+            }
+        }
+    }
+
     Ok(page)
+}
+
+/// Free-function version of `PdfParser::convert_xobject` so `parse_single_page`
+/// (and other `run_stream` consumers) can use it without needing `&self`.
+pub(crate) fn convert_xobject_pub(xobj: RawXObject) -> Option<Resource> {
+    let mime_type = match xobj.filter.as_deref() {
+        Some("DCTDecode") => "image/jpeg",
+        Some("JPXDecode") => "image/jp2",
+        _ => "application/octet-stream",
+    };
+    let mut resource = Resource::new(xobj.data, mime_type.to_string(), ResourceType::Image);
+    if let (Some(w), Some(h)) = (xobj.width, xobj.height) {
+        resource = resource.with_dimensions(w, h);
+    }
+    if let Some(b) = xobj.bits_per_component {
+        resource = resource.with_bits_per_component(b);
+    }
+    if let Some(cs) = xobj.color_space {
+        resource = resource.with_color_space(cs);
+    }
+    Some(resource)
 }
 
 /// Convert a raw outline item into a model `OutlineItem`. Exposed as

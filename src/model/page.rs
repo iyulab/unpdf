@@ -1,6 +1,6 @@
 //! Page-level types.
 
-use super::{Paragraph, Table};
+use super::{Paragraph, Resource, Table};
 use serde::{Deserialize, Serialize};
 
 /// A single page in the document.
@@ -20,6 +20,12 @@ pub struct Page {
 
     /// Page rotation in degrees (0, 90, 180, 270)
     pub rotation: u16,
+
+    /// 이 페이지에 포함된 이미지 리소스. `(resource_id, resource)` 형식.
+    /// `Block::Image { resource_id, .. }` 의 id 와 동일하며, 스트리밍 writer
+    /// 가 페이지 파싱 직후 즉시 디스크로 flush 할 수 있도록 제공.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<(String, Resource)>,
 }
 
 impl Page {
@@ -31,6 +37,7 @@ impl Page {
             height,
             elements: Vec::new(),
             rotation: 0,
+            images: Vec::new(),
         }
     }
 

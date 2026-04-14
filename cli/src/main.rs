@@ -38,11 +38,11 @@ pub struct ConvertArgs {
     #[arg(long)]
     pub all: bool,
 
-    /// Extract images (opt-in)
+    /// Skip image extraction (images are extracted by default)
     #[arg(long)]
-    pub images: bool,
+    pub no_images: bool,
 
-    /// Directory for extracted images (implies --images)
+    /// Directory for extracted images (defaults to `<out>/images`)
     #[arg(long, value_name = "DIR")]
     pub image_dir: Option<PathBuf>,
 
@@ -328,7 +328,7 @@ fn main() {
                     cleanup: cli.cleanup,
                     formats: vec!["md".to_string()],
                     all: false,
-                    images: false,
+                    no_images: false,
                     image_dir: None,
                     window: None,
                     quiet,
@@ -398,26 +398,24 @@ fn cmd_convert(args: &ConvertArgs) -> Result<bool, Box<dyn std::error::Error>> {
         v
     };
 
-    // Image extraction configuration
-    let image_dir: Option<PathBuf> = if args.images || args.image_dir.is_some() {
+    // Image extraction configuration — 기본 on. `--no-images` 로 옵트아웃.
+    // `--image-dir` 지정 시 그 경로가 우선, 없으면 `<out>/images` 사용.
+    // 디렉토리는 첫 이미지가 실제로 쓰일 때만 생성 (이미지 없는 PDF 에서
+    // 빈 폴더가 남는 것 방지) — MultiFormatWriter 내부에서 처리.
+    let image_dir: Option<PathBuf> = if args.no_images {
+        None
+    } else {
         Some(
             args.image_dir
                 .clone()
                 .unwrap_or_else(|| out_dir.join("images")),
         )
-    } else {
-        None
     };
-    if let Some(d) = &image_dir {
-        fs::create_dir_all(d)?;
-    }
 
     // Build render options
     let mut render_opts = RenderOptions::new().with_frontmatter(true);
-    if let Some(d) = &image_dir {
-        render_opts = render_opts
-            .with_image_dir(d.clone())
-            .with_image_prefix("images/");
+    if image_dir.is_some() {
+        render_opts = render_opts.with_image_prefix("images/");
     }
     if let Some(level) = args.cleanup {
         render_opts = render_opts.with_cleanup_preset(level.into());
@@ -431,7 +429,8 @@ fn cmd_convert(args: &ConvertArgs) -> Result<bool, Box<dyn std::error::Error>> {
     let parser = PdfParser::open_with_options(&args.input, parse_options)?;
 
     // Set up writer
-    let mut mfw = writer::MultiFormatWriter::new(&out_dir, &formats, render_opts)?;
+    let mut mfw =
+        writer::MultiFormatWriter::new(&out_dir, &formats, render_opts, image_dir.clone())?;
 
     // Stream options
     let mut stream_opts = PageStreamOptions {
@@ -494,8 +493,18 @@ fn cmd_convert(args: &ConvertArgs) -> Result<bool, Box<dyn std::error::Error>> {
         return Err(e.into());
     }
 
+    let img_count = mfw.image_count();
     mfw.finish()?;
     pb.finish_with_message("Done");
+
+    if !args.quiet && img_count > 0 {
+        println!(
+            "{} {} image{} extracted to images/",
+            "✓".green(),
+            img_count,
+            if img_count == 1 { "" } else { "s" }
+        );
+    }
 
     let had_warnings = quality
         .as_ref()

@@ -1,6 +1,6 @@
 use std::fs::File;
 use std::io::{BufWriter, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use unpdf::model::{Metadata, Page};
 use unpdf::render::{RenderOptions, StreamingRenderer};
@@ -23,6 +23,12 @@ pub struct MultiFormatWriter {
     json: Option<BufWriter<File>>,
     render_opts: RenderOptions,
     json_first_page: bool,
+    /// 이미지 출력 디렉토리. None 이면 이미지를 디스크에 쓰지 않음.
+    /// 디렉토리는 `MultiFormatWriter::new` 이전에 생성되어 있어야 하며,
+    /// 첫 이미지가 실제로 쓰일 때까지는 `images_created` 로 지연 확인.
+    images_dir: Option<PathBuf>,
+    images_created: bool,
+    image_count: u32,
 }
 
 impl MultiFormatWriter {
@@ -30,6 +36,7 @@ impl MultiFormatWriter {
         out_dir: &Path,
         formats: &[OutputFormat],
         render_opts: RenderOptions,
+        images_dir: Option<PathBuf>,
     ) -> std::io::Result<Self> {
         let has = |f: OutputFormat| formats.iter().any(|x| *x == f);
         let md = if has(OutputFormat::Markdown) {
@@ -53,7 +60,35 @@ impl MultiFormatWriter {
             json,
             render_opts,
             json_first_page: true,
+            images_dir,
+            images_created: false,
+            image_count: 0,
         })
+    }
+
+    /// 페이지별 이미지를 디스크로 flush. 첫 이미지가 있을 때 디렉토리 생성.
+    fn flush_page_images(&mut self, page: &Page) -> std::io::Result<()> {
+        let Some(dir) = self.images_dir.clone() else {
+            return Ok(());
+        };
+        if page.images.is_empty() {
+            return Ok(());
+        }
+        if !self.images_created {
+            std::fs::create_dir_all(&dir)?;
+            self.images_created = true;
+        }
+        for (id, resource) in &page.images {
+            let path = dir.join(id);
+            std::fs::write(&path, &resource.data)?;
+            self.image_count += 1;
+        }
+        Ok(())
+    }
+
+    /// 디스크로 flush 된 이미지 개수 (finish 후 호출 시 최종값).
+    pub fn image_count(&self) -> u32 {
+        self.image_count
     }
 
     pub fn write_document_start(
@@ -77,6 +112,10 @@ impl MultiFormatWriter {
     }
 
     pub fn write_page(&mut self, page: &Page) -> std::io::Result<()> {
+        // 이미지 먼저 flush — MD 의 `![](images/X.jpg)` 참조가 가리키는 파일이
+        // 존재하도록 순서 보장.
+        self.flush_page_images(page)?;
+
         if let Some(w) = self.md.as_mut() {
             let placeholder = unpdf::model::Document::new();
             let renderer = StreamingRenderer::new(&placeholder, self.render_opts.clone());
