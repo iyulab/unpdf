@@ -25,6 +25,8 @@ A high-performance Rust library for extracting content from PDF documents to str
 - **Self-update**: Built-in update mechanism via GitHub releases
 - **C-ABI FFI**: Native library for C#, Python, and other languages
 - **Parallel processing**: Uses Rayon for multi-page documents
+- **Streaming pipeline** (0.4.0+): `PdfParser::for_each_page` yields pages as they parse; peak memory bounded by window size regardless of document size
+- **Deterministic page ordering**: Parallel page parsing emits results in `page_num` ASC order via internal reorder buffer
 
 ---
 
