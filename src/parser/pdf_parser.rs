@@ -347,6 +347,50 @@ fn get_page_dimensions_fn(backend: &dyn PdfBackend, page_num: u32) -> Result<(f3
     Ok(backend.page_dimensions(*page_id))
 }
 
+/// Merge consecutive paragraph blocks that share the same visual row
+/// (Y within 1.5pt of each other) into a single paragraph. Recovers
+/// table-row structure that XY-Cut over-segmented into per-cell blocks.
+/// Headings, tables, images, and rule blocks are never merged.
+fn merge_same_row_paragraphs(elements: Vec<(f32, Block)>) -> Vec<(f32, Block)> {
+    // Tolerance ≈ half of body line height. Table cells in Hancom PDFs
+    // frequently sit on slightly offset baselines within the same visual row
+    // (header centred vs. body top-aligned). 6pt catches most real rows
+    // without merging across line breaks.
+    const ROW_Y_TOLERANCE: f32 = 6.0;
+    let mut out: Vec<(f32, Block)> = Vec::with_capacity(elements.len());
+    for (y, block) in elements {
+        let Block::Paragraph(p) = &block else {
+            out.push((y, block));
+            continue;
+        };
+        if p.style.heading_level.is_some() || p.style.list_info.is_some() {
+            out.push((y, block));
+            continue;
+        }
+        // Can we merge into the previous?
+        if let Some((prev_y, Block::Paragraph(prev_p))) = out.last_mut().map(|(y, b)| (y, b)) {
+            if (*prev_y - y).abs() <= ROW_Y_TOLERANCE
+                && prev_p.style.heading_level.is_none()
+                && prev_p.style.list_info.is_none()
+            {
+                let prev_text = prev_p.plain_text();
+                let cur_text = p.plain_text();
+                let needs_gap = !prev_text.ends_with(char::is_whitespace)
+                    && !cur_text.starts_with(char::is_whitespace);
+                let mut combined = prev_text;
+                if needs_gap {
+                    combined.push(' ');
+                }
+                combined.push_str(&cur_text);
+                *prev_p = Paragraph::with_text(combined);
+                continue;
+            }
+        }
+        out.push((y, block));
+    }
+    out
+}
+
 fn extract_page_with_tables_fn(backend: &dyn PdfBackend, page_num: u32) -> Result<Vec<Block>> {
     let analyzer = super::layout::LayoutAnalyzer::new(backend);
     let spans = analyzer.extract_page_spans(page_num)?;
@@ -429,7 +473,8 @@ fn extract_page_with_tables_fn(backend: &dyn PdfBackend, page_num: u32) -> Resul
         }
 
         elements.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-        blocks = elements.into_iter().map(|(_, block)| block).collect();
+        let merged = merge_same_row_paragraphs(elements);
+        blocks = merged.into_iter().map(|(_, block)| block).collect();
     } else {
         let mut a = super::layout::LayoutAnalyzer::new(backend);
         let text_blocks = a.extract_page_blocks(page_num)?;

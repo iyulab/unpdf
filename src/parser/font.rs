@@ -78,13 +78,54 @@ fn parse_hex(s: &str) -> Option<u32> {
     u32::from_str_radix(s, 16).ok()
 }
 
+/// Filter out Unicode noncharacters and control sentinels that ToUnicode CMaps
+/// commonly use to indicate "no mapping" (U+FFFF, U+FFFE, U+FFFD).
+/// Also drops other noncharacters (U+FDD0..U+FDEF, U+xFFFE, U+xFFFF).
+fn sanitize_unicode(s: String) -> Option<String> {
+    let filtered: String = s
+        .chars()
+        .filter(|&c| {
+            let cp = c as u32;
+            if cp == 0xFFFD || cp == 0xFFFE || cp == 0xFFFF {
+                return false;
+            }
+            if (0xFDD0..=0xFDEF).contains(&cp) {
+                return false;
+            }
+            // Plane-specific noncharacters: U+xFFFE and U+xFFFF for any plane
+            if cp >= 0x10000 && (cp & 0xFFFF) >= 0xFFFE {
+                return false;
+            }
+            // Private Use Area — PDF producers (notably Hancom) sometimes map
+            // bullet/custom glyphs to PUA codepoints via the embedded TrueType
+            // cmap. These render as tofu in markdown; treat them as unmapped.
+            // Supplementary PUA planes are also dropped.
+            if (0xE000..=0xF8FF).contains(&cp)
+                || (0xF0000..=0xFFFFD).contains(&cp)
+                || (0x100000..=0x10FFFD).contains(&cp)
+            {
+                return false;
+            }
+            true
+        })
+        .collect();
+    if filtered.is_empty() {
+        None
+    } else {
+        Some(filtered)
+    }
+}
+
 /// Decode a hex string into a Unicode string.
 /// The hex represents UTF-16BE code units (e.g., "0048" → "H", "D800DC00" → surrogate pair).
+/// Noncharacter sentinels (U+FFFF etc.) commonly used by PDF producers to indicate
+/// "no Unicode mapping" are stripped; returns None if nothing usable remains.
 fn hex_to_unicode(hex: &str) -> Option<String> {
     if hex.len() % 4 != 0 && hex.len() == 2 {
         // Single-byte mapping: treat as direct code point
         let cp = u32::from_str_radix(hex, 16).ok()?;
-        return char::from_u32(cp).map(|c| c.to_string());
+        let s = char::from_u32(cp).map(|c| c.to_string())?;
+        return sanitize_unicode(s);
     }
 
     // Parse as UTF-16BE code units (each 4 hex digits = one u16)
@@ -95,7 +136,8 @@ fn hex_to_unicode(hex: &str) -> Option<String> {
         units.push(val);
         i += 4;
     }
-    String::from_utf16(&units).ok()
+    let s = String::from_utf16(&units).ok()?;
+    sanitize_unicode(s)
 }
 
 /// Parse a ToUnicode CMap stream into a `ToUnicodeMap`.
@@ -196,7 +238,9 @@ pub(crate) fn parse_to_unicode_cmap(data: &[u8]) -> Option<ToUnicodeMap> {
                             for (i, code) in (lo..=hi).enumerate() {
                                 let dst = dst_start + i as u32;
                                 if let Some(c) = char::from_u32(dst) {
-                                    mappings.insert(code, c.to_string());
+                                    if let Some(s) = sanitize_unicode(c.to_string()) {
+                                        mappings.insert(code, s);
+                                    }
                                 }
                             }
                         }
@@ -336,11 +380,12 @@ pub(crate) fn parse_truetype_cmap_table(data: &[u8]) -> Option<ToUnicodeMap> {
     for (unicode_cp, gid) in &unicode_to_gid {
         if *gid > 0 {
             // Only keep the first mapping for each GID (lowest Unicode code point)
-            gid_to_unicode.entry(*gid as u32).or_insert_with(|| {
-                char::from_u32(*unicode_cp)
-                    .map(|c| c.to_string())
-                    .unwrap_or_default()
-            });
+            if let Some(s) = char::from_u32(*unicode_cp)
+                .map(|c| c.to_string())
+                .and_then(sanitize_unicode)
+            {
+                gid_to_unicode.entry(*gid as u32).or_insert(s);
+            }
         }
     }
 

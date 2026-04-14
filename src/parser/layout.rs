@@ -346,25 +346,29 @@ impl FontStatistics {
     }
 
     /// Get heading level for a font size (1-6, or 0 for body text).
-    pub fn get_heading_level(&self, font_size: f32, _is_bold: bool) -> u8 {
-        // Headings must be noticeably larger than body text
-        // We require at least 1.5pt larger to avoid false positives
-        let heading_threshold = self.body_size + 1.5;
+    ///
+    /// Conservative: requires font size ≥ body + 2.5 to qualify, or body + 1.5
+    /// combined with bold. Caps at level 4 to avoid `#####` spam.
+    pub fn get_heading_level(&self, font_size: f32, is_bold: bool) -> u8 {
+        let strong_threshold = self.body_size + 2.5;
+        let bold_threshold = self.body_size + 1.5;
 
-        if font_size < heading_threshold {
+        let qualifies = font_size >= strong_threshold
+            || (is_bold && font_size >= bold_threshold);
+        if !qualifies {
             return 0;
         }
 
         // Find position in heading sizes (sorted largest first)
         for (i, &heading_size) in self.heading_sizes.iter().enumerate() {
             if font_size >= heading_size - 0.5 {
-                return (i + 1).min(6) as u8;
+                return (i + 1).min(4) as u8;
             }
         }
 
-        // Font is larger than body but smaller than known heading sizes
-        // Assign a middle heading level
-        5
+        // Font is larger than body but smaller than known heading sizes.
+        // Treat as a mid-level heading.
+        4
     }
 }
 
@@ -827,10 +831,14 @@ impl<'a> LayoutAnalyzer<'a> {
             })
             .collect();
 
-        // Determine gap thresholds based on median font size
+        // Determine gap thresholds based on median font size. These are
+        // intentionally large so XY-Cut only fires on true multi-column
+        // layouts — not on intra-table cell gaps or bulleted list
+        // indentation, which previously fragmented pages into dozens of
+        // groups on Hancom-produced PDFs.
         let median_font = median_font_size(&spans);
-        let min_x_gap = (median_font * 2.0).max(15.0);
-        let min_y_gap = (median_font * 1.5).max(10.0);
+        let min_x_gap = (median_font * 5.0).max(60.0);
+        let min_y_gap = (median_font * 3.0).max(36.0);
 
         let groups = super::xycut::xycut_segment(&blocks, min_x_gap, min_y_gap);
 
@@ -1006,6 +1014,17 @@ impl<'a> LayoutAnalyzer<'a> {
     /// Detect headings based on font size hierarchy.
     fn detect_headings(&self, mut lines: Vec<TextLine>) -> Vec<TextLine> {
         for line in &mut lines {
+            // Minimum content guard — a "heading" must have ≥ 3 visible chars
+            // (non-whitespace, non-punctuation) to qualify. Stops fragmented
+            // single-glyph spans from being promoted to headings.
+            let visible_chars: usize = line
+                .text()
+                .chars()
+                .filter(|c| !c.is_whitespace() && !c.is_ascii_punctuation())
+                .count();
+            if visible_chars < 3 {
+                continue;
+            }
             let level = self
                 .font_stats
                 .get_heading_level(line.font_size, line.is_bold() || line.is_uppercase());
@@ -1131,13 +1150,17 @@ impl<'a> LayoutAnalyzer<'a> {
             return true;
         }
 
-        // Significant font size change
-        if (prev_line.font_size - curr_line.font_size).abs() > 1.0 {
+        // Significant font size change (only break on >=2pt difference —
+        // smaller changes are common in superscripts / mixed-font Korean
+        // text and shouldn't fragment paragraphs).
+        if (prev_line.font_size - curr_line.font_size).abs() >= 2.0 {
             return true;
         }
 
-        // Significant left margin change (indentation)
-        if (prev_line.x - curr_line.x).abs() > 20.0 {
+        // Significant left margin change (indentation) — raised from 20pt
+        // to 40pt so minor indent variation within a Hancom bullet list
+        // doesn't start a new block per line.
+        if (prev_line.x - curr_line.x).abs() > 40.0 {
             return true;
         }
 
