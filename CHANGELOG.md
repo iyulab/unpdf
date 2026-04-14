@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.3 — 2026-04-14
+
+Validation release for the 0.4.2 self-update fix + housekeeping.
+
+### Changed
+- CI/CD: `release.yml` gains a `cleanup-old-releases` job that deletes
+  GitHub releases (and their git tags) beyond the 10 most recent after
+  each successful release. Keeps the releases page and tag list
+  bounded; aligns with CLAUDE.md's GitHub Actions storage policy.
+
 ## 0.4.2 — 2026-04-14
 
 ### Fixed

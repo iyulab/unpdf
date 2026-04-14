@@ -255,3 +255,45 @@ jobs:
       - name: Publish CLI (unpdf-cli)
         run: cargo publish -p unpdf-cli --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
         continue-on-error: true
+
+  cleanup-old-releases:
+    name: Cleanup Old Releases
+    # Run after the new release is published. We only need create-release
+    # to have succeeded — cleanup is independent of crates.io publish.
+    needs: [check-version, create-release]
+    if: needs.check-version.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Delete releases and tags beyond the 10 most recent
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Fetch up to 100 recent releases. Sort by creation time desc and
+          # take everything AFTER index 10 — keep 10 newest, delete the rest.
+          # --cleanup-tag removes the underlying git tag too, so the repo's
+          # release list AND tag list stay bounded. Aligns with CLAUDE.md's
+          # GitHub Actions 리소스 관리 정책 (reduce storage use).
+          mapfile -t OLD < <(
+            gh release list -R "$REPO" --limit 100 --json tagName,createdAt \
+              | jq -r 'sort_by(.createdAt) | reverse | .[10:] | .[].tagName'
+          )
+
+          if [ ${#OLD[@]} -eq 0 ]; then
+            echo "Nothing to clean up (<=10 releases exist)."
+            exit 0
+          fi
+
+          echo "Deleting ${#OLD[@]} old release(s):"
+          printf '  %s\n' "${OLD[@]}"
+
+          for tag in "${OLD[@]}"; do
+            # --cleanup-tag deletes the git tag alongside the release.
+            # --yes skips the interactive confirmation.
+            gh release delete "$tag" --yes --cleanup-tag -R "$REPO"
+          done
