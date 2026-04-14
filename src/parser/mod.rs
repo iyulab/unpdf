@@ -9,6 +9,7 @@ mod layout;
 mod options;
 mod pdf_parser;
 pub mod raw;
+pub mod stream;
 pub mod xycut;
 mod table_detector;
 
