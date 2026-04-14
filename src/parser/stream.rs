@@ -2,6 +2,112 @@
 
 use std::cmp::{Ord, Ordering, Reverse};
 use std::collections::BinaryHeap;
+use std::path::PathBuf;
+
+use crate::error::Error;
+use crate::model::{ExtractionQuality, FormField, Metadata, Outline, Page};
+use crate::render::PageSelection;
+
+use super::options::{ErrorMode, ExtractMode, ParseOptions};
+
+/// 페이지 단위 스트리밍 파싱 이벤트.
+#[derive(Debug)]
+pub enum ParseEvent {
+    DocumentStart {
+        metadata: Metadata,
+        page_count: u32,
+        outline: Option<Outline>,
+        form_fields: Vec<FormField>,
+    },
+    /// page_num ASC 순서로만 방출된다.
+    PageParsed(Page),
+    /// Lenient 모드에서 실패한 페이지 통지.
+    PageFailed {
+        page: u32,
+        error: Error,
+    },
+    /// 주기적 진척도 (기본 16페이지마다).
+    Progress {
+        done: u32,
+        total: u32,
+    },
+    DocumentEnd {
+        quality: ExtractionQuality,
+    },
+}
+
+/// 스트리밍 파싱 옵션.
+#[derive(Debug, Clone)]
+pub struct PageStreamOptions {
+    pub error_mode: ErrorMode,
+    pub extract_mode: ExtractMode,
+    pub extract_resources: bool,
+    pub pages: PageSelection,
+    pub password: Option<String>,
+    pub parallel: bool,
+    /// 동시에 in-flight 상태로 둘 페이지 수의 상한. 기본 cores*2.
+    pub window_size: usize,
+    pub emit_progress_every: u32,
+    /// Some 이면 페이지 파싱 직후 리소스(이미지)를 이 디렉토리로 즉시 flush,
+    /// `Document.resources` 에는 적재하지 않음. 대용량 문서 메모리 보호.
+    pub flush_resources_to: Option<PathBuf>,
+}
+
+impl Default for PageStreamOptions {
+    fn default() -> Self {
+        Self {
+            error_mode: ErrorMode::Lenient,
+            extract_mode: ExtractMode::Full,
+            extract_resources: false,
+            pages: PageSelection::All,
+            password: None,
+            parallel: true,
+            window_size: rayon::current_num_threads().saturating_mul(2).max(2),
+            emit_progress_every: 16,
+            flush_resources_to: None,
+        }
+    }
+}
+
+impl From<&ParseOptions> for PageStreamOptions {
+    fn from(o: &ParseOptions) -> Self {
+        Self {
+            error_mode: o.error_mode,
+            extract_mode: o.extract_mode,
+            extract_resources: o.extract_resources,
+            pages: o.pages.clone(),
+            password: o.password.clone(),
+            parallel: o.parallel,
+            ..Self::default()
+        }
+    }
+}
+
+/// 진척도 카운터 — consumer 스레드가 직접 inc 하도록 노출.
+pub(crate) struct ProgressCounter {
+    pub done: u32,
+    pub total: u32,
+    pub every: u32,
+}
+
+impl ProgressCounter {
+    pub fn new(total: u32, every: u32) -> Self {
+        Self {
+            done: 0,
+            total,
+            every: every.max(1),
+        }
+    }
+
+    pub fn tick(&mut self) -> Option<(u32, u32)> {
+        self.done += 1;
+        if self.done % self.every == 0 || self.done == self.total {
+            Some((self.done, self.total))
+        } else {
+            None
+        }
+    }
+}
 
 /// 페이지 번호만으로 비교되는 heap entry. T 는 임의 타입 허용.
 struct ByPage<T>(u32, T);
