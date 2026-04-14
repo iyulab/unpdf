@@ -46,6 +46,11 @@ pub struct ConvertArgs {
     #[arg(long, value_name = "DIR")]
     pub image_dir: Option<PathBuf>,
 
+    /// Minimum pixel dimension for extracted images. Smaller images are
+    /// dropped as decorative (logos, bullets, rules). 0 keeps all.
+    #[arg(long, value_name = "PX", default_value = "64")]
+    pub min_image_size: u32,
+
     /// Override streaming window size (pages in-flight)
     #[arg(long, value_name = "N")]
     pub window: Option<usize>,
@@ -330,6 +335,7 @@ fn main() {
                     all: false,
                     no_images: false,
                     image_dir: None,
+                    min_image_size: 64,
                     window: None,
                     quiet,
                 };
@@ -435,6 +441,7 @@ fn cmd_convert(args: &ConvertArgs) -> Result<bool, Box<dyn std::error::Error>> {
     // Stream options
     let mut stream_opts = PageStreamOptions {
         extract_resources: image_dir.is_some(),
+        min_image_dimension: args.min_image_size,
         ..PageStreamOptions::default()
     };
     if let Some(w) = args.window {

@@ -18,6 +18,12 @@ pub struct ParseOptions {
     /// `.with_resources(true)` when images are needed.
     pub extract_resources: bool,
 
+    /// Minimum pixel dimension for extracted images. Images whose width
+    /// OR height falls below this threshold are dropped as decorative
+    /// (logos, bullets, rule lines, tracking pixels). Set to 0 to keep
+    /// every image. Default 64 — conservative cutoff for technical docs.
+    pub min_image_dimension: u32,
+
     /// Whether to use parallel processing
     pub parallel: bool,
 
@@ -87,6 +93,13 @@ impl ParseOptions {
         self.password = Some(password.into());
         self
     }
+
+    /// Set the minimum image dimension (pixels). Images with width OR
+    /// height below this value are dropped as decorative. `0` keeps all.
+    pub fn with_min_image_dimension(mut self, min_px: u32) -> Self {
+        self.min_image_dimension = min_px;
+        self
+    }
 }
 
 impl Default for ParseOptions {
@@ -95,6 +108,7 @@ impl Default for ParseOptions {
             error_mode: ErrorMode::Lenient,
             extract_mode: ExtractMode::Full,
             extract_resources: false,
+            min_image_dimension: 64,
             parallel: true,
             pages: PageSelection::All,
             password: None,
@@ -135,6 +149,20 @@ mod tests {
         assert_eq!(options.error_mode, ErrorMode::Lenient);
         assert_eq!(options.extract_mode, ExtractMode::TextOnly);
         assert!(!options.parallel);
+    }
+
+    #[test]
+    fn test_default_min_image_dimension() {
+        let options = ParseOptions::default();
+        assert_eq!(options.min_image_dimension, 64);
+    }
+
+    #[test]
+    fn test_with_min_image_dimension_override() {
+        let o = ParseOptions::new().with_min_image_dimension(0);
+        assert_eq!(o.min_image_dimension, 0);
+        let o = ParseOptions::new().with_min_image_dimension(200);
+        assert_eq!(o.min_image_dimension, 200);
     }
 
     #[test]

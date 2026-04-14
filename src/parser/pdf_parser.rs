@@ -273,6 +273,17 @@ pub(crate) fn parse_single_page(
                         if ext == "raw" || ext == "bin" {
                             continue;
                         }
+                        // 장식용 작은 이미지(로고, 구분선, 트래킹 픽셀 등) 제외.
+                        // 차원 정보가 둘 다 있는 경우에만 적용 — 측정 불가 시
+                        // 보수적으로 유지.
+                        let min_px = options.min_image_dimension;
+                        if min_px > 0 {
+                            if let (Some(w), Some(h)) = (resource.width, resource.height) {
+                                if w < min_px || h < min_px {
+                                    continue;
+                                }
+                            }
+                        }
                         let id = resource.suggested_filename(&base_id);
                         let mut img_block = Block::image(id.clone());
                         if let Block::Image {
