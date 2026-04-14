@@ -13,6 +13,47 @@ use indicatif::{ProgressBar, ProgressStyle};
 use unpdf::{
     parse_file_with_options, CleanupPreset, JsonFormat, PageSelection, ParseOptions, RenderOptions,
 };
+use unpdf::{PageStreamOptions, ParseEvent, PdfParser};
+
+/// Arguments for the `convert` subcommand.
+#[derive(Parser, Debug)]
+pub struct ConvertArgs {
+    /// Input PDF file
+    #[arg(value_name = "FILE")]
+    pub input: PathBuf,
+
+    /// Output directory
+    #[arg(short, long, value_name = "DIR")]
+    pub output: Option<PathBuf>,
+
+    /// Text cleanup preset
+    #[arg(long, value_enum)]
+    pub cleanup: Option<CleanupLevel>,
+
+    /// Output formats (comma-separated: md,txt,json)
+    #[arg(long, value_delimiter = ',', default_value = "md")]
+    pub formats: Vec<String>,
+
+    /// Output all formats (MD + TXT + JSON)
+    #[arg(long)]
+    pub all: bool,
+
+    /// Extract images (opt-in)
+    #[arg(long)]
+    pub images: bool,
+
+    /// Directory for extracted images (implies --images)
+    #[arg(long, value_name = "DIR")]
+    pub image_dir: Option<PathBuf>,
+
+    /// Override streaming window size (pages in-flight)
+    #[arg(long, value_name = "N")]
+    pub window: Option<usize>,
+
+    /// Suppress warning messages
+    #[arg(short, long)]
+    pub quiet: bool,
+}
 
 #[derive(Parser)]
 #[command(name = "unpdf")]
@@ -42,20 +83,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Convert PDF to all formats (Markdown, text, JSON)
-    Convert {
-        /// Input PDF file
-        #[arg(value_name = "FILE")]
-        input: PathBuf,
-
-        /// Output directory
-        #[arg(short, long, value_name = "DIR")]
-        output: Option<PathBuf>,
-
-        /// Text cleanup preset
-        #[arg(long, value_enum)]
-        cleanup: Option<CleanupLevel>,
-    },
+    /// Convert PDF to Markdown, text, and/or JSON (streaming pipeline)
+    Convert(ConvertArgs),
 
     /// Convert PDF to Markdown
     #[command(alias = "md")]
@@ -160,7 +189,7 @@ enum Commands {
     Version,
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, ValueEnum)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, ValueEnum)]
 enum CleanupLevel {
     /// Minimal cleanup (Unicode normalization only)
     Minimal,
@@ -237,11 +266,13 @@ fn main() {
     let quiet = cli.quiet;
 
     let result = match cli.command {
-        Some(Commands::Convert {
-            input,
-            output,
-            cleanup,
-        }) => cmd_convert(&input, output.as_deref(), cleanup, quiet),
+        Some(Commands::Convert(mut args)) => {
+            // Top-level --quiet propagates into ConvertArgs
+            if quiet {
+                args.quiet = true;
+            }
+            cmd_convert(&args)
+        }
         Some(Commands::Markdown {
             input,
             output,
@@ -291,7 +322,18 @@ fn main() {
         None => {
             // Default behavior: convert if input is provided
             if let Some(input) = cli.input {
-                cmd_convert(&input, cli.output.as_deref(), cli.cleanup, quiet)
+                let args = ConvertArgs {
+                    input,
+                    output: cli.output,
+                    cleanup: cli.cleanup,
+                    formats: vec!["md".to_string()],
+                    all: false,
+                    images: false,
+                    image_dir: None,
+                    window: None,
+                    quiet,
+                };
+                cmd_convert(&args)
             } else {
                 println!("{}", "Usage: unpdf <FILE> [OUTPUT]".yellow());
                 println!("       unpdf --help for more information");
@@ -320,90 +362,149 @@ fn main() {
     }
 }
 
-fn cmd_convert(
-    input: &Path,
-    output: Option<&Path>,
-    cleanup: Option<CleanupLevel>,
-    quiet: bool,
-) -> Result<bool, Box<dyn std::error::Error>> {
-    let output_dir = output.map(|p| p.to_path_buf()).unwrap_or_else(|| {
-        let stem = input.file_stem().unwrap_or_default().to_string_lossy();
+fn cmd_convert(args: &ConvertArgs) -> Result<bool, Box<dyn std::error::Error>> {
+    use std::ops::ControlFlow;
+
+    let out_dir = args.output.clone().unwrap_or_else(|| {
+        let stem = args
+            .input
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy();
         PathBuf::from(format!("{}_output", stem))
     });
+    fs::create_dir_all(&out_dir)?;
 
-    fs::create_dir_all(&output_dir)?;
+    // Determine output formats
+    let formats: Vec<writer::OutputFormat> = if args.all {
+        vec![
+            writer::OutputFormat::Markdown,
+            writer::OutputFormat::Text,
+            writer::OutputFormat::Json,
+        ]
+    } else {
+        let mut v: Vec<_> = args
+            .formats
+            .iter()
+            .filter_map(|s| match s.as_str() {
+                "md" | "markdown" => Some(writer::OutputFormat::Markdown),
+                "txt" | "text" => Some(writer::OutputFormat::Text),
+                "json" => Some(writer::OutputFormat::Json),
+                other => {
+                    eprintln!("warning: unknown format: {}", other);
+                    None
+                }
+            })
+            .collect();
+        if v.is_empty() {
+            v.push(writer::OutputFormat::Markdown);
+        }
+        v
+    };
 
-    let pb = ProgressBar::new(4);
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template("{spinner:.green} [{bar:40.cyan/blue}] {msg}")
-            .unwrap()
-            .progress_chars("#>-"),
-    );
-
-    // Parse document with lenient mode to handle malformed PDFs
-    pb.set_message("Parsing PDF...");
-    let options = ParseOptions::new().lenient();
-    let doc = parse_file_with_options(input, options)?;
-    let had_warnings = check_quality(&doc, quiet);
-    pb.inc(1);
+    // Image extraction configuration
+    let image_dir: Option<PathBuf> = if args.images || args.image_dir.is_some() {
+        Some(
+            args.image_dir
+                .clone()
+                .unwrap_or_else(|| out_dir.join("images")),
+        )
+    } else {
+        None
+    };
+    if let Some(d) = &image_dir {
+        fs::create_dir_all(d)?;
+    }
 
     // Build render options
-    let mut render_options = RenderOptions::new()
-        .with_frontmatter(true)
-        .with_image_dir(output_dir.join("images"))
-        .with_image_prefix("images/");
-
-    if let Some(level) = cleanup {
-        render_options = render_options.with_cleanup_preset(level.into());
+    let mut render_opts = RenderOptions::new().with_frontmatter(true);
+    if let Some(d) = &image_dir {
+        render_opts = render_opts
+            .with_image_dir(d.clone())
+            .with_image_prefix("images/");
+    }
+    if let Some(level) = args.cleanup {
+        render_opts = render_opts.with_cleanup_preset(level.into());
     }
 
-    // Extract images (only create folder if there are images)
-    pb.set_message("Extracting images...");
-    let images_dir = output_dir.join("images");
-    let mut image_count = 0;
-    for (id, resource) in &doc.resources {
-        if resource.is_image() {
-            // Create images folder on first image
-            if image_count == 0 {
-                fs::create_dir_all(&images_dir)?;
-            }
-            let filename = resource.suggested_filename(id);
-            let path = images_dir.join(&filename);
-            fs::write(&path, &resource.data)?;
-            image_count += 1;
-        }
+    // Open parser
+    let mut parse_options = ParseOptions::new().lenient();
+    if image_dir.is_some() {
+        parse_options = parse_options.with_resources(true);
     }
-    pb.inc(1);
+    let parser = PdfParser::open_with_options(&args.input, parse_options)?;
 
-    // Generate Markdown
-    pb.set_message("Generating Markdown...");
-    let markdown = unpdf::render::to_markdown(&doc, &render_options)?;
-    fs::write(output_dir.join("extract.md"), &markdown)?;
-    pb.inc(1);
+    // Set up writer
+    let mut mfw = writer::MultiFormatWriter::new(&out_dir, &formats, render_opts)?;
 
-    // Generate text
-    pb.set_message("Generating text...");
-    let text = unpdf::render::to_text(&doc, &render_options)?;
-    fs::write(output_dir.join("extract.txt"), &text)?;
+    // Stream options
+    let mut stream_opts = PageStreamOptions {
+        extract_resources: image_dir.is_some(),
+        ..PageStreamOptions::default()
+    };
+    if let Some(w) = args.window {
+        stream_opts.window_size = w.max(1);
+    }
 
-    // Generate JSON
-    let json = unpdf::render::to_json(&doc, JsonFormat::Pretty)?;
-    fs::write(output_dir.join("content.json"), &json)?;
-    pb.inc(1);
-
-    pb.finish_with_message("Done!");
-
-    println!("\n{}", "Output files:".green().bold());
-    println!("  {} extract.md", "├─".dimmed());
-    println!("  {} extract.txt", "├─".dimmed());
-    if image_count > 0 {
-        println!("  {} content.json", "├─".dimmed());
-        println!("  {} images/", "└─".dimmed());
+    // Progress bar
+    let total_pages = parser.page_count();
+    let pb = if args.quiet {
+        ProgressBar::hidden()
     } else {
-        println!("  {} content.json", "└─".dimmed());
+        let b = ProgressBar::new(total_pages as u64);
+        b.set_style(
+            ProgressStyle::default_bar()
+                .template("{bar:40.cyan/blue} {pos}/{len} pages ({eta})")
+                .unwrap(),
+        );
+        b
+    };
+
+    let mut quality = None;
+    let mut write_err: Option<String> = None;
+
+    parser.for_each_page(stream_opts, |ev| {
+        match ev {
+            ParseEvent::DocumentStart {
+                metadata,
+                page_count,
+                ..
+            } => {
+                if let Err(e) = mfw.write_document_start(&metadata, page_count) {
+                    write_err = Some(format!("document start: {}", e));
+                    return ControlFlow::Break(());
+                }
+            }
+            ParseEvent::PageParsed(page) => {
+                if let Err(e) = mfw.write_page(&page) {
+                    write_err = Some(format!("page {}: {}", page.number, e));
+                    return ControlFlow::Break(());
+                }
+                pb.inc(1);
+            }
+            ParseEvent::PageFailed { page, error } => {
+                eprintln!("page {} failed: {}", page, error);
+                pb.inc(1);
+            }
+            ParseEvent::DocumentEnd { quality: q } => {
+                quality = Some(q);
+            }
+            ParseEvent::Progress { .. } => {}
+        }
+        ControlFlow::Continue(())
+    })?;
+
+    if let Some(e) = write_err {
+        return Err(e.into());
     }
 
+    mfw.finish()?;
+    pb.finish_with_message("Done");
+
+    let had_warnings = quality
+        .as_ref()
+        .map(|q| q.warning_message().is_some())
+        .unwrap_or(false);
     Ok(had_warnings)
 }
 
