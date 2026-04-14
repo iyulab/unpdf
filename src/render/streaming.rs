@@ -168,8 +168,15 @@ impl<'a> StreamingRenderer<'a> {
         None
     }
 
+    /// Render a single `Block` to its Markdown fragment. Intended for
+    /// consumers that drive their own page-by-page rendering loop
+    /// (e.g., streaming CLI writers).
+    pub fn render_block_public(&self, block: &crate::model::Block) -> String {
+        self.render_block(block)
+    }
+
     /// Render a single block to string.
-    fn render_block(&self, block: &Block) -> String {
+    pub(crate) fn render_block(&self, block: &Block) -> String {
         match block {
             Block::Paragraph(p) => {
                 if p.is_empty() {
