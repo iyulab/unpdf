@@ -2215,6 +2215,7 @@ dependencies = [
  "reqwest",
  "self_update",
  "semver",
+ "serde_json",
  "tokio",
  "unpdf",
 ]

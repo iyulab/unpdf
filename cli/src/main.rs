@@ -1,6 +1,7 @@
 //! unpdf CLI - PDF content extraction tool
 
 mod update;
+mod writer;
 
 use std::fs;
 use std::path::{Path, PathBuf};
