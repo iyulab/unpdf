@@ -7,13 +7,11 @@ use std::path::Path;
 use crate::detect::detect_format_from_path;
 use crate::error::{Error, Result};
 use crate::model::{
-    Block, Document, Metadata, Outline, OutlineItem, Page, Paragraph, Resource, ResourceType,
+    Block, Document, OutlineItem, Page, Paragraph, Resource, ResourceType,
 };
 
-use super::backend::{PdfBackend, RawBackend, RawOutlineItem, RawXObject};
-use super::layout::{BlockType, LayoutAnalyzer};
+use super::backend::{PdfBackend, RawBackend, RawXObject};
 use super::options::{ErrorMode, ExtractMode, ParseOptions};
-use super::table_detector::TableDetector;
 
 /// PDF document parser.
 pub struct PdfParser {
@@ -64,328 +62,74 @@ impl PdfParser {
     }
 
     /// Parse the document and return a structured Document.
+    ///
+    /// Internally routes through the streaming pipeline (`run_stream`) with
+    /// rayon parallel page parsing. The public signature is unchanged.
     pub fn parse(&self) -> Result<Document> {
+        use std::ops::ControlFlow;
+
+        use super::stream::{run_stream, PageStreamOptions, ParseEvent};
+
+        let opts: PageStreamOptions = (&self.options).into();
+
         let mut document = Document::new();
-        document.metadata = self.extract_metadata()?;
+        let mut err_out: Option<Error> = None;
 
+        // Snapshot page map so we can do resource extraction inside the handler.
         let page_ids = self.backend.pages();
-        let total_pages = page_ids.len() as u32;
-        document.metadata.page_count = total_pages;
 
-        let mut quality = crate::model::QualityAccumulator::new();
-
-        for (page_num, page_id) in page_ids.iter() {
-            let page_num = *page_num;
-            if !self.options.pages.includes(page_num) {
-                continue;
+        let quality = run_stream(&*self.backend, &opts, |ev| match ev {
+            ParseEvent::DocumentStart {
+                metadata,
+                outline,
+                form_fields,
+                ..
+            } => {
+                document.metadata = metadata;
+                document.outline = outline;
+                document.form_fields = form_fields;
+                ControlFlow::Continue(())
             }
-            match self.parse_page(page_num) {
-                Ok(page) => {
-                    for block in &page.elements {
-                        let mut buf = String::new();
-                        block.append_plain_text(&mut buf);
-                        quality.accumulate(&buf);
-                        quality.accumulate("\n");
-                    }
-                    if self.options.extract_resources
-                        && self.options.extract_mode != ExtractMode::StructureOnly
-                    {
+            ParseEvent::PageParsed(page) => {
+                if self.options.extract_resources
+                    && self.options.extract_mode != ExtractMode::StructureOnly
+                {
+                    if let Some(page_id) = page_ids.get(&page.number) {
                         if let Ok(xobjects) = self.backend.page_xobjects(*page_id) {
                             for xobj in xobjects {
-                                let key = format!("page{}_{}", page_num, xobj.name);
-                                if let Some(resource) = Self::convert_xobject(xobj) {
-                                    document.resources.insert(key, resource);
+                                let key = format!("page{}_{}", page.number, xobj.name);
+                                if let Some(r) = Self::convert_xobject(xobj) {
+                                    document.resources.insert(key, r);
                                 }
                             }
                         }
                     }
-                    document.add_page(page);
                 }
-                Err(e) => {
-                    if self.options.error_mode == ErrorMode::Strict {
-                        return Err(e);
-                    }
-                    log::warn!("Skipping page {}: {}", page_num, e);
-                }
+                document.add_page(page);
+                ControlFlow::Continue(())
             }
+            ParseEvent::PageFailed { page, error } => {
+                log::warn!("page {} failed: {}", page, error);
+                if self.options.error_mode == ErrorMode::Strict && err_out.is_none() {
+                    err_out = Some(error);
+                    return ControlFlow::Break(());
+                }
+                ControlFlow::Continue(())
+            }
+            ParseEvent::Progress { .. } | ParseEvent::DocumentEnd { .. } => {
+                ControlFlow::Continue(())
+            }
+        })?;
+
+        if let Some(e) = err_out {
+            return Err(e);
         }
 
-        // Extract outline (bookmarks) if available
-        if let Ok(outline) = self.extract_outline() {
-            if !outline.is_empty() {
-                document.outline = Some(outline);
-            }
-        }
-
-        // Extract AcroForm fields
-        document.form_fields = self.backend.acroform_fields();
-
-        let mut final_quality = quality.finalize();
-        final_quality.encrypted = document.metadata.encrypted;
-        document.extraction_quality = final_quality;
+        let mut final_q = quality;
+        final_q.encrypted = document.metadata.encrypted;
+        document.extraction_quality = final_q;
 
         Ok(document)
-    }
-
-    /// Extract document metadata.
-    fn extract_metadata(&self) -> Result<Metadata> {
-        let raw = self.backend.metadata();
-        let mut metadata = Metadata::with_version(raw.version);
-        metadata.title = raw.title;
-        metadata.author = raw.author;
-        metadata.subject = raw.subject;
-        metadata.keywords = raw.keywords;
-        metadata.creator = raw.creator;
-        metadata.producer = raw.producer;
-        metadata.encrypted = raw.encrypted;
-        if let Some(date_str) = raw.creation_date {
-            metadata.created = parse_pdf_date(&date_str);
-        }
-        if let Some(date_str) = raw.mod_date {
-            metadata.modified = parse_pdf_date(&date_str);
-        }
-        Ok(metadata)
-    }
-
-    /// Parse a single page.
-    fn parse_page(&self, page_num: u32) -> Result<Page> {
-        // Get page dimensions
-        let (width, height) = self.get_page_dimensions(page_num)?;
-        let mut page = Page::new(page_num, width, height);
-
-        // Extract text content
-        if self.options.extract_mode != ExtractMode::StructureOnly {
-            // Try layout-aware extraction with table detection
-            match self.extract_page_with_tables(page_num) {
-                Ok(blocks) if !blocks.is_empty() => {
-                    for block in blocks {
-                        page.add_block(block);
-                    }
-                }
-                Ok(_) => {
-                    // Layout analysis returned empty, use fallback
-                    self.fallback_text_extraction(&mut page, page_num)?;
-                }
-                Err(_) => {
-                    // Layout analysis failed, use fallback
-                    self.fallback_text_extraction(&mut page, page_num)?;
-                }
-            }
-        }
-
-        Ok(page)
-    }
-
-    /// Extract page content with table detection.
-    fn extract_page_with_tables(&self, page_num: u32) -> Result<Vec<Block>> {
-        let analyzer = LayoutAnalyzer::new(&*self.backend);
-
-        // Step 1: Extract all text spans
-        let spans = analyzer.extract_page_spans(page_num)?;
-
-        if spans.is_empty() {
-            return Ok(vec![]);
-        }
-
-        // Step 2: Detect tables
-        let table_detector = TableDetector::new();
-        let (detected_tables, remaining_spans) = table_detector.detect(spans.clone());
-
-        let mut blocks: Vec<Block> = Vec::new();
-
-        // If tables were detected, process them along with remaining text
-        if !detected_tables.is_empty() {
-            log::debug!(
-                "Detected {} tables on page {}",
-                detected_tables.len(),
-                page_num
-            );
-
-            // Collect all elements with their Y position for proper ordering
-            let mut elements: Vec<(f32, Block)> = Vec::new();
-
-            // Add detected tables (fall back to paragraphs for low-confidence detections)
-            const TABLE_CONFIDENCE_THRESHOLD: f32 = 0.4;
-            for detected in &detected_tables {
-                if detected.confidence < TABLE_CONFIDENCE_THRESHOLD {
-                    log::debug!(
-                        "Table at y={} has low confidence ({:.2}), converting to paragraphs",
-                        detected.top_y,
-                        detected.confidence
-                    );
-                    for row in &detected.rows {
-                        let text = row
-                            .spans
-                            .iter()
-                            .map(|s| s.text.as_str())
-                            .collect::<Vec<_>>()
-                            .join("  ");
-                        if !text.trim().is_empty() {
-                            elements.push((
-                                row.y,
-                                Block::Paragraph(Paragraph::with_text(text)),
-                            ));
-                        }
-                    }
-                } else {
-                    let table = table_detector.to_table_model(detected);
-                    if !table.is_empty() {
-                        elements.push((detected.top_y, Block::Table(table)));
-                    }
-                }
-            }
-
-            // Process remaining spans into text blocks
-            if !remaining_spans.is_empty() {
-                let mut analyzer = LayoutAnalyzer::new(&*self.backend);
-                // Manually add font stats from remaining spans
-                for span in &remaining_spans {
-                    analyzer.font_stats_mut().add_size(span.font_size);
-                }
-                analyzer.font_stats_mut().analyze();
-
-                let lines = analyzer.group_spans_into_lines_pub(remaining_spans);
-                let lines = analyzer.detect_headings_pub(lines);
-                let text_blocks = analyzer.group_lines_into_blocks_pub(lines);
-
-                for block in text_blocks {
-                    if !block.is_empty() {
-                        let text = block.text();
-                        let y_pos = block.lines.first().map(|l| l.y).unwrap_or(0.0);
-
-                        let para_block = match block.block_type {
-                            BlockType::Heading => {
-                                let level = block.heading_level.clamp(1, 6);
-                                Block::Paragraph(Paragraph::heading(text, level))
-                            }
-                            BlockType::Paragraph | BlockType::Unknown => {
-                                Block::Paragraph(Paragraph::with_text(text))
-                            }
-                            BlockType::ListItem => {
-                                Block::Paragraph(Paragraph::with_text(format!("• {}", text)))
-                            }
-                        };
-                        elements.push((y_pos, para_block));
-                    }
-                }
-            }
-
-            // Sort by Y position (descending for PDF coords - top to bottom)
-            elements.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-
-            blocks = elements.into_iter().map(|(_, block)| block).collect();
-        } else {
-            // No tables detected, use regular layout analysis
-            match self.extract_page_with_layout(page_num) {
-                Ok(text_blocks) => {
-                    for block in text_blocks {
-                        if !block.is_empty() {
-                            let text = block.text();
-                            log::debug!(
-                                "Block type: {:?}, heading_level: {}, text preview: {}",
-                                block.block_type,
-                                block.heading_level,
-                                {
-                                    let t = text
-                                        .char_indices()
-                                        .nth(50)
-                                        .map_or(text.as_str(), |(i, _)| &text[..i]);
-                                    t
-                                }
-                            );
-                            let para_block = match block.block_type {
-                                BlockType::Heading => {
-                                    let level = block.heading_level.clamp(1, 6);
-                                    Block::Paragraph(Paragraph::heading(text, level))
-                                }
-                                BlockType::Paragraph | BlockType::Unknown => {
-                                    Block::Paragraph(Paragraph::with_text(text))
-                                }
-                                BlockType::ListItem => {
-                                    Block::Paragraph(Paragraph::with_text(format!("• {}", text)))
-                                }
-                            };
-                            blocks.push(para_block);
-                        }
-                    }
-                }
-                Err(e) => return Err(e),
-            }
-        }
-
-        Ok(blocks)
-    }
-
-    /// Extract page with layout analysis.
-    fn extract_page_with_layout(&self, page_num: u32) -> Result<Vec<super::layout::TextBlock>> {
-        let mut analyzer = LayoutAnalyzer::new(&*self.backend);
-        analyzer.extract_page_blocks(page_num)
-    }
-
-    /// Fallback text extraction without layout analysis.
-    fn fallback_text_extraction(&self, page: &mut Page, page_num: u32) -> Result<()> {
-        match self.extract_page_text(page_num) {
-            Ok(text) => {
-                if !text.trim().is_empty() {
-                    page.add_paragraph(Paragraph::with_text(text));
-                }
-            }
-            Err(e) => {
-                if self.options.error_mode == ErrorMode::Strict {
-                    return Err(e);
-                }
-                log::warn!("Failed to extract text from page {}: {}", page_num, e);
-            }
-        }
-        Ok(())
-    }
-
-    /// Get page dimensions.
-    fn get_page_dimensions(&self, page_num: u32) -> Result<(f32, f32)> {
-        let pages = self.backend.pages();
-        let page_id = pages
-            .get(&page_num)
-            .ok_or(Error::PageOutOfRange(page_num, pages.len() as u32))?;
-        Ok(self.backend.page_dimensions(*page_id))
-    }
-
-    /// Extract text from a page using layout-aware span extraction.
-    fn extract_page_text(&self, page_num: u32) -> Result<String> {
-        let analyzer = LayoutAnalyzer::new(&*self.backend);
-        let spans = analyzer.extract_page_spans(page_num)?;
-
-        if spans.is_empty() {
-            return Ok(String::new());
-        }
-
-        let lines = analyzer.group_spans_into_lines_pub(spans);
-        Ok(lines
-            .iter()
-            .map(|l| l.text())
-            .collect::<Vec<_>>()
-            .join("\n"))
-    }
-
-    /// Extract document outline (bookmarks).
-    fn extract_outline(&self) -> Result<Outline> {
-        let raw_items = self.backend.outline()?;
-        let mut outline = Outline::new();
-        outline.items = raw_items
-            .into_iter()
-            .map(Self::convert_outline_item)
-            .collect();
-        Ok(outline)
-    }
-
-    /// Convert a raw outline item from the backend into a model OutlineItem.
-    fn convert_outline_item(raw: RawOutlineItem) -> OutlineItem {
-        let mut item = OutlineItem::new(raw.title, raw.page, raw.level);
-        item.children = raw
-            .children
-            .into_iter()
-            .map(Self::convert_outline_item)
-            .collect();
-        item
     }
 
     /// Extract embedded resources (images).
@@ -439,6 +183,216 @@ impl PdfParser {
     pub fn version(&self) -> String {
         self.backend.metadata().version
     }
+}
+
+// ---------------------------------------------------------------------------
+// Module-level free functions (backend-agnostic page parsing)
+// ---------------------------------------------------------------------------
+
+/// Parse a single page without requiring `&PdfParser`. Enables per-page
+/// parallel invocation in `run_stream`.
+pub(crate) fn parse_single_page(
+    backend: &dyn PdfBackend,
+    page_num: u32,
+    options: &ParseOptions,
+) -> Result<Page> {
+    let (width, height) = get_page_dimensions_fn(backend, page_num)?;
+    let mut page = Page::new(page_num, width, height);
+
+    if options.extract_mode != ExtractMode::StructureOnly {
+        match extract_page_with_tables_fn(backend, page_num) {
+            Ok(blocks) if !blocks.is_empty() => {
+                for block in blocks {
+                    page.add_block(block);
+                }
+            }
+            Ok(_) => {
+                fallback_text_extraction_fn(backend, &mut page, page_num, options)?;
+            }
+            Err(_) => {
+                fallback_text_extraction_fn(backend, &mut page, page_num, options)?;
+            }
+        }
+    }
+
+    Ok(page)
+}
+
+/// Convert a raw outline item into a model `OutlineItem`. Exposed as
+/// `pub(crate)` so `run_stream` can build the document outline.
+pub(crate) fn convert_outline_item_pub(raw: super::backend::RawOutlineItem) -> OutlineItem {
+    let mut item = OutlineItem::new(raw.title, raw.page, raw.level);
+    item.children = raw
+        .children
+        .into_iter()
+        .map(convert_outline_item_pub)
+        .collect();
+    item
+}
+
+fn get_page_dimensions_fn(backend: &dyn PdfBackend, page_num: u32) -> Result<(f32, f32)> {
+    let pages = backend.pages();
+    let page_id = pages
+        .get(&page_num)
+        .ok_or(Error::PageOutOfRange(page_num, pages.len() as u32))?;
+    Ok(backend.page_dimensions(*page_id))
+}
+
+fn extract_page_with_tables_fn(backend: &dyn PdfBackend, page_num: u32) -> Result<Vec<Block>> {
+    let analyzer = super::layout::LayoutAnalyzer::new(backend);
+    let spans = analyzer.extract_page_spans(page_num)?;
+
+    if spans.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let table_detector = super::table_detector::TableDetector::new();
+    let (detected_tables, remaining_spans) = table_detector.detect(spans.clone());
+
+    let mut blocks: Vec<Block> = Vec::new();
+
+    if !detected_tables.is_empty() {
+        log::debug!(
+            "Detected {} tables on page {}",
+            detected_tables.len(),
+            page_num
+        );
+
+        let mut elements: Vec<(f32, Block)> = Vec::new();
+
+        const TABLE_CONFIDENCE_THRESHOLD: f32 = 0.4;
+        for detected in &detected_tables {
+            if detected.confidence < TABLE_CONFIDENCE_THRESHOLD {
+                log::debug!(
+                    "Table at y={} has low confidence ({:.2}), converting to paragraphs",
+                    detected.top_y,
+                    detected.confidence
+                );
+                for row in &detected.rows {
+                    let text = row
+                        .spans
+                        .iter()
+                        .map(|s| s.text.as_str())
+                        .collect::<Vec<_>>()
+                        .join("  ");
+                    if !text.trim().is_empty() {
+                        elements.push((row.y, Block::Paragraph(Paragraph::with_text(text))));
+                    }
+                }
+            } else {
+                let table = table_detector.to_table_model(detected);
+                if !table.is_empty() {
+                    elements.push((detected.top_y, Block::Table(table)));
+                }
+            }
+        }
+
+        if !remaining_spans.is_empty() {
+            let mut a = super::layout::LayoutAnalyzer::new(backend);
+            for span in &remaining_spans {
+                a.font_stats_mut().add_size(span.font_size);
+            }
+            a.font_stats_mut().analyze();
+
+            let lines = a.group_spans_into_lines_pub(remaining_spans);
+            let lines = a.detect_headings_pub(lines);
+            let text_blocks = a.group_lines_into_blocks_pub(lines);
+
+            for block in text_blocks {
+                if !block.is_empty() {
+                    let text = block.text();
+                    let y_pos = block.lines.first().map(|l| l.y).unwrap_or(0.0);
+                    let para_block = match block.block_type {
+                        super::layout::BlockType::Heading => {
+                            let level = block.heading_level.clamp(1, 6);
+                            Block::Paragraph(Paragraph::heading(text, level))
+                        }
+                        super::layout::BlockType::Paragraph
+                        | super::layout::BlockType::Unknown => {
+                            Block::Paragraph(Paragraph::with_text(text))
+                        }
+                        super::layout::BlockType::ListItem => {
+                            Block::Paragraph(Paragraph::with_text(format!("• {}", text)))
+                        }
+                    };
+                    elements.push((y_pos, para_block));
+                }
+            }
+        }
+
+        elements.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        blocks = elements.into_iter().map(|(_, block)| block).collect();
+    } else {
+        let mut a = super::layout::LayoutAnalyzer::new(backend);
+        let text_blocks = a.extract_page_blocks(page_num)?;
+        for block in text_blocks {
+            if !block.is_empty() {
+                let text = block.text();
+                log::debug!(
+                    "Block type: {:?}, heading_level: {}, text preview: {}",
+                    block.block_type,
+                    block.heading_level,
+                    {
+                        let t = text
+                            .char_indices()
+                            .nth(50)
+                            .map_or(text.as_str(), |(i, _)| &text[..i]);
+                        t
+                    }
+                );
+                let para_block = match block.block_type {
+                    super::layout::BlockType::Heading => {
+                        let level = block.heading_level.clamp(1, 6);
+                        Block::Paragraph(Paragraph::heading(text, level))
+                    }
+                    super::layout::BlockType::Paragraph | super::layout::BlockType::Unknown => {
+                        Block::Paragraph(Paragraph::with_text(text))
+                    }
+                    super::layout::BlockType::ListItem => {
+                        Block::Paragraph(Paragraph::with_text(format!("• {}", text)))
+                    }
+                };
+                blocks.push(para_block);
+            }
+        }
+    }
+
+    Ok(blocks)
+}
+
+fn fallback_text_extraction_fn(
+    backend: &dyn PdfBackend,
+    page: &mut Page,
+    page_num: u32,
+    options: &ParseOptions,
+) -> Result<()> {
+    let analyzer = super::layout::LayoutAnalyzer::new(backend);
+    match analyzer.extract_page_spans(page_num) {
+        Ok(spans) if !spans.is_empty() => {
+            let lines = analyzer.group_spans_into_lines_pub(spans);
+            let text = lines
+                .iter()
+                .map(|l| l.text())
+                .collect::<Vec<_>>()
+                .join("\n");
+            if !text.trim().is_empty() {
+                page.add_paragraph(Paragraph::with_text(text));
+            }
+        }
+        Ok(_) => {}
+        Err(e) => {
+            if options.error_mode == ErrorMode::Strict {
+                return Err(e);
+            }
+            log::warn!("Failed to extract text from page {}: {}", page_num, e);
+        }
+    }
+    Ok(())
+}
+
+/// Parse a PDF date string (D:YYYYMMDDHHmmSSOHH'mm'). Exposed as `pub(crate)` for `run_stream`.
+pub(crate) fn parse_pdf_date_pub(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    parse_pdf_date(s)
 }
 
 /// Parse a PDF date string (D:YYYYMMDDHHmmSSOHH'mm').
