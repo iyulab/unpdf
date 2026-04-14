@@ -74,7 +74,7 @@ impl PdfParser {
 
         let mut quality = crate::model::QualityAccumulator::new();
 
-        for (page_num, _page_id) in page_ids.iter() {
+        for (page_num, page_id) in page_ids.iter() {
             let page_num = *page_num;
             if !self.options.pages.includes(page_num) {
                 continue;
@@ -86,6 +86,18 @@ impl PdfParser {
                         block.append_plain_text(&mut buf);
                         quality.accumulate(&buf);
                         quality.accumulate("\n");
+                    }
+                    if self.options.extract_resources
+                        && self.options.extract_mode != ExtractMode::StructureOnly
+                    {
+                        if let Ok(xobjects) = self.backend.page_xobjects(*page_id) {
+                            for xobj in xobjects {
+                                let key = format!("page{}_{}", page_num, xobj.name);
+                                if let Some(resource) = Self::convert_xobject(xobj) {
+                                    document.resources.insert(key, resource);
+                                }
+                            }
+                        }
                     }
                     document.add_page(page);
                 }
@@ -102,14 +114,6 @@ impl PdfParser {
         if let Ok(outline) = self.extract_outline() {
             if !outline.is_empty() {
                 document.outline = Some(outline);
-            }
-        }
-
-        // Extract resources (images) if requested
-        if self.options.extract_resources && self.options.extract_mode != ExtractMode::StructureOnly
-        {
-            if let Ok(resources) = self.extract_resources() {
-                document.resources = resources;
             }
         }
 
@@ -385,6 +389,7 @@ impl PdfParser {
     }
 
     /// Extract embedded resources (images).
+    #[allow(dead_code)]
     fn extract_resources(&self) -> Result<HashMap<String, Resource>> {
         let mut resources = HashMap::new();
         for (page_num, page_id) in self.backend.pages() {
