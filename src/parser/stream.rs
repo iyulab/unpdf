@@ -254,7 +254,6 @@ where
     let first_expected = targets.first().copied().unwrap_or(0);
 
     // ParseOptions 재구성
-    #[allow(deprecated)]
     let parse_opts = ParseOptions {
         error_mode: opts.error_mode,
         extract_mode: opts.extract_mode,
@@ -262,7 +261,6 @@ where
         pages: opts.pages.clone(),
         password: opts.password.clone(),
         parallel: opts.parallel,
-        memory_limit_mb: 0,
     };
 
     // 3. 실행

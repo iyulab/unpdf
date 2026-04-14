@@ -11,17 +11,11 @@ pub struct ParseOptions {
     /// What to extract from the document
     pub extract_mode: ExtractMode,
 
-    /// Memory limit in MB (0 = unlimited).
+    /// Whether to extract embedded resources (images, fonts).
     ///
-    /// **Deprecated**: This parameter is stored but not enforced.
-    /// Consider using page selection (`with_pages`) to limit processing scope instead.
-    #[deprecated(
-        since = "0.1.8",
-        note = "This parameter is not enforced. Use page selection to limit processing scope."
-    )]
-    pub memory_limit_mb: u32,
-
-    /// Whether to extract embedded resources (images, fonts)
+    /// Default is `false` since 0.4.0 — large PDFs silently loading all
+    /// images into memory was the largest peak-memory vector. Opt in via
+    /// `.with_resources(true)` when images are needed.
     pub extract_resources: bool,
 
     /// Whether to use parallel processing
@@ -64,22 +58,6 @@ impl ParseOptions {
         self
     }
 
-    /// Set memory limit in MB.
-    ///
-    /// **Deprecated**: This parameter is stored but not enforced.
-    /// Consider using `with_pages` to limit processing scope instead.
-    #[deprecated(
-        since = "0.1.8",
-        note = "This parameter is not enforced. Use with_pages to limit processing scope."
-    )]
-    pub fn with_memory_limit(mut self, mb: u32) -> Self {
-        #[allow(deprecated)]
-        {
-            self.memory_limit_mb = mb;
-        }
-        self
-    }
-
     /// Enable or disable resource extraction.
     pub fn with_resources(mut self, extract: bool) -> Self {
         self.extract_resources = extract;
@@ -113,12 +91,10 @@ impl ParseOptions {
 
 impl Default for ParseOptions {
     fn default() -> Self {
-        #[allow(deprecated)]
         Self {
             error_mode: ErrorMode::Lenient,
             extract_mode: ExtractMode::Full,
-            memory_limit_mb: 0,
-            extract_resources: true,
+            extract_resources: false,
             parallel: true,
             pages: PageSelection::All,
             password: None,
@@ -153,17 +129,14 @@ mod tests {
     use super::*;
 
     #[test]
-    #[allow(deprecated)]
     fn test_parse_options_builder() {
         let options = ParseOptions::new()
             .lenient()
             .text_only()
-            .with_memory_limit(512)
             .sequential();
 
         assert_eq!(options.error_mode, ErrorMode::Lenient);
         assert_eq!(options.extract_mode, ExtractMode::TextOnly);
-        assert_eq!(options.memory_limit_mb, 512);
         assert!(!options.parallel);
     }
 
@@ -172,6 +145,7 @@ mod tests {
         let options = ParseOptions::default();
         assert_eq!(options.error_mode, ErrorMode::Lenient);
         assert!(options.parallel);
-        assert!(options.extract_resources);
+        // 0.4.0 breaking: default is now false
+        assert!(!options.extract_resources);
     }
 }
