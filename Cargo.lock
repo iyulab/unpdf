@@ -2179,7 +2179,7 @@ checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
 
 [[package]]
 name = "unpdf"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "aes",
  "cbc",
@@ -2204,7 +2204,7 @@ dependencies = [
 
 [[package]]
 name = "unpdf-cli"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "clap",
  "colored",
@@ -2869,10 +2869,12 @@ dependencies = [
  "crc32fast",
  "crossbeam-utils",
  "displaydoc",
+ "flate2",
  "indexmap",
  "memchr",
  "thiserror",
  "time",
+ "zopfli",
 ]
 
 [[package]]
@@ -2891,3 +2893,15 @@ name = "zmij"
 version = "1.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
+
+[[package]]
+name = "zopfli"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f05cd8797d63865425ff89b5c4a48804f35ba0ce8d125800027ad6017d2b5249"
+dependencies = [
+ "bumpalo",
+ "crc32fast",
+ "log",
+ "simd-adler32",
+]

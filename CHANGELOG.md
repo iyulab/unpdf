@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.4.2 — 2026-04-14
+
+### Fixed
+- `unpdf update` failed with `ZipError: unsupported Zip archive:
+  Compression method not supported` when updating from 0.4.0/0.4.1 on
+  Windows. Root cause: `self_update` 0.41's `archive-zip` feature alone
+  enables **stored-only** (uncompressed) zip support. PowerShell's
+  `Compress-Archive` (used by our release workflow) emits Deflate
+  (method 8) archives, which requires the separate
+  `compression-zip-deflate` feature. Added that feature to
+  `cli/Cargo.toml::self_update`. `zip` crate now pulls `flate2` as
+  verified in `Cargo.lock`.
+- **Affects users on 0.4.0 / 0.4.1**: because the buggy self-update
+  lives in the binary being replaced, those versions cannot update
+  themselves past this fix. Install 0.4.2 manually (see README) and
+  all subsequent `unpdf update` runs will work.
+
 ## 0.4.1 — 2026-04-14
 
 Completes the image story left open in 0.4.0.
