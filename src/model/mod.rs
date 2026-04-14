@@ -19,6 +19,6 @@ pub use paragraph::{
     Alignment, InlineContent, ListInfo, ListStyle, NumberStyle, Paragraph, ParagraphStyle, TextRun,
     TextStyle,
 };
-pub use quality::ExtractionQuality;
+pub use quality::{ExtractionQuality, QualityAccumulator};
 pub use resource::{Resource, ResourceType};
 pub use table::{Table, TableCell, TableRow};

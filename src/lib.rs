@@ -50,8 +50,8 @@ pub use detect::{detect_format_from_bytes, detect_format_from_path, is_pdf, PdfF
 pub use error::{Error, Result};
 pub use model::{
     Alignment, Block, Document, ExtractionQuality, FieldType, FieldValue, FormField, InlineContent,
-    ListInfo, Metadata, Outline, Page, Paragraph, ParagraphStyle, Resource, ResourceType, Table,
-    TableCell, TableRow, TextRun, TextStyle,
+    ListInfo, Metadata, Outline, Page, Paragraph, ParagraphStyle, QualityAccumulator, Resource,
+    ResourceType, Table, TableCell, TableRow, TextRun, TextStyle,
 };
 pub use parser::{ParseOptions, PdfParser};
 pub use render::{
