@@ -94,8 +94,8 @@ fn find_best_vertical_gap(
     for block in blocks {
         let start = ((block.x - min_x) / resolution) as usize;
         let end = ((block.right() - min_x) / resolution) as usize;
-        for i in start..end.min(num_bins) {
-            profile[i] += 1;
+        for slot in profile.iter_mut().take(end.min(num_bins)).skip(start) {
+            *slot += 1;
         }
     }
 
@@ -122,8 +122,8 @@ fn find_best_horizontal_gap(
         let bottom = block.bottom();
         let start = ((bottom - min_y) / resolution).max(0.0) as usize;
         let end = ((top - min_y) / resolution) as usize;
-        for i in start..end.min(num_bins) {
-            profile[i] += 1;
+        for slot in profile.iter_mut().take(end.min(num_bins)).skip(start) {
+            *slot += 1;
         }
     }
 

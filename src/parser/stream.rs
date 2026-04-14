@@ -11,7 +11,12 @@ use crate::render::PageSelection;
 use super::options::{ErrorMode, ExtractMode, ParseOptions};
 
 /// 페이지 단위 스트리밍 파싱 이벤트.
+///
+/// `DocumentStart` 는 document-wide metadata + outline + form_fields 를
+/// 번들로 싣고 있어 다른 variant 보다 구조체가 크다. 이는 이벤트 스트림
+/// 시작 시 **한 번만** 발생하므로 평균 메모리 영향은 무시 가능.
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum ParseEvent {
     DocumentStart {
         metadata: Metadata,
