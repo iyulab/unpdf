@@ -3,8 +3,8 @@
 //! Provides a trait-based interface for PDF operations, isolating
 //! the concrete PDF parser from the layout analysis logic.
 
-use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
+use std::sync::Mutex;
 
 use crate::error::{Error, Result};
 use crate::model::{FieldType, FieldValue, FormField};
@@ -85,7 +85,7 @@ pub struct RawXObject {
 ///
 /// Implementations provide page enumeration, font info, content stream
 /// decoding, and text decoding — without exposing any concrete PDF library types.
-pub trait PdfBackend {
+pub trait PdfBackend: Send + Sync {
     /// Return all pages as (page_number → PageId).
     fn pages(&self) -> BTreeMap<u32, PageId>;
 
@@ -727,17 +727,17 @@ impl RawBackend {
 // ---------------------------------------------------------------------------
 
 struct RawFontResolver {
-    cmap_cache: RefCell<HashMap<PageId, Option<ToUnicodeMap>>>,
-    encoding_cache: RefCell<HashMap<PageId, Option<HashMap<u8, char>>>>,
-    cid_system_info_cache: RefCell<HashMap<PageId, Option<(String, String)>>>,
+    cmap_cache: Mutex<HashMap<PageId, Option<ToUnicodeMap>>>,
+    encoding_cache: Mutex<HashMap<PageId, Option<HashMap<u8, char>>>>,
+    cid_system_info_cache: Mutex<HashMap<PageId, Option<(String, String)>>>,
 }
 
 impl RawFontResolver {
     fn new() -> Self {
         Self {
-            cmap_cache: RefCell::new(HashMap::new()),
-            encoding_cache: RefCell::new(HashMap::new()),
-            cid_system_info_cache: RefCell::new(HashMap::new()),
+            cmap_cache: Mutex::new(HashMap::new()),
+            encoding_cache: Mutex::new(HashMap::new()),
+            cid_system_info_cache: Mutex::new(HashMap::new()),
         }
     }
 
@@ -882,7 +882,7 @@ impl RawFontResolver {
     /// Get or parse the ToUnicode CMap for a font.
     fn get_to_unicode_map(&self, doc: &RawDocument, font_obj_id: PageId) -> Option<ToUnicodeMap> {
         {
-            let cache = self.cmap_cache.borrow();
+            let cache = self.cmap_cache.lock().unwrap();
             if let Some(cached) = cache.get(&font_obj_id) {
                 return cached.clone();
             }
@@ -890,7 +890,8 @@ impl RawFontResolver {
 
         let result = self.parse_font_to_unicode(doc, font_obj_id);
         self.cmap_cache
-            .borrow_mut()
+            .lock()
+            .unwrap()
             .insert(font_obj_id, result.clone());
         result
     }
@@ -975,14 +976,15 @@ impl RawFontResolver {
         font_obj_id: PageId,
     ) -> Option<(String, String)> {
         {
-            let cache = self.cid_system_info_cache.borrow();
+            let cache = self.cid_system_info_cache.lock().unwrap();
             if let Some(cached) = cache.get(&font_obj_id) {
                 return cached.clone();
             }
         }
         let result = self.get_cid_system_info(doc, font_obj_id);
         self.cid_system_info_cache
-            .borrow_mut()
+            .lock()
+            .unwrap()
             .insert(font_obj_id, result.clone());
         result
     }
@@ -992,7 +994,7 @@ impl RawFontResolver {
         let cid_font_id = self.get_cid_font_id(doc, font_obj_id)?;
 
         {
-            let cache = self.cmap_cache.borrow();
+            let cache = self.cmap_cache.lock().unwrap();
             if let Some(cached) = cache.get(&cid_font_id) {
                 return cached.clone();
             }
@@ -1000,7 +1002,8 @@ impl RawFontResolver {
 
         let result = self.parse_embedded_truetype_cmap(doc, font_obj_id);
         self.cmap_cache
-            .borrow_mut()
+            .lock()
+            .unwrap()
             .insert(cid_font_id, result.clone());
         result
     }
@@ -1054,7 +1057,7 @@ impl RawFontResolver {
         font_obj_id: PageId,
     ) -> Option<HashMap<u8, char>> {
         {
-            let cache = self.encoding_cache.borrow();
+            let cache = self.encoding_cache.lock().unwrap();
             if let Some(cached) = cache.get(&font_obj_id) {
                 return cached.clone();
             }
@@ -1062,7 +1065,8 @@ impl RawFontResolver {
 
         let result = self.parse_encoding_dict(doc, font_obj_id);
         self.encoding_cache
-            .borrow_mut()
+            .lock()
+            .unwrap()
             .insert(font_obj_id, result.clone());
         result
     }
