@@ -105,12 +105,10 @@ impl RawDocument {
         }
 
         // Try empty password (most common case: owner-password-only)
-        let key = crypt::authenticate_user_password(&params, b"")
-            .ok_or(Error::Encrypted)?;
+        let key = crypt::authenticate_user_password(&params, b"").ok_or(Error::Encrypted)?;
 
         // Decrypt all objects (except the Encrypt dict itself)
-        let encrypt_obj_id = dict_get(&self.trailer, b"Encrypt")
-            .and_then(|o| o.as_reference());
+        let encrypt_obj_id = dict_get(&self.trailer, b"Encrypt").and_then(|o| o.as_reference());
         self.decrypt_objects(&key, &params, encrypt_obj_id);
 
         Ok(())
@@ -476,7 +474,9 @@ mod tests {
 
     #[test]
     fn test_load_trivial_pdf() {
-        let Some(data) = try_read("test-files/basic/trivial.pdf") else { return };
+        let Some(data) = try_read("test-files/basic/trivial.pdf") else {
+            return;
+        };
         let doc = RawDocument::load(&data).unwrap();
         assert!(doc.page_count() > 0);
         assert!(!doc.version.is_empty());
@@ -484,7 +484,9 @@ mod tests {
 
     #[test]
     fn test_catalog_accessible() {
-        let Some(data) = try_read("test-files/basic/trivial.pdf") else { return };
+        let Some(data) = try_read("test-files/basic/trivial.pdf") else {
+            return;
+        };
         let doc = RawDocument::load(&data).unwrap();
         let catalog = doc.catalog().unwrap();
         assert!(dict_get(catalog, b"Pages").is_some());
@@ -492,7 +494,9 @@ mod tests {
 
     #[test]
     fn test_pages_enumeration() {
-        let Some(data) = try_read("test-files/basic/trivial.pdf") else { return };
+        let Some(data) = try_read("test-files/basic/trivial.pdf") else {
+            return;
+        };
         let doc = RawDocument::load(&data).unwrap();
         let pages = doc.pages();
         assert!(!pages.is_empty());
@@ -501,7 +505,9 @@ mod tests {
 
     #[test]
     fn test_page_has_dict() {
-        let Some(data) = try_read("test-files/basic/trivial.pdf") else { return };
+        let Some(data) = try_read("test-files/basic/trivial.pdf") else {
+            return;
+        };
         let doc = RawDocument::load(&data).unwrap();
         let pages = doc.pages();
         let first_page_id = pages[&1];
@@ -512,7 +518,9 @@ mod tests {
 
     #[test]
     fn test_load_unicode_pdf() {
-        let Some(data) = try_read("test-files/basic/unicode-test.pdf") else { return };
+        let Some(data) = try_read("test-files/basic/unicode-test.pdf") else {
+            return;
+        };
         // This PDF is encrypted. load() now attempts decryption with empty password.
         match RawDocument::load(&data) {
             Ok(doc) => {
@@ -521,8 +529,12 @@ mod tests {
             Err(e) => {
                 let msg = e.to_string();
                 assert!(
-                    msg.contains("encrypted") || msg.contains("Encrypted") || msg.contains("password") || msg.contains("supported"),
-                    "Error should be about encryption: {}", msg
+                    msg.contains("encrypted")
+                        || msg.contains("Encrypted")
+                        || msg.contains("password")
+                        || msg.contains("supported"),
+                    "Error should be about encryption: {}",
+                    msg
                 );
             }
         }
@@ -530,7 +542,9 @@ mod tests {
 
     #[test]
     fn test_load_outline_pdf() {
-        let Some(data) = try_read("test-files/basic/outline.pdf") else { return };
+        let Some(data) = try_read("test-files/basic/outline.pdf") else {
+            return;
+        };
         let doc = RawDocument::load(&data).unwrap();
         assert!(doc.page_count() > 0);
     }

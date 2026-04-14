@@ -10,8 +10,8 @@ mod options;
 mod pdf_parser;
 pub mod raw;
 pub mod stream;
-pub mod xycut;
 mod table_detector;
+pub mod xycut;
 
 pub use layout::{
     BlockType, Column, FontStatistics, LayoutAnalyzer, TextBlock, TextLine, TextSpan,

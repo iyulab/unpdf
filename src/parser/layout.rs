@@ -1174,8 +1174,7 @@ fn filter_header_footer_spans(spans: &mut Vec<TextSpan>, page_height: f32) {
         }
 
         // Keep the span unless it looks like a bare page number
-        let is_page_num = text.chars().all(|c| c.is_ascii_digit())
-            || is_page_number_pattern(text);
+        let is_page_num = text.chars().all(|c| c.is_ascii_digit()) || is_page_number_pattern(text);
 
         !is_page_num
     });

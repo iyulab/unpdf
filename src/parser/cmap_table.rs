@@ -28,11 +28,7 @@ pub fn lookup_cid(registry: &str, ordering: &str, cid: u32) -> Option<char> {
 
 /// Decode a byte sequence using CIDSystemInfo-based CMap lookup.
 /// For Identity-H/V encoding, each 2-byte pair is treated as a CID.
-pub fn decode_with_cid_system_info(
-    registry: &str,
-    ordering: &str,
-    bytes: &[u8],
-) -> Option<String> {
+pub fn decode_with_cid_system_info(registry: &str, ordering: &str, bytes: &[u8]) -> Option<String> {
     if bytes.len() < 2 || bytes.len() % 2 != 0 {
         return None;
     }

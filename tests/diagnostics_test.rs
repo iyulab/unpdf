@@ -102,7 +102,10 @@ fn test_toc_dot_leader_removal() {
                  Chapter 2: Methods ...................................... 12\n\
                  Normal paragraph text without dots.";
     let output = pipeline.process(input);
-    assert!(!output.contains("................................"), "Dot leaders should be removed");
+    assert!(
+        !output.contains("................................"),
+        "Dot leaders should be removed"
+    );
     assert!(output.contains("Introduction"));
     assert!(output.contains("Normal paragraph text"));
 }

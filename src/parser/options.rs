@@ -130,10 +130,7 @@ mod tests {
 
     #[test]
     fn test_parse_options_builder() {
-        let options = ParseOptions::new()
-            .lenient()
-            .text_only()
-            .sequential();
+        let options = ParseOptions::new().lenient().text_only().sequential();
 
         assert_eq!(options.error_mode, ErrorMode::Lenient);
         assert_eq!(options.extract_mode, ExtractMode::TextOnly);

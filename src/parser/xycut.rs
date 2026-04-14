@@ -37,12 +37,7 @@ pub fn xycut_segment(blocks: &[Block], min_x_gap: f32, min_y_gap: f32) -> Vec<Ve
     result
 }
 
-fn xycut_recursive(
-    blocks: &[Block],
-    min_x_gap: f32,
-    min_y_gap: f32,
-    result: &mut Vec<Vec<Block>>,
-) {
+fn xycut_recursive(blocks: &[Block], min_x_gap: f32, min_y_gap: f32, result: &mut Vec<Vec<Block>>) {
     if blocks.is_empty() {
         return;
     }
@@ -135,7 +130,12 @@ fn find_best_horizontal_gap(
     find_widest_gap(&profile, resolution, min_y, min_gap)
 }
 
-fn find_widest_gap(profile: &[u32], resolution: f32, offset: f32, min_gap: f32) -> Option<(f32, f32)> {
+fn find_widest_gap(
+    profile: &[u32],
+    resolution: f32,
+    offset: f32,
+    min_gap: f32,
+) -> Option<(f32, f32)> {
     let mut best_start = 0;
     let mut best_len = 0;
     let mut cur_start = 0;

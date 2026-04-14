@@ -266,8 +266,7 @@ where
     // 3. 실행
     let mut quality = QualityAccumulator::new();
     let mut progress = ProgressCounter::new(targets.len() as u32, opts.emit_progress_every);
-    let mut reorder: ReorderBuffer<crate::error::Result<Page>> =
-        ReorderBuffer::new(first_expected);
+    let mut reorder: ReorderBuffer<crate::error::Result<Page>> = ReorderBuffer::new(first_expected);
 
     // flush_ready: 준비된 페이지를 consumer 에 전달한다.
     fn flush_ready<F2>(
@@ -293,17 +292,16 @@ where
                     }
                 }
                 Err(err) => {
-                    if let ControlFlow::Break(_) =
-                        on_event(ParseEvent::PageFailed { page: n, error: err })
-                    {
+                    if let ControlFlow::Break(_) = on_event(ParseEvent::PageFailed {
+                        page: n,
+                        error: err,
+                    }) {
                         return ControlFlow::Break(());
                     }
                 }
             }
             if let Some((done, tot)) = progress.tick() {
-                if let ControlFlow::Break(_) =
-                    on_event(ParseEvent::Progress { done, total: tot })
-                {
+                if let ControlFlow::Break(_) = on_event(ParseEvent::Progress { done, total: tot }) {
                     return ControlFlow::Break(());
                 }
             }

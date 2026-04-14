@@ -366,11 +366,7 @@ fn cmd_convert(args: &ConvertArgs) -> Result<bool, Box<dyn std::error::Error>> {
     use std::ops::ControlFlow;
 
     let out_dir = args.output.clone().unwrap_or_else(|| {
-        let stem = args
-            .input
-            .file_stem()
-            .unwrap_or_default()
-            .to_string_lossy();
+        let stem = args.input.file_stem().unwrap_or_default().to_string_lossy();
         PathBuf::from(format!("{}_output", stem))
     });
     fs::create_dir_all(&out_dir)?;

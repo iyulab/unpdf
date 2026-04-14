@@ -447,15 +447,13 @@ impl RawBackend {
 
         let field_refs = match fields {
             RawPdfObject::Array(arr) => arr,
-            RawPdfObject::Reference(n, g) => {
-                match self.doc.get_object((*n, *g)) {
-                    Some(obj) => match self.doc.resolve(obj).as_array() {
-                        Some(arr) => arr,
-                        None => return vec![],
-                    },
+            RawPdfObject::Reference(n, g) => match self.doc.get_object((*n, *g)) {
+                Some(obj) => match self.doc.resolve(obj).as_array() {
+                    Some(arr) => arr,
                     None => return vec![],
-                }
-            }
+                },
+                None => return vec![],
+            },
             _ => return vec![],
         };
 
@@ -503,7 +501,12 @@ impl RawBackend {
             if let Some(kids_arr) = kids.as_array() {
                 for kid in kids_arr {
                     if let Some(kid_id) = kid.as_reference() {
-                        self.traverse_field_tree(kid_id, qualified_name.clone(), ft.clone(), result);
+                        self.traverse_field_tree(
+                            kid_id,
+                            qualified_name.clone(),
+                            ft.clone(),
+                            result,
+                        );
                     }
                 }
                 return;
@@ -543,8 +546,8 @@ impl RawBackend {
         };
 
         let value = self.extract_field_value(dict, &field_type);
-        let default_value = raw_dict_get(dict, b"DV")
-            .and_then(|o| self.pdf_obj_to_field_value(o, &field_type));
+        let default_value =
+            raw_dict_get(dict, b"DV").and_then(|o| self.pdf_obj_to_field_value(o, &field_type));
 
         result.push(FormField {
             name: qualified_name,
@@ -559,13 +562,16 @@ impl RawBackend {
         self.pdf_obj_to_field_value(v, field_type)
     }
 
-    fn pdf_obj_to_field_value(&self, obj: &RawPdfObject, field_type: &FieldType) -> Option<FieldValue> {
+    fn pdf_obj_to_field_value(
+        &self,
+        obj: &RawPdfObject,
+        field_type: &FieldType,
+    ) -> Option<FieldValue> {
         let obj = self.doc.resolve(obj);
         match field_type {
-            FieldType::Text => {
-                obj.as_str_bytes()
-                    .map(|s| FieldValue::Text(String::from_utf8_lossy(s).to_string()))
-            }
+            FieldType::Text => obj
+                .as_str_bytes()
+                .map(|s| FieldValue::Text(String::from_utf8_lossy(s).to_string())),
             FieldType::Checkbox | FieldType::RadioButton => {
                 obj.as_name().map(|n| FieldValue::Boolean(n != b"Off"))
             }
@@ -776,11 +782,9 @@ impl RawFontResolver {
         if is_identity_h {
             if let Some(fid) = font_obj_id {
                 if let Some((registry, ordering)) = self.get_cid_system_info_cached(doc, fid) {
-                    if let Some(decoded) =
-                        crate::parser::cmap_table::decode_with_cid_system_info(
-                            &registry, &ordering, bytes,
-                        )
-                    {
+                    if let Some(decoded) = crate::parser::cmap_table::decode_with_cid_system_info(
+                        &registry, &ordering, bytes,
+                    ) {
                         if !decoded.is_empty() {
                             return decoded;
                         }
@@ -1333,14 +1337,18 @@ mod raw_backend_tests {
 
     #[test]
     fn test_raw_backend_pages() {
-        let Some(raw) = try_load("test-files/basic/trivial.pdf") else { return };
+        let Some(raw) = try_load("test-files/basic/trivial.pdf") else {
+            return;
+        };
         let pages = raw.pages();
         assert!(!pages.is_empty());
     }
 
     #[test]
     fn test_raw_backend_page_content() {
-        let Some(raw) = try_load("test-files/basic/trivial.pdf") else { return };
+        let Some(raw) = try_load("test-files/basic/trivial.pdf") else {
+            return;
+        };
         let pages = raw.pages();
         let first_page = *pages.values().next().unwrap();
         let content = raw.page_content(first_page).unwrap();
@@ -1349,7 +1357,9 @@ mod raw_backend_tests {
 
     #[test]
     fn test_raw_backend_decode_content() {
-        let Some(raw) = try_load("test-files/basic/trivial.pdf") else { return };
+        let Some(raw) = try_load("test-files/basic/trivial.pdf") else {
+            return;
+        };
         let pages = raw.pages();
         let first_page = *pages.values().next().unwrap();
         let content = raw.page_content(first_page).unwrap();
@@ -1359,14 +1369,18 @@ mod raw_backend_tests {
 
     #[test]
     fn test_raw_backend_metadata() {
-        let Some(raw) = try_load("test-files/basic/trivial.pdf") else { return };
+        let Some(raw) = try_load("test-files/basic/trivial.pdf") else {
+            return;
+        };
         let meta = raw.metadata();
         assert!(!meta.version.is_empty());
     }
 
     #[test]
     fn test_raw_backend_page_dimensions() {
-        let Some(raw) = try_load("test-files/basic/trivial.pdf") else { return };
+        let Some(raw) = try_load("test-files/basic/trivial.pdf") else {
+            return;
+        };
         let pages = raw.pages();
         let first_page = *pages.values().next().unwrap();
         let (w, h) = raw.page_dimensions(first_page);
@@ -1375,13 +1389,17 @@ mod raw_backend_tests {
 
     #[test]
     fn test_raw_backend_korean_pages() {
-        let Some(raw) = try_load("test-files/cjk/korean-test.pdf") else { return };
+        let Some(raw) = try_load("test-files/cjk/korean-test.pdf") else {
+            return;
+        };
         assert!(!raw.pages().is_empty());
     }
 
     #[test]
     fn test_iphone_korean_text_decode() {
-        let Some(raw) = try_load("test-files/realworld/iphone-info.pdf") else { return };
+        let Some(raw) = try_load("test-files/realworld/iphone-info.pdf") else {
+            return;
+        };
         let pages = raw.pages();
         let first_page = *pages.values().next().unwrap();
         let decoded = raw.decode_text(first_page, b"T1_1", &[31, 30, 29, 28, 27]);

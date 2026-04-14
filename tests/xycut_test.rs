@@ -1,7 +1,12 @@
-use unpdf::parser::xycut::{Block, xycut_segment};
+use unpdf::parser::xycut::{xycut_segment, Block};
 
 fn make_block(x: f32, y: f32, w: f32, h: f32) -> Block {
-    Block { x, y, width: w, height: h }
+    Block {
+        x,
+        y,
+        width: w,
+        height: h,
+    }
 }
 
 #[test]
@@ -25,7 +30,10 @@ fn test_two_columns() {
     ];
     let groups = xycut_segment(&blocks, 20.0, 15.0);
     assert_eq!(groups.len(), 2, "Should detect two columns");
-    assert!(groups[0][0].x < groups[1][0].x, "Left column should come first");
+    assert!(
+        groups[0][0].x < groups[1][0].x,
+        "Left column should come first"
+    );
 }
 
 #[test]
@@ -38,7 +46,11 @@ fn test_header_plus_two_columns() {
         make_block(350.0, 680.0, 200.0, 12.0),
     ];
     let groups = xycut_segment(&blocks, 20.0, 15.0);
-    assert!(groups.len() >= 2, "Should separate header from columns, got {}", groups.len());
+    assert!(
+        groups.len() >= 2,
+        "Should separate header from columns, got {}",
+        groups.len()
+    );
 }
 
 #[test]
@@ -71,8 +83,8 @@ fn test_single_block() {
 
 // --- Integration tests: XY-Cut layout via parse_file ---
 
-use unpdf::parse_file;
 use std::path::Path;
+use unpdf::parse_file;
 
 #[test]
 fn test_multicolumn_pdf_with_xycut() {

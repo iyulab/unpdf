@@ -12,7 +12,9 @@ fn try_read(rel: &str) -> Option<Vec<u8>> {
 
 #[test]
 fn test_parse_trivial_pdf() {
-    let Some(data) = try_read("test-files/basic/trivial.pdf") else { return };
+    let Some(data) = try_read("test-files/basic/trivial.pdf") else {
+        return;
+    };
     let doc = RawDocument::load(&data).unwrap();
     assert!(doc.page_count() > 0);
     assert!(!doc.version.is_empty());
@@ -20,49 +22,63 @@ fn test_parse_trivial_pdf() {
 
 #[test]
 fn test_parse_outline_pdf() {
-    let Some(data) = try_read("test-files/basic/outline.pdf") else { return };
+    let Some(data) = try_read("test-files/basic/outline.pdf") else {
+        return;
+    };
     let doc = RawDocument::load(&data).unwrap();
     assert!(doc.page_count() > 0);
 }
 
 #[test]
 fn test_parse_sample_pdf() {
-    let Some(data) = try_read("test-files/basic/sample-1mb.pdf") else { return };
+    let Some(data) = try_read("test-files/basic/sample-1mb.pdf") else {
+        return;
+    };
     let doc = RawDocument::load(&data).unwrap();
     assert!(doc.page_count() > 0);
 }
 
 #[test]
 fn test_parse_cjk_korean() {
-    let Some(data) = try_read("test-files/cjk/korean-test.pdf") else { return };
+    let Some(data) = try_read("test-files/cjk/korean-test.pdf") else {
+        return;
+    };
     let doc = RawDocument::load(&data).unwrap();
     assert!(doc.page_count() > 0);
 }
 
 #[test]
 fn test_parse_cjk_arabic() {
-    let Some(data) = try_read("test-files/cjk/arabic.pdf") else { return };
+    let Some(data) = try_read("test-files/cjk/arabic.pdf") else {
+        return;
+    };
     let doc = RawDocument::load(&data).unwrap();
     assert!(doc.page_count() > 0);
 }
 
 #[test]
 fn test_parse_complex_multicolumn() {
-    let Some(data) = try_read("test-files/complex/multicolumn.pdf") else { return };
+    let Some(data) = try_read("test-files/complex/multicolumn.pdf") else {
+        return;
+    };
     let doc = RawDocument::load(&data).unwrap();
     assert!(doc.page_count() > 0);
 }
 
 #[test]
 fn test_parse_scientific_arxiv() {
-    let Some(data) = try_read("test-files/scientific/arxiv-sample.pdf") else { return };
+    let Some(data) = try_read("test-files/scientific/arxiv-sample.pdf") else {
+        return;
+    };
     let doc = RawDocument::load(&data).unwrap();
     assert!(doc.page_count() > 0);
 }
 
 #[test]
 fn test_parse_tables() {
-    let Some(data) = try_read("test-files/tables/sample-tables.pdf") else { return };
+    let Some(data) = try_read("test-files/tables/sample-tables.pdf") else {
+        return;
+    };
     // This PDF is encrypted. load() now attempts decryption with empty password.
     match RawDocument::load(&data) {
         Ok(doc) => {
@@ -81,21 +97,27 @@ fn test_parse_tables() {
 
 #[test]
 fn test_parse_images_pdf() {
-    let Some(data) = try_read("test-files/images/sample-with-images.pdf") else { return };
+    let Some(data) = try_read("test-files/images/sample-with-images.pdf") else {
+        return;
+    };
     let doc = RawDocument::load(&data).unwrap();
     assert!(doc.page_count() > 0);
 }
 
 #[test]
 fn test_parse_forms_pdf() {
-    let Some(data) = try_read("test-files/forms/pdf-form-sample.pdf") else { return };
+    let Some(data) = try_read("test-files/forms/pdf-form-sample.pdf") else {
+        return;
+    };
     let doc = RawDocument::load(&data).unwrap();
     assert!(doc.page_count() > 0);
 }
 
 #[test]
 fn test_encrypted_pdf_detected() {
-    let Some(data) = try_read("test-files/encrypted/password-protected.pdf") else { return };
+    let Some(data) = try_read("test-files/encrypted/password-protected.pdf") else {
+        return;
+    };
     match RawDocument::load(&data) {
         Ok(doc) => assert!(doc.is_encrypted()),
         Err(_) => {}

@@ -59,8 +59,8 @@ fn test_decode_odd_bytes() {
     assert_eq!(result, None);
 }
 
-use unpdf::parse_file;
 use std::path::Path;
+use unpdf::parse_file;
 
 #[test]
 fn test_korean_pdf_extracts_text() {
@@ -74,8 +74,13 @@ fn test_korean_pdf_extracts_text() {
     let total_chars = text.chars().count();
     if total_chars > 0 {
         let fffd_ratio = fffd_count as f32 / total_chars as f32;
-        assert!(fffd_ratio < 0.3, "Too many replacement characters: {:.1}% ({}/{})",
-            fffd_ratio * 100.0, fffd_count, total_chars);
+        assert!(
+            fffd_ratio < 0.3,
+            "Too many replacement characters: {:.1}% ({}/{})",
+            fffd_ratio * 100.0,
+            fffd_count,
+            total_chars
+        );
     }
 }
 

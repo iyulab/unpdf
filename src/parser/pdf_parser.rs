@@ -6,9 +6,7 @@ use std::path::Path;
 
 use crate::detect::detect_format_from_path;
 use crate::error::{Error, Result};
-use crate::model::{
-    Block, Document, OutlineItem, Page, Paragraph, Resource, ResourceType,
-};
+use crate::model::{Block, Document, OutlineItem, Page, Paragraph, Resource, ResourceType};
 
 use super::backend::{PdfBackend, RawBackend, RawXObject};
 use super::options::{ErrorMode, ExtractMode, ParseOptions};
@@ -343,8 +341,7 @@ fn extract_page_with_tables_fn(backend: &dyn PdfBackend, page_num: u32) -> Resul
                             let level = block.heading_level.clamp(1, 6);
                             Block::Paragraph(Paragraph::heading(text, level))
                         }
-                        super::layout::BlockType::Paragraph
-                        | super::layout::BlockType::Unknown => {
+                        super::layout::BlockType::Paragraph | super::layout::BlockType::Unknown => {
                             Block::Paragraph(Paragraph::with_text(text))
                         }
                         super::layout::BlockType::ListItem => {

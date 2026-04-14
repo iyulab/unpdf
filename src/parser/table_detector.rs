@@ -623,10 +623,7 @@ impl TableDetector {
 
         // Check column occupancy: how many cells are actually filled
         let total_cells = rows.len() * num_columns;
-        let filled_cells: usize = rows
-            .iter()
-            .map(|r| r.spans.len().min(num_columns))
-            .sum();
+        let filled_cells: usize = rows.iter().map(|r| r.spans.len().min(num_columns)).sum();
         let occupancy = filled_cells as f32 / total_cells as f32;
         if occupancy < 0.3 {
             score *= 0.5; // Sparse table is likely not a real table

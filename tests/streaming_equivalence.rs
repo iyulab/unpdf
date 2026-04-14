@@ -44,16 +44,10 @@ fn lengths_within_tolerance(seq_len: usize, par_len: usize) -> bool {
 #[test]
 fn parallel_preserves_page_count_and_order() {
     for pdf in fixtures() {
-        let seq = parse_file_with_options(
-            &pdf,
-            ParseOptions::new().with_parallel(false),
-        )
-        .expect("seq parse");
-        let par = parse_file_with_options(
-            &pdf,
-            ParseOptions::new().with_parallel(true),
-        )
-        .expect("par parse");
+        let seq = parse_file_with_options(&pdf, ParseOptions::new().with_parallel(false))
+            .expect("seq parse");
+        let par = parse_file_with_options(&pdf, ParseOptions::new().with_parallel(true))
+            .expect("par parse");
 
         assert_eq!(
             seq.page_count(),
@@ -84,16 +78,8 @@ fn parallel_preserves_page_count_and_order() {
 #[test]
 fn parallel_preserves_page_text_lengths_within_tolerance() {
     for pdf in fixtures() {
-        let seq = parse_file_with_options(
-            &pdf,
-            ParseOptions::new().with_parallel(false),
-        )
-        .unwrap();
-        let par = parse_file_with_options(
-            &pdf,
-            ParseOptions::new().with_parallel(true),
-        )
-        .unwrap();
+        let seq = parse_file_with_options(&pdf, ParseOptions::new().with_parallel(false)).unwrap();
+        let par = parse_file_with_options(&pdf, ParseOptions::new().with_parallel(true)).unwrap();
 
         for (sp, pp) in seq.pages.iter().zip(par.pages.iter()) {
             let s_len = sp.plain_text().len();
