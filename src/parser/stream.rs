@@ -179,6 +179,238 @@ impl<T> ReorderBuffer<T> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// run_stream — rayon+crossbeam streaming pipeline
+// ---------------------------------------------------------------------------
+
+use rayon::prelude::*;
+use std::ops::ControlFlow;
+
+use super::backend::PdfBackend;
+use super::pdf_parser::{convert_outline_item_pub, parse_pdf_date_pub, parse_single_page};
+
+/// 페이지를 page_num ASC 순서로 스트리밍. 콜백이 `Break`를 반환하면 조기 종료.
+/// 반환값은 누적된 `ExtractionQuality`.
+pub(crate) fn run_stream<F>(
+    backend: &(dyn PdfBackend + Sync),
+    opts: &PageStreamOptions,
+    mut on_event: F,
+) -> crate::error::Result<ExtractionQuality>
+where
+    F: FnMut(ParseEvent) -> ControlFlow<()>,
+{
+    use crate::model::QualityAccumulator;
+
+    // 1. Metadata / outline / form_fields 수집 후 DocumentStart emit
+    let page_map = backend.pages();
+    let total: u32 = page_map.len() as u32;
+    let meta_raw = backend.metadata();
+    let mut metadata = Metadata::with_version(meta_raw.version);
+    metadata.title = meta_raw.title;
+    metadata.author = meta_raw.author;
+    metadata.subject = meta_raw.subject;
+    metadata.keywords = meta_raw.keywords;
+    metadata.creator = meta_raw.creator;
+    metadata.producer = meta_raw.producer;
+    metadata.encrypted = meta_raw.encrypted;
+    metadata.page_count = total;
+    if let Some(date_str) = meta_raw.creation_date {
+        metadata.created = parse_pdf_date_pub(&date_str);
+    }
+    if let Some(date_str) = meta_raw.mod_date {
+        metadata.modified = parse_pdf_date_pub(&date_str);
+    }
+
+    let outline = backend
+        .outline()
+        .ok()
+        .filter(|o| !o.is_empty())
+        .map(|raw_items| {
+            let mut o = Outline::new();
+            o.items = raw_items
+                .into_iter()
+                .map(convert_outline_item_pub)
+                .collect();
+            o
+        });
+    let form_fields = backend.acroform_fields();
+
+    if let ControlFlow::Break(_) = on_event(ParseEvent::DocumentStart {
+        metadata: metadata.clone(),
+        page_count: total,
+        outline: outline.clone(),
+        form_fields: form_fields.clone(),
+    }) {
+        return Ok(ExtractionQuality::default());
+    }
+
+    // 2. 대상 page_num 수집 (PageSelection 필터)
+    let mut targets: Vec<u32> = page_map
+        .keys()
+        .copied()
+        .filter(|n| opts.pages.includes(*n))
+        .collect();
+    targets.sort_unstable();
+    let first_expected = targets.first().copied().unwrap_or(0);
+
+    // ParseOptions 재구성
+    #[allow(deprecated)]
+    let parse_opts = ParseOptions {
+        error_mode: opts.error_mode,
+        extract_mode: opts.extract_mode,
+        extract_resources: opts.extract_resources,
+        pages: opts.pages.clone(),
+        password: opts.password.clone(),
+        parallel: opts.parallel,
+        memory_limit_mb: 0,
+    };
+
+    // 3. 실행
+    let mut quality = QualityAccumulator::new();
+    let mut progress = ProgressCounter::new(targets.len() as u32, opts.emit_progress_every);
+    let mut reorder: ReorderBuffer<crate::error::Result<Page>> =
+        ReorderBuffer::new(first_expected);
+
+    // flush_ready: 준비된 페이지를 consumer 에 전달한다.
+    fn flush_ready<F2>(
+        reorder: &mut ReorderBuffer<crate::error::Result<Page>>,
+        quality: &mut QualityAccumulator,
+        progress: &mut ProgressCounter,
+        on_event: &mut F2,
+    ) -> ControlFlow<()>
+    where
+        F2: FnMut(ParseEvent) -> ControlFlow<()>,
+    {
+        while let Some((n, item)) = reorder.try_pop_next() {
+            match item {
+                Ok(page) => {
+                    for block in &page.elements {
+                        let mut buf = String::new();
+                        block.append_plain_text(&mut buf);
+                        quality.accumulate(&buf);
+                        quality.accumulate("\n");
+                    }
+                    if let ControlFlow::Break(_) = on_event(ParseEvent::PageParsed(page)) {
+                        return ControlFlow::Break(());
+                    }
+                }
+                Err(err) => {
+                    if let ControlFlow::Break(_) =
+                        on_event(ParseEvent::PageFailed { page: n, error: err })
+                    {
+                        return ControlFlow::Break(());
+                    }
+                }
+            }
+            if let Some((done, tot)) = progress.tick() {
+                if let ControlFlow::Break(_) =
+                    on_event(ParseEvent::Progress { done, total: tot })
+                {
+                    return ControlFlow::Break(());
+                }
+            }
+        }
+        ControlFlow::Continue(())
+    }
+
+    let mut cancelled = false;
+    let mut strict_err: Option<Error> = None;
+
+    if opts.parallel && targets.len() > 1 {
+        // Use unbounded channel: the ReorderBuffer already limits outstanding pages.
+        // A bounded channel here would deadlock because the consumer (on_event) is
+        // on the current thread and cannot run concurrently with std::thread::scope.
+        let (tx, rx) = crossbeam_channel::unbounded::<(u32, crate::error::Result<Page>)>();
+        let parse_opts_ref = &parse_opts;
+        let targets_ref = &targets;
+
+        // Spawn a dedicated OS thread for the producer so the consumer can run on
+        // the current thread concurrently. We use std::thread::scope for lifetime
+        // safety — the scope returns only after the consumer loop has exited AND
+        // the producer thread has finished, but we drop `rx` to unblock the scope
+        // if the consumer exits early.
+        std::thread::scope(|s| {
+            let tx_for_producer = tx;
+            s.spawn(|| {
+                targets_ref
+                    .par_iter()
+                    .for_each_with(tx_for_producer, |tx, &page_num| {
+                        let r = parse_single_page(backend, page_num, parse_opts_ref);
+                        let _ = tx.send((page_num, r));
+                    });
+            });
+
+            // Consumer runs on this (current) thread.
+            while let Ok((page_num, r)) = rx.recv() {
+                let item = match r {
+                    Ok(p) => Ok(p),
+                    Err(e) => {
+                        if opts.error_mode == ErrorMode::Strict {
+                            strict_err = Some(e);
+                            cancelled = true;
+                            break;
+                        }
+                        Err(e)
+                    }
+                };
+                reorder.push(page_num, item);
+                if let ControlFlow::Break(_) =
+                    flush_ready(&mut reorder, &mut quality, &mut progress, &mut on_event)
+                {
+                    cancelled = true;
+                    break;
+                }
+            }
+            // Drop rx here so the producer isn't blocked on send if we broke early.
+            drop(rx);
+        });
+    } else {
+        for &page_num in &targets {
+            let item = match parse_single_page(backend, page_num, &parse_opts) {
+                Ok(p) => Ok(p),
+                Err(e) => {
+                    if opts.error_mode == ErrorMode::Strict {
+                        strict_err = Some(e);
+                        cancelled = true;
+                        break;
+                    }
+                    Err(e)
+                }
+            };
+            reorder.push(page_num, item);
+            if let ControlFlow::Break(_) =
+                flush_ready(&mut reorder, &mut quality, &mut progress, &mut on_event)
+            {
+                cancelled = true;
+                break;
+            }
+        }
+    }
+
+    if let Some(e) = strict_err {
+        return Err(e);
+    }
+
+    if !cancelled {
+        while !reorder.is_empty() {
+            reorder.skip_to_next_present();
+            if let ControlFlow::Break(_) =
+                flush_ready(&mut reorder, &mut quality, &mut progress, &mut on_event)
+            {
+                break;
+            }
+        }
+    }
+
+    let mut final_q = quality.finalize();
+    final_q.encrypted = metadata.encrypted;
+    let _ = on_event(ParseEvent::DocumentEnd {
+        quality: final_q.clone(),
+    });
+
+    Ok(final_q)
+}
+
 #[cfg(test)]
 mod reorder_tests {
     use super::*;
