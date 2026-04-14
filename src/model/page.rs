@@ -142,6 +142,21 @@ pub enum Block {
 }
 
 impl Block {
+    /// Append the plain-text representation of this block to `out`.
+    ///
+    /// Produces the same text as calling `plain_text()` on the underlying
+    /// variant (Paragraph / Table / etc.).  The pragmatic fallback delegates
+    /// to the existing `plain_text()` helpers to keep the diff minimal.
+    pub fn append_plain_text(&self, out: &mut String) {
+        match self {
+            Block::Paragraph(p) => out.push_str(&p.plain_text()),
+            Block::Table(t) => out.push_str(&t.plain_text()),
+            Block::Raw { content } => out.push_str(content),
+            // Image, HorizontalRule, PageBreak, SectionBreak contribute no text.
+            _ => {}
+        }
+    }
+
     /// Create an image block.
     pub fn image(resource_id: impl Into<String>) -> Self {
         Block::Image {

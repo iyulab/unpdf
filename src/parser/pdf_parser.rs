@@ -7,8 +7,7 @@ use std::path::Path;
 use crate::detect::detect_format_from_path;
 use crate::error::{Error, Result};
 use crate::model::{
-    Block, Document, ExtractionQuality, Metadata, Outline, OutlineItem, Page, Paragraph, Resource,
-    ResourceType,
+    Block, Document, Metadata, Outline, OutlineItem, Page, Paragraph, Resource, ResourceType,
 };
 
 use super::backend::{PdfBackend, RawBackend, RawOutlineItem, RawXObject};
@@ -67,25 +66,29 @@ impl PdfParser {
     /// Parse the document and return a structured Document.
     pub fn parse(&self) -> Result<Document> {
         let mut document = Document::new();
-
-        // Extract metadata
         document.metadata = self.extract_metadata()?;
 
-        // Extract pages
         let page_ids = self.backend.pages();
         let total_pages = page_ids.len() as u32;
         document.metadata.page_count = total_pages;
 
+        let mut quality = crate::model::QualityAccumulator::new();
+
         for (page_num, _page_id) in page_ids.iter() {
             let page_num = *page_num;
-
-            // Check page selection
             if !self.options.pages.includes(page_num) {
                 continue;
             }
-
             match self.parse_page(page_num) {
-                Ok(page) => document.add_page(page),
+                Ok(page) => {
+                    for block in &page.elements {
+                        let mut buf = String::new();
+                        block.append_plain_text(&mut buf);
+                        quality.accumulate(&buf);
+                        quality.accumulate("\n");
+                    }
+                    document.add_page(page);
+                }
                 Err(e) => {
                     if self.options.error_mode == ErrorMode::Strict {
                         return Err(e);
@@ -113,11 +116,9 @@ impl PdfParser {
         // Extract AcroForm fields
         document.form_fields = self.backend.acroform_fields();
 
-        // Compute extraction quality metrics
-        let full_text = document.plain_text();
-        let mut quality = ExtractionQuality::from_text(&full_text);
-        quality.encrypted = document.metadata.encrypted;
-        document.extraction_quality = quality;
+        let mut final_quality = quality.finalize();
+        final_quality.encrypted = document.metadata.encrypted;
+        document.extraction_quality = final_quality;
 
         Ok(document)
     }
