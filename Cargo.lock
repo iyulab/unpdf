@@ -2216,6 +2216,7 @@ dependencies = [
  "self_update",
  "semver",
  "serde_json",
+ "tempfile",
  "tokio",
  "unpdf",
 ]
