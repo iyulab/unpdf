@@ -225,6 +225,28 @@ impl TableDetector {
                     continue;
                 }
 
+                // Reject 2-column page layouts that look like tables.
+                // A 2-column document layout has many rows and each row's text
+                // approaches the full column width, whereas a 2-column table
+                // has shorter cell content.
+                if Self::is_multicolumn_layout(&table_rows, &table_columns, right_x) {
+                    log::debug!(
+                        "TableDetector: skipping region — looks like 2-column page layout"
+                    );
+                    continue;
+                }
+
+                // Reject sparse tables: if any column is occupied by fewer than
+                // 25% of rows (and the region has > 5 rows), the structure is
+                // likely a single text column with occasional indented spans,
+                // not a real table.
+                if Self::is_sparse_misdetection(&table_rows, &table_columns) {
+                    log::debug!(
+                        "TableDetector: skipping region — sparse column occupancy"
+                    );
+                    continue;
+                }
+
                 // Compute confidence before marking spans as used
                 let confidence = Self::table_confidence(&table_rows, table_columns.len());
                 log::debug!(
@@ -632,6 +654,175 @@ impl TableDetector {
         score.clamp(0.0, 1.0)
     }
 
+    /// Detect sparse misdetections — regions where the table column structure is
+    /// suspiciously imbalanced. Real tables tend to have most columns filled by
+    /// most rows; if one or more columns are nearly always empty, the detector
+    /// likely picked up an indented continuation line as a "second column".
+    fn is_sparse_misdetection(rows: &[TableRowData], columns: &[f32]) -> bool {
+        if rows.len() <= 5 || columns.len() < 2 {
+            return false;
+        }
+
+        let mut col_occupancy = vec![0usize; columns.len()];
+        for row in rows {
+            for span in &row.spans {
+                let mut col_idx = 0;
+                for (i, &cs) in columns.iter().enumerate() {
+                    if span.x >= cs - 5.0 {
+                        col_idx = i;
+                    } else {
+                        break;
+                    }
+                }
+                col_occupancy[col_idx] += 1;
+            }
+        }
+
+        let row_count = rows.len();
+        let min_required = (row_count as f32 * 0.25).ceil() as usize;
+        let any_sparse = col_occupancy.iter().any(|c| *c < min_required);
+        log::debug!(
+            "TableDetector: sparse check rows={} cols={} occupancy={:?} min_required={} sparse={}",
+            row_count,
+            columns.len(),
+            col_occupancy,
+            min_required,
+            any_sparse
+        );
+        any_sparse
+    }
+
+    /// Check if the detected table actually represents a multi-column page layout.
+    ///
+    /// A 2-column document layout (newspaper, academic paper) presents at the span
+    /// level identically to a 2-column table: both have spans aligned to two X edges.
+    /// The distinguishing signal is *fill ratio*: in a 2-col page layout each row's
+    /// text approaches the full column width, while table cells contain short content.
+    ///
+    /// Heuristic (all must hold to classify as page layout):
+    ///   1. exactly 2 columns
+    ///   2. row count is large (> 12)
+    ///   3. estimated text width per cell ≥ 60% of the column width on average
+    fn is_multicolumn_layout(rows: &[TableRowData], columns: &[f32], _right_x: f32) -> bool {
+        // Need at least 2 columns and a substantial number of rows (page-scale extent).
+        if columns.len() < 2 || rows.len() < 8 {
+            return false;
+        }
+
+        let all_spans: Vec<TextSpan> = rows.iter().flat_map(|r| r.spans.iter().cloned()).collect();
+        let cjk = has_cjk_text(&all_spans);
+        let factor = if cjk { 1.0 } else { 0.55 };
+
+        // Compute the actual right extent using estimated span widths
+        // (TextSpan.width is often 0.0 — fall back to char-based estimate).
+        let est_span_right = |span: &TextSpan| -> f32 {
+            let w = if span.width > 0.0 {
+                span.width
+            } else {
+                span.text.chars().count() as f32 * span.font_size * factor
+            };
+            span.x + w
+        };
+        let right_extent = all_spans
+            .iter()
+            .map(est_span_right)
+            .fold(0.0_f32, f32::max);
+
+        // Compute per-column widths
+        let mut col_widths: Vec<f32> = Vec::with_capacity(columns.len());
+        for i in 0..columns.len() {
+            let w = if i + 1 < columns.len() {
+                columns[i + 1] - columns[i]
+            } else {
+                right_extent - columns[i]
+            };
+            col_widths.push(w);
+        }
+        log::debug!(
+            "TableDetector: multicolumn entered rows={} cols={} right_extent={:.0} col_widths={:?}",
+            rows.len(),
+            columns.len(),
+            right_extent,
+            col_widths
+        );
+
+        // For each column, accumulate fill ratios from rows that have content there.
+        let mut per_col_ratios: Vec<Vec<f32>> = vec![Vec::new(); columns.len()];
+
+        for row in rows {
+            // Per-column max span width on this row
+            let mut per_col_max = vec![0.0f32; columns.len()];
+            let mut per_col_chars = vec![0usize; columns.len()];
+
+            for span in &row.spans {
+                // Find the column this span belongs to (closest col_start <= span.x)
+                let mut col_idx = 0;
+                for (i, &cs) in columns.iter().enumerate() {
+                    if span.x >= cs - 5.0 {
+                        col_idx = i;
+                    } else {
+                        break;
+                    }
+                }
+                let w_est = if span.width > 0.0 {
+                    span.width
+                } else {
+                    span.text.chars().count() as f32 * span.font_size * factor
+                };
+                per_col_chars[col_idx] += span.text.chars().count();
+                if w_est > per_col_max[col_idx] {
+                    per_col_max[col_idx] = w_est;
+                }
+            }
+
+            for (i, chars) in per_col_chars.iter().enumerate() {
+                if *chars > 0 {
+                    per_col_ratios[i].push((per_col_max[i] / col_widths[i]).min(2.0));
+                }
+            }
+        }
+
+        // Count columns whose used rows have high average fill (page-layout-like).
+        let avg = |v: &[f32]| -> f32 {
+            if v.is_empty() {
+                0.0
+            } else {
+                v.iter().sum::<f32>() / v.len() as f32
+            }
+        };
+        let mut layout_cols = 0usize;
+        for (i, ratios) in per_col_ratios.iter().enumerate() {
+            let a = avg(ratios);
+            log::debug!(
+                "TableDetector: multicolumn col {} — width={:.0} rows_with_text={}, avg_fill={:.2}",
+                i,
+                col_widths[i],
+                ratios.len(),
+                a
+            );
+            // Narrow columns (<80pt) are likely indent edges, not real column starts.
+            // Skip them but don't disqualify the layout as a whole.
+            if col_widths[i] < 80.0 {
+                continue;
+            }
+            if ratios.len() >= 4 && a >= 0.6 {
+                layout_cols += 1;
+            }
+        }
+
+        // ≥ 2 columns each filled tightly across many rows ⇒ page layout.
+        let is_layout = layout_cols >= 2;
+        log::debug!(
+            "TableDetector: multicolumn check rows={} cols={} layout_cols={} => {}",
+            rows.len(),
+            columns.len(),
+            layout_cols,
+            if is_layout { "REJECT-AS-LAYOUT" } else { "keep-as-table" }
+        );
+
+        is_layout
+    }
+
     /// Check if detected table rows actually represent a numbered or bulleted list.
     ///
     /// When a PDF has a numbered list like "1. Item", the number and text often
@@ -938,6 +1129,78 @@ mod tests {
             "Bullet list should not be detected as a table"
         );
         assert_eq!(remaining.len(), 6);
+    }
+
+    fn make_span_w(text: &str, x: f32, y: f32, font_size: f32) -> TextSpan {
+        TextSpan {
+            text: text.to_string(),
+            x,
+            y,
+            width: 0.0,
+            font_size,
+            font_name: "Helvetica".to_string(),
+            is_bold: false,
+            is_italic: false,
+        }
+    }
+
+    #[test]
+    fn test_two_column_layout_not_detected_as_table() {
+        let detector = TableDetector::new();
+        // Simulate a 2-column page layout: ~80-char lines in each column,
+        // 20 rows. Should NOT be detected as a table.
+        let mut spans = Vec::new();
+        let line_text = "Lorem ipsum dolor sit amet consectetuer adipiscing elit ut purus elit"; // ~70 chars
+        for i in 0..20 {
+            let y = 700.0 - (i as f32) * 14.0;
+            spans.push(make_span_w(line_text, 70.0, y, 11.0));
+            spans.push(make_span_w(line_text, 320.0, y, 11.0));
+        }
+        let (tables, _remaining) = detector.detect(spans);
+        assert!(
+            tables.is_empty(),
+            "Two-column layout should not be detected as a table, got {} tables",
+            tables.len()
+        );
+    }
+
+    #[test]
+    fn test_real_two_column_table_still_detected() {
+        let detector = TableDetector::new();
+        // Real 2-col table: short cell content, balanced occupancy
+        let spans = vec![
+            make_span_w("Name", 50.0, 100.0, 11.0),
+            make_span_w("Age", 200.0, 100.0, 11.0),
+            make_span_w("Alice", 50.0, 85.0, 11.0),
+            make_span_w("30", 200.0, 85.0, 11.0),
+            make_span_w("Bob", 50.0, 70.0, 11.0),
+            make_span_w("25", 200.0, 70.0, 11.0),
+            make_span_w("Carol", 50.0, 55.0, 11.0),
+            make_span_w("40", 200.0, 55.0, 11.0),
+        ];
+        let (tables, _remaining) = detector.detect(spans);
+        assert_eq!(tables.len(), 1, "Real 2-col table should still be detected");
+    }
+
+    #[test]
+    fn test_sparse_misdetection_rejected() {
+        let detector = TableDetector::new();
+        // 10 rows with col_0 fully occupied, col_1 occupied only twice.
+        // Should be rejected as sparse misdetection.
+        let mut spans = Vec::new();
+        for i in 0..10 {
+            let y = 200.0 - (i as f32) * 14.0;
+            spans.push(make_span_w("Some text content", 50.0, y, 11.0));
+            if i == 2 || i == 7 {
+                spans.push(make_span_w("note", 200.0, y, 11.0));
+            }
+        }
+        let (tables, _remaining) = detector.detect(spans);
+        assert!(
+            tables.is_empty(),
+            "Sparse 2-col misdetection should be rejected, got {} tables",
+            tables.len()
+        );
     }
 
     #[test]
