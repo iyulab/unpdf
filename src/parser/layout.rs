@@ -353,8 +353,7 @@ impl FontStatistics {
         let strong_threshold = self.body_size + 2.5;
         let bold_threshold = self.body_size + 1.5;
 
-        let qualifies = font_size >= strong_threshold
-            || (is_bold && font_size >= bold_threshold);
+        let qualifies = font_size >= strong_threshold || (is_bold && font_size >= bold_threshold);
         if !qualifies {
             return 0;
         }
@@ -1044,8 +1043,7 @@ impl<'a> LayoutAnalyzer<'a> {
             let trimmed = line.text();
             let trimmed = trimmed.trim_start();
             if let Some(first) = trimmed.chars().next() {
-                const BULLETS: &[char] =
-                    &['-', '*', '·', '•', '◦', '▶', '▷', '◎', '☞', '※'];
+                const BULLETS: &[char] = &['-', '*', '·', '•', '◦', '▶', '▷', '◎', '☞', '※'];
                 if BULLETS.contains(&first) {
                     continue;
                 }
@@ -1194,9 +1192,7 @@ impl<'a> LayoutAnalyzer<'a> {
             // tolerated — decorative stacked titles often vary font size
             // per word. The block picks up the minimum (most prominent)
             // level via existing `block.heading_level = ...min()` logic.
-            if prev_line.is_heading
-                && (prev_line.font_size - curr_line.font_size).abs() <= 2.0
-            {
+            if prev_line.is_heading && (prev_line.font_size - curr_line.font_size).abs() <= 2.0 {
                 let gap = (prev_line.y - curr_line.y).abs();
                 let bigger = prev_line.font_size.max(curr_line.font_size);
                 let close = gap <= (bigger * 2.5).max(avg_spacing * 2.0);
