@@ -230,9 +230,7 @@ impl TableDetector {
                 // approaches the full column width, whereas a 2-column table
                 // has shorter cell content.
                 if Self::is_multicolumn_layout(&table_rows, &table_columns, right_x) {
-                    log::debug!(
-                        "TableDetector: skipping region — looks like 2-column page layout"
-                    );
+                    log::debug!("TableDetector: skipping region — looks like 2-column page layout");
                     continue;
                 }
 
@@ -241,9 +239,7 @@ impl TableDetector {
                 // likely a single text column with occasional indented spans,
                 // not a real table.
                 if Self::is_sparse_misdetection(&table_rows, &table_columns) {
-                    log::debug!(
-                        "TableDetector: skipping region — sparse column occupancy"
-                    );
+                    log::debug!("TableDetector: skipping region — sparse column occupancy");
                     continue;
                 }
 
@@ -723,10 +719,7 @@ impl TableDetector {
             };
             span.x + w
         };
-        let right_extent = all_spans
-            .iter()
-            .map(est_span_right)
-            .fold(0.0_f32, f32::max);
+        let right_extent = all_spans.iter().map(est_span_right).fold(0.0_f32, f32::max);
 
         // Compute per-column widths
         let mut col_widths: Vec<f32> = Vec::with_capacity(columns.len());
@@ -817,7 +810,11 @@ impl TableDetector {
             rows.len(),
             columns.len(),
             layout_cols,
-            if is_layout { "REJECT-AS-LAYOUT" } else { "keep-as-table" }
+            if is_layout {
+                "REJECT-AS-LAYOUT"
+            } else {
+                "keep-as-table"
+            }
         );
 
         is_layout
