@@ -1072,8 +1072,8 @@ impl<'a> LayoutAnalyzer<'a> {
             // shares the same font size (±0.5pt), this line is likely part
             // of a sibling run (table column, list). Only promote when
             // the line sits alone within its font-size cohort.
-            let matches_prev = prev_size.map_or(false, |p| same(p, line.font_size));
-            let matches_next = next_size.map_or(false, |n| same(n, line.font_size));
+            let matches_prev = prev_size.is_some_and(|p| same(p, line.font_size));
+            let matches_next = next_size.is_some_and(|n| same(n, line.font_size));
             if (matches_prev || matches_next) && line.font_size < body_size + 6.0 {
                 continue;
             }
