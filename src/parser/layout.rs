@@ -359,15 +359,25 @@ impl FontStatistics {
             return 0;
         }
 
-        // Find position in heading sizes (sorted largest first)
-        for (i, &heading_size) in self.heading_sizes.iter().enumerate() {
+        // Rank within distinct heading-size tiers. We dedupe `heading_sizes`
+        // on the fly so that sizes clustered within 2pt count as one tier —
+        // Hancom docs have many discrete sizes that would otherwise produce
+        // erratic H-level assignment.
+        let mut tier = 0u8;
+        let mut last_tier_size: Option<f32> = None;
+        for &heading_size in &self.heading_sizes {
+            let is_new_tier = match last_tier_size {
+                None => true,
+                Some(prev) => (prev - heading_size).abs() >= 2.0,
+            };
+            if is_new_tier {
+                tier = tier.saturating_add(1);
+                last_tier_size = Some(heading_size);
+            }
             if font_size >= heading_size - 0.5 {
-                return (i + 1).min(4) as u8;
+                return tier.min(4);
             }
         }
-
-        // Font is larger than body but smaller than known heading sizes.
-        // Treat as a mid-level heading.
         4
     }
 }
@@ -1013,10 +1023,12 @@ impl<'a> LayoutAnalyzer<'a> {
 
     /// Detect headings based on font size hierarchy.
     fn detect_headings(&self, mut lines: Vec<TextLine>) -> Vec<TextLine> {
-        for line in &mut lines {
-            // Minimum content guard — a "heading" must have ≥ 3 visible chars
-            // (non-whitespace, non-punctuation) to qualify. Stops fragmented
-            // single-glyph spans from being promoted to headings.
+        // Snapshot each line's font size so neighbour lookups aren't polluted
+        // by mutations inside the loop.
+        let sizes: Vec<f32> = lines.iter().map(|l| l.font_size).collect();
+        let body_size = self.font_stats.body_size;
+
+        for (i, line) in lines.iter_mut().enumerate() {
             let visible_chars: usize = line
                 .text()
                 .chars()
@@ -1025,13 +1037,51 @@ impl<'a> LayoutAnalyzer<'a> {
             if visible_chars < 3 {
                 continue;
             }
+
+            // List / bullet marker exclusion — never promote a line that
+            // begins with a common bullet/list glyph. These are inline
+            // enumerations inside body content, regardless of font size.
+            let trimmed = line.text();
+            let trimmed = trimmed.trim_start();
+            if let Some(first) = trimmed.chars().next() {
+                const BULLETS: &[char] =
+                    &['-', '*', '·', '•', '◦', '▶', '▷', '◎', '☞', '※'];
+                if BULLETS.contains(&first) {
+                    continue;
+                }
+            }
+
             let level = self
                 .font_stats
                 .get_heading_level(line.font_size, line.is_bold() || line.is_uppercase());
-            if level > 0 {
-                line.is_heading = true;
-                line.heading_level = level;
+            if level == 0 {
+                continue;
             }
+
+            // Neighbour-context suppression — if both prev and next lines
+            // share the same font size (within 0.5pt), this line is part of
+            // a body run, not a standalone heading. Prevents mid-paragraph
+            // or table-cell promotion on Hancom docs where body font varies
+            // by a few pts across cells.
+            let prev_size = if i > 0 { Some(sizes[i - 1]) } else { None };
+            let next_size = if i + 1 < sizes.len() {
+                Some(sizes[i + 1])
+            } else {
+                None
+            };
+            let same = |a: f32, b: f32| (a - b).abs() < 0.5;
+            // Neighbour-context suppression — if EITHER adjacent line
+            // shares the same font size (±0.5pt), this line is likely part
+            // of a sibling run (table column, list). Only promote when
+            // the line sits alone within its font-size cohort.
+            let matches_prev = prev_size.map_or(false, |p| same(p, line.font_size));
+            let matches_next = next_size.map_or(false, |n| same(n, line.font_size));
+            if (matches_prev || matches_next) && line.font_size < body_size + 6.0 {
+                continue;
+            }
+
+            line.is_heading = true;
+            line.heading_level = level;
         }
         lines
     }
@@ -1134,8 +1184,26 @@ impl<'a> LayoutAnalyzer<'a> {
         curr_line: &TextLine,
         avg_spacing: f32,
     ) -> bool {
-        // Heading always starts a new block
+        // Heading always starts a new block, UNLESS the previous line is
+        // also a heading of the same level sitting close by (within ~2x
+        // line-height). This merges decorative stacked titles on covers —
+        // e.g. "스마트\n제조혁신\n통합공고" stays one heading block.
         if curr_line.is_heading {
+            // Merge consecutive heading lines that are spatially close and
+            // at similar font size (≤ 2pt delta). Level difference is
+            // tolerated — decorative stacked titles often vary font size
+            // per word. The block picks up the minimum (most prominent)
+            // level via existing `block.heading_level = ...min()` logic.
+            if prev_line.is_heading
+                && (prev_line.font_size - curr_line.font_size).abs() <= 2.0
+            {
+                let gap = (prev_line.y - curr_line.y).abs();
+                let bigger = prev_line.font_size.max(curr_line.font_size);
+                let close = gap <= (bigger * 2.5).max(avg_spacing * 2.0);
+                if close {
+                    return false;
+                }
+            }
             return true;
         }
 

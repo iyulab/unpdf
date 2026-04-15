@@ -195,7 +195,7 @@ enum Commands {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, ValueEnum)]
-enum CleanupLevel {
+pub enum CleanupLevel {
     /// Minimal cleanup (Unicode normalization only)
     Minimal,
     /// Standard cleanup (default)

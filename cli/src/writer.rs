@@ -3,7 +3,7 @@ use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use unpdf::model::{Metadata, Page};
-use unpdf::render::{RenderOptions, StreamingRenderer};
+use unpdf::render::{CleanupPipeline, RenderOptions, StreamingRenderer};
 
 /// Output format selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -19,6 +19,7 @@ pub enum OutputFormat {
 /// with manual comma management.
 pub struct MultiFormatWriter {
     md: Option<BufWriter<File>>,
+    md_path: Option<PathBuf>,
     txt: Option<BufWriter<File>>,
     json: Option<BufWriter<File>>,
     render_opts: RenderOptions,
@@ -39,8 +40,9 @@ impl MultiFormatWriter {
         images_dir: Option<PathBuf>,
     ) -> std::io::Result<Self> {
         let has = |f: OutputFormat| formats.iter().any(|x| *x == f);
-        let md = if has(OutputFormat::Markdown) {
-            Some(BufWriter::new(File::create(out_dir.join("extract.md"))?))
+        let md_path = has(OutputFormat::Markdown).then(|| out_dir.join("extract.md"));
+        let md = if let Some(ref p) = md_path {
+            Some(BufWriter::new(File::create(p)?))
         } else {
             None
         };
@@ -56,6 +58,7 @@ impl MultiFormatWriter {
         };
         Ok(Self {
             md,
+            md_path,
             txt,
             json,
             render_opts,
@@ -152,6 +155,18 @@ impl MultiFormatWriter {
         }
         if let Some(mut w) = self.md.take() {
             w.flush()?;
+            drop(w);
+            // Streaming renderer bypasses the CleanupPipeline. Apply
+            // configured cleanup now as a read-modify-write pass on the
+            // completed MD file. Keeps per-page streaming memory profile
+            // while still delivering standard/aggressive cleanup semantics.
+            if let (Some(path), Some(ref cleanup_opts)) =
+                (self.md_path.as_ref(), &self.render_opts.cleanup)
+            {
+                let raw = std::fs::read_to_string(path)?;
+                let cleaned = CleanupPipeline::new(cleanup_opts.clone()).process(&raw);
+                std::fs::write(path, cleaned)?;
+            }
         }
         if let Some(mut w) = self.txt.take() {
             w.flush()?;

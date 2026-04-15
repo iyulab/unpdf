@@ -65,6 +65,11 @@ pub struct CleanupOptions {
 
     /// Preserve YAML frontmatter during cleanup
     pub preserve_frontmatter: bool,
+
+    /// Drop standalone lines that contain only punctuation/symbols
+    /// (e.g., orphan `-`, `- -`, `,`). These are usually layout-artefact
+    /// fragments rather than meaningful content.
+    pub drop_punctuation_only_lines: bool,
 }
 
 impl CleanupOptions {
@@ -96,6 +101,7 @@ impl CleanupOptions {
             normalize_whitespace: true,
             max_consecutive_newlines: 0,
             preserve_frontmatter: true,
+            drop_punctuation_only_lines: false,
         }
     }
 
@@ -116,8 +122,13 @@ impl CleanupOptions {
             merge_list_markers: true,
             merge_cjk_lines: true,
             normalize_whitespace: true,
-            max_consecutive_newlines: 1, // RAG-ready: 2+ newlines → 1 newline
+            max_consecutive_newlines: 2, // Keep one blank line between
+            // paragraphs; readability > density. Pre-C26 the setting
+            // was 1, but it was never hit in the CLI streaming path —
+            // so raising here is effectively a bugfix for parity with
+            // the observable prior behaviour.
             preserve_frontmatter: true,
+            drop_punctuation_only_lines: true,
         }
     }
 
@@ -140,6 +151,7 @@ impl CleanupOptions {
             normalize_whitespace: true,
             max_consecutive_newlines: 2,
             preserve_frontmatter: true,
+            drop_punctuation_only_lines: true,
         }
     }
 }
@@ -267,6 +279,11 @@ impl CleanupPipeline {
             result = self.merge_single_newlines(&result);
         }
 
+        // Drop orphan punctuation-only lines
+        if self.options.drop_punctuation_only_lines {
+            result = self.drop_punctuation_only_lines(&result);
+        }
+
         // Stage 3: Normalize whitespace
         if self.options.normalize_whitespace {
             result = self.normalize_whitespace(&result);
@@ -321,6 +338,37 @@ impl CleanupPipeline {
         // - "infor-\n mation" → "information"
         let re = Regex::new(r"([a-zA-Z])-\s*\n?\s*([a-z])").unwrap();
         re.replace_all(text, "$1$2").to_string()
+    }
+
+    /// Drop standalone lines that contain no alphanumeric / CJK / Hangul /
+    /// Hiragana-Katakana content — usually layout-artefact fragments like
+    /// orphan `-`, `- -`, `,`, `‧` that survive paragraph segmentation.
+    /// Lines starting with a markdown image (`![`) or heading (`#`) are
+    /// preserved regardless.
+    fn drop_punctuation_only_lines(&self, text: &str) -> String {
+        let mut out = String::with_capacity(text.len());
+        for (i, line) in text.split('\n').enumerate() {
+            if i > 0 {
+                out.push('\n');
+            }
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                out.push_str(line);
+                continue;
+            }
+            if trimmed.starts_with("![") || trimmed.starts_with('#') {
+                out.push_str(line);
+                continue;
+            }
+            // `is_alphanumeric` covers Unicode L*/N* including Hangul,
+            // Hiragana, Katakana, and CJK Unified Ideographs.
+            let has_word = trimmed.chars().any(|c| c.is_alphanumeric());
+            if has_word {
+                out.push_str(line);
+            }
+            // else: drop — emit just the newline (blank line)
+        }
+        out
     }
 
     fn normalize_whitespace(&self, text: &str) -> String {
