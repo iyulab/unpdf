@@ -25,12 +25,14 @@ pub struct EncryptionParams {
     pub file_id: Vec<u8>,
     /// Whether to use AES (true for R4 with /StmF or /StrF = /AESV2).
     pub use_aes: bool,
+    /// Whether document metadata is encrypted (/EncryptMetadata, default true).
+    pub encrypt_metadata: bool,
 }
 
-/// The standard 32-byte padding used in PDF encryption (Table 3.19 in PDF spec).
+/// The standard 32-byte padding used in PDF encryption (ISO 32000-1, Table 20).
 const PADDING: [u8; 32] = [
-    0x28, 0xBF, 0x4E, 0x5E, 0x4E, 0x75, 0x8A, 0x41, 0x64, 0x00, 0x4B, 0x49, 0x43, 0x28, 0x46, 0x57,
-    0x44, 0x28, 0x0C, 0x06, 0x08, 0x0E, 0x02, 0x05, 0x05, 0x01, 0x09, 0x14, 0xF2, 0xE4, 0x97, 0x35,
+    0x28, 0xBF, 0x4E, 0x5E, 0x4E, 0x75, 0x8A, 0x41, 0x64, 0x00, 0x4E, 0x56, 0xFF, 0xFA, 0x01, 0x08,
+    0x2E, 0x2E, 0x00, 0xB6, 0xD0, 0x68, 0x3E, 0x80, 0x2F, 0x0C, 0xA9, 0xFE, 0x64, 0x53, 0x69, 0x7A,
 ];
 
 /// Derive the file encryption key from a user password (Algorithm 2, PDF spec).
@@ -46,12 +48,16 @@ pub fn compute_encryption_key(params: &EncryptionParams, password: &[u8]) -> Vec
         padded.extend_from_slice(&PADDING[..32 - padded.len()]);
     }
 
-    // Steps b-f: MD5(padded || O || P || fileID)
+    // Steps b-f: MD5(padded || O || P || fileID [|| 0xFFFFFFFF])
     let mut hasher = Md5::new();
     hasher.update(&padded);
     hasher.update(&params.owner_hash);
     hasher.update(params.permissions.to_le_bytes());
     hasher.update(&params.file_id);
+    // Step f (R>=4): when metadata is not encrypted, append 4 bytes of 0xFF
+    if params.revision >= 4 && !params.encrypt_metadata {
+        hasher.update([0xFFu8; 4]);
+    }
 
     let mut hash = hasher.finalize().to_vec();
 

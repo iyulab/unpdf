@@ -165,3 +165,13 @@ fn test_iphone_info_korean_extraction() {
         "English text should also be extracted"
     );
 }
+
+#[test]
+fn test_chipcap2_encrypted_datasheet() {
+    let Some(data) = try_read("test-files/chipcap2-datasheet.pdf") else {
+        return;
+    };
+    let doc = RawDocument::load(&data).unwrap();
+    assert!(doc.is_encrypted());
+    assert_eq!(doc.page_count(), 4);
+}

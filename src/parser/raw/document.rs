@@ -45,8 +45,7 @@ impl RawDocument {
             }
         }
 
-        // Second pass: load compressed objects from ObjStm streams
-        // Collect compressed entries grouped by stream object number
+        // Collect compressed xref entries for later ObjStm extraction
         let mut compressed_groups: HashMap<u32, Vec<(u32, u16, u32)>> = HashMap::new();
         for (&(obj_num, gen_num), &entry) in &xref_table.entries {
             if let XrefEntry::Compressed(stream_obj, index) = entry {
@@ -57,29 +56,31 @@ impl RawDocument {
             }
         }
 
-        for (stream_obj_num, entries) in &compressed_groups {
-            if let Some(stream_obj) = objects.get(&(*stream_obj_num, 0)) {
-                if let Some(pdf_stream) = stream_obj.as_stream() {
-                    if let Ok(extracted) = extract_objstm_objects(pdf_stream) {
-                        for &(obj_num, gen_num, index) in entries {
-                            if let Some(obj) = extracted.get(&(index as usize)) {
-                                objects.insert((obj_num, gen_num), obj.clone());
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
         let mut doc = RawDocument {
             objects,
             trailer,
             version,
         };
 
-        // Try to decrypt if the PDF is encrypted
+        // Decrypt before ObjStm extraction: ObjStm streams are encrypted and must
+        // be decrypted before their compressed content can be decompressed and parsed.
         if doc.is_encrypted() {
             doc.try_decrypt()?;
+        }
+
+        // Second pass: extract compressed objects from ObjStm streams (now decrypted)
+        for (stream_obj_num, entries) in &compressed_groups {
+            if let Some(stream_obj) = doc.objects.get(&(*stream_obj_num, 0)) {
+                if let Some(pdf_stream) = stream_obj.as_stream() {
+                    if let Ok(extracted) = extract_objstm_objects(pdf_stream) {
+                        for &(obj_num, gen_num, index) in entries {
+                            if let Some(obj) = extracted.get(&(index as usize)) {
+                                doc.objects.insert((obj_num, gen_num), obj.clone());
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         Ok(doc)
@@ -170,6 +171,11 @@ impl RawDocument {
             .unwrap_or(&[])
             .to_vec();
 
+        // /EncryptMetadata defaults to true when absent (PDF spec)
+        let encrypt_metadata = dict_get(encrypt_dict, b"EncryptMetadata")
+            .map(|o| !matches!(o, crate::parser::raw::tokenizer::PdfObject::Bool(false)))
+            .unwrap_or(true);
+
         // Detect AES usage: R4 with /StmF or /StrF = /AESV2
         let use_aes = if r >= 4 {
             let cf = dict_get(encrypt_dict, b"CF").and_then(|o| o.as_dict());
@@ -201,6 +207,7 @@ impl RawDocument {
             permissions: p,
             file_id,
             use_aes,
+            encrypt_metadata,
         })
     }
 
