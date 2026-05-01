@@ -525,44 +525,44 @@ impl<'a> LayoutAnalyzer<'a> {
                 }
                 "Tj" | "TJ" if in_text_block => {
                     let text = if op.operator == "TJ" {
-                            // TJ: array of strings and positioning adjustments
-                            // Numbers indicate kerning/spacing adjustments in 1/1000 text space units
-                            // Large negative values (like -200 to -300) often indicate word spaces
-                            if let Some(PdfValue::Array(arr)) = op.operands.first() {
-                                let mut combined = String::new();
+                        // TJ: array of strings and positioning adjustments
+                        // Numbers indicate kerning/spacing adjustments in 1/1000 text space units
+                        // Large negative values (like -200 to -300) often indicate word spaces
+                        if let Some(PdfValue::Array(arr)) = op.operands.first() {
+                            let mut combined = String::new();
 
-                                for item in arr {
-                                    match item {
-                                        PdfValue::Str(bytes) => {
-                                            combined.push_str(&self.backend.decode_text(
-                                                page_id,
-                                                &current_font_name,
-                                                bytes,
-                                            ));
-                                        }
-                                        PdfValue::Integer(n) => {
-                                            let adjustment = -(*n as f32);
-                                            maybe_insert_space_tj(&mut combined, adjustment);
-                                        }
-                                        PdfValue::Real(n) => {
-                                            let adjustment = -n;
-                                            maybe_insert_space_tj(&mut combined, adjustment);
-                                        }
-                                        _ => {}
+                            for item in arr {
+                                match item {
+                                    PdfValue::Str(bytes) => {
+                                        combined.push_str(&self.backend.decode_text(
+                                            page_id,
+                                            &current_font_name,
+                                            bytes,
+                                        ));
                                     }
+                                    PdfValue::Integer(n) => {
+                                        let adjustment = -(*n as f32);
+                                        maybe_insert_space_tj(&mut combined, adjustment);
+                                    }
+                                    PdfValue::Real(n) => {
+                                        let adjustment = -n;
+                                        maybe_insert_space_tj(&mut combined, adjustment);
+                                    }
+                                    _ => {}
                                 }
-                                combined
-                            } else {
-                                String::new()
                             }
+                            combined
                         } else {
-                            // Tj: single string
-                            if let Some(PdfValue::Str(bytes)) = op.operands.first() {
-                                self.backend.decode_text(page_id, &current_font_name, bytes)
-                            } else {
-                                String::new()
-                            }
-                        };
+                            String::new()
+                        }
+                    } else {
+                        // Tj: single string
+                        if let Some(PdfValue::Str(bytes)) = op.operands.first() {
+                            self.backend.decode_text(page_id, &current_font_name, bytes)
+                        } else {
+                            String::new()
+                        }
+                    };
 
                     if !text.trim().is_empty() {
                         let (x, y) = text_matrix.get_position();
