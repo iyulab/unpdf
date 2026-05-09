@@ -363,14 +363,16 @@ mod tests {
             .unwrap()
             .filter_map(|e| e.ok())
             .collect();
-        assert_eq!(files.len(), 1, "중복 이미지는 파일 하나만 써야 함: {:?}", files);
+        assert_eq!(
+            files.len(),
+            1,
+            "중복 이미지는 파일 하나만 써야 함: {:?}",
+            files
+        );
 
         // 두 페이지의 Markdown이 모두 동일한 canonical 경로를 참조해야 함
         let content = std::fs::read_to_string(tmp.join("extract.md")).unwrap();
-        let image_links: Vec<_> = content
-            .lines()
-            .filter(|l| l.contains("![]("))
-            .collect();
+        let image_links: Vec<_> = content.lines().filter(|l| l.contains("![](")).collect();
         assert_eq!(image_links.len(), 2, "이미지 링크가 두 줄이어야 함");
         assert_eq!(
             image_links[0], image_links[1],
