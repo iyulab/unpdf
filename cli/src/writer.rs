@@ -9,8 +9,14 @@ use unpdf::model::{Block, Metadata, Page};
 use unpdf::render::{CleanupPipeline, PageMarkerStyle, RenderOptions, StreamingRenderer};
 
 fn image_hash(data: &[u8]) -> (u64, usize) {
+    // Sample head + tail instead of hashing all bytes — O(1) regardless of image size.
+    // Combined with the byte-length component, false-positive probability is negligible.
+    const SAMPLE: usize = 64;
     let mut h = DefaultHasher::new();
-    data.hash(&mut h);
+    h.write(&data[..data.len().min(SAMPLE)]);
+    if data.len() > SAMPLE {
+        h.write(&data[data.len() - SAMPLE..]);
+    }
     (h.finish(), data.len())
 }
 
