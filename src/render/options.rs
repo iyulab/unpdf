@@ -45,6 +45,9 @@ pub struct RenderOptions {
 
     /// Collect extraction statistics during rendering
     pub collect_stats: bool,
+
+    /// Style for page boundary markers in Markdown output.
+    pub page_markers: PageMarkerStyle,
 }
 
 impl RenderOptions {
@@ -160,6 +163,7 @@ impl Default for RenderOptions {
             heading_config: None,
             line_width: 0,
             collect_stats: false,
+            page_markers: PageMarkerStyle::None,
         }
     }
 }
@@ -170,6 +174,22 @@ impl RenderOptions {
         self.collect_stats = collect;
         self
     }
+
+    /// Set the page marker style.
+    pub fn with_page_markers(mut self, style: PageMarkerStyle) -> Self {
+        self.page_markers = style;
+        self
+    }
+}
+
+/// Style for page boundary markers in Markdown output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PageMarkerStyle {
+    /// No markers (default, preserves existing output unchanged).
+    #[default]
+    None,
+    /// HTML comment: `<!-- page N -->` inserted before each page's content.
+    Comment,
 }
 
 /// How to render complex tables that can't be expressed in simple Markdown.
@@ -327,5 +347,17 @@ mod tests {
         } else {
             panic!("Expected Pages variant");
         }
+    }
+
+    #[test]
+    fn test_page_marker_style_default_is_none() {
+        let options = RenderOptions::new();
+        assert_eq!(options.page_markers, PageMarkerStyle::None);
+    }
+
+    #[test]
+    fn test_page_marker_style_builder() {
+        let options = RenderOptions::new().with_page_markers(PageMarkerStyle::Comment);
+        assert_eq!(options.page_markers, PageMarkerStyle::Comment);
     }
 }
