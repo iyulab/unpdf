@@ -200,6 +200,9 @@ unpdf markdown document.pdf --table-mode html -o output.md
 
 # Specify page range
 unpdf markdown document.pdf --pages 1-10 -o output.md
+
+# Insert page boundary markers for AI pipeline / RAG use
+unpdf markdown document.pdf --page-markers -o output.md
 ```
 
 #### Markdown Options
@@ -212,6 +215,7 @@ unpdf markdown document.pdf --pages 1-10 -o output.md
 | `--cleanup` | Text cleanup: `minimal`, `standard`, `aggressive` | none |
 | `--max-heading` | Maximum heading level (1-6) | 6 |
 | `--pages` | Page range (e.g., `1-10`, `1,3,5`) | all |
+| `--page-markers` | Insert `<!-- page N -->` markers at page boundaries | false |
 | `-q, --quiet` | Suppress quality warnings | false |
 
 ### Convert to Plain Text
@@ -342,13 +346,15 @@ fn main() -> unpdf::Result<()> {
 
 ```rust
 use unpdf::render::{RenderOptions, CleanupPreset, TableFallback};
+use unpdf::PageMarkerStyle;
 
 let options = RenderOptions::new()
     .with_frontmatter(true)
     .with_table_fallback(TableFallback::Html)
     .with_cleanup_preset(CleanupPreset::Aggressive)
     .with_max_heading(3)
-    .with_page_range(1..=10);
+    .with_page_range(1..=10)
+    .with_page_markers(PageMarkerStyle::Comment); // <!-- page N --> at each page boundary
 
 let markdown = render::to_markdown(&doc, &options)?;
 ```

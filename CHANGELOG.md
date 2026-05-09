@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.0 — 2026-05-09
+
+### Added
+
+- **Page boundary markers** — opt-in `<!-- page N -->` HTML comment markers at each page
+  boundary in Markdown output. Markers are invisible in rendered Markdown but make it
+  trivial to correlate extracted text with source PDF page numbers (regex: `<!-- page (\d+) -->`).
+  - `PageMarkerStyle` enum (`None` | `Comment`) added to `RenderOptions`
+  - `RenderOptions::with_page_markers(PageMarkerStyle::Comment)` builder method
+  - CLI: `--page-markers` flag on `markdown` and `convert` subcommands
+  - Works in both streaming (`convert`) and non-streaming (`markdown`) render paths
+  - Default is `None` — existing output unchanged unless opted in
+
 ## 0.4.3 — 2026-04-14
 
 Validation release for the 0.4.2 self-update fix + housekeeping.
