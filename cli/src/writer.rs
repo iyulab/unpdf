@@ -30,6 +30,9 @@ pub struct MultiFormatWriter {
     images_dir: Option<PathBuf>,
     images_created: bool,
     image_count: u32,
+    /// Tracks whether any content has been written to the MD file.
+    /// Used to determine correct page marker spacing.
+    md_written: bool,
 }
 
 impl MultiFormatWriter {
@@ -66,6 +69,7 @@ impl MultiFormatWriter {
             images_dir,
             images_created: false,
             image_count: 0,
+            md_written: false,
         })
     }
 
@@ -102,6 +106,7 @@ impl MultiFormatWriter {
         if let Some(w) = self.md.as_mut() {
             if self.render_opts.include_frontmatter {
                 w.write_all(metadata.to_yaml_frontmatter().as_bytes())?;
+                self.md_written = true;
             }
         }
         if let Some(w) = self.json.as_mut() {
@@ -121,11 +126,13 @@ impl MultiFormatWriter {
 
         if let Some(w) = self.md.as_mut() {
             if self.render_opts.page_markers == PageMarkerStyle::Comment {
-                // Leading `\n` ensures a blank line after frontmatter (which ends with `\n`).
-                // For page 1 without frontmatter, the leading `\n` is trimmed by the cleanup
-                // pipeline (enabled by default). Page 2+ content always ends with `\n\n`,
-                // so the extra `\n` produces clean spacing before cleanup.
-                w.write_all(format!("\n<!-- page {} -->\n\n", page.number).as_bytes())?;
+                let marker = if self.md_written {
+                    format!("\n<!-- page {} -->\n\n", page.number)
+                } else {
+                    format!("<!-- page {} -->\n\n", page.number)
+                };
+                w.write_all(marker.as_bytes())?;
+                self.md_written = true;
             }
             let placeholder = unpdf::model::Document::new();
             let renderer = StreamingRenderer::new(&placeholder, self.render_opts.clone());
@@ -133,6 +140,7 @@ impl MultiFormatWriter {
                 let chunk = renderer.render_block_public(block);
                 if !chunk.is_empty() {
                     w.write_all(chunk.as_bytes())?;
+                    self.md_written = true;
                 }
             }
         }

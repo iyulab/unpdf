@@ -32,7 +32,7 @@
 
 use crate::model::{Block, Document, Metadata};
 
-use super::RenderOptions;
+use super::{PageMarkerStyle, RenderOptions};
 
 /// Events emitted during streaming rendering.
 #[derive(Debug, Clone)]
@@ -114,6 +114,8 @@ enum StreamState {
     },
     /// Between pages
     BetweenPages { next_page: usize },
+    /// Emitting page boundary marker before entering InPage
+    PageMarker { page_index: usize },
     /// All pages rendered, waiting to emit document end
     PagesComplete,
     /// Rendering complete
@@ -399,10 +401,14 @@ impl<'a> Iterator for StreamingRenderer<'a> {
                     if let Some(page_idx) = self.find_next_page(0) {
                         let page = &self.doc.pages[page_idx];
                         self.current_page_number = page.number;
-                        self.state = StreamState::InPage {
-                            page_index: page_idx,
-                            block_index: 0,
-                        };
+                        if self.options.page_markers == PageMarkerStyle::Comment {
+                            self.state = StreamState::PageMarker { page_index: page_idx };
+                        } else {
+                            self.state = StreamState::InPage {
+                                page_index: page_idx,
+                                block_index: 0,
+                            };
+                        }
                         return Some(RenderEvent::PageStart {
                             number: page.number,
                         });
@@ -445,16 +451,30 @@ impl<'a> Iterator for StreamingRenderer<'a> {
                     if let Some(page_idx) = self.find_next_page(next_page) {
                         let page = &self.doc.pages[page_idx];
                         self.current_page_number = page.number;
-                        self.state = StreamState::InPage {
-                            page_index: page_idx,
-                            block_index: 0,
-                        };
+                        if self.options.page_markers == PageMarkerStyle::Comment {
+                            self.state = StreamState::PageMarker { page_index: page_idx };
+                        } else {
+                            self.state = StreamState::InPage {
+                                page_index: page_idx,
+                                block_index: 0,
+                            };
+                        }
                         return Some(RenderEvent::PageStart {
                             number: page.number,
                         });
                     } else {
                         self.state = StreamState::PagesComplete;
                     }
+                }
+
+                StreamState::PageMarker { page_index } => {
+                    let page = &self.doc.pages[page_index];
+                    let marker = format!("<!-- page {} -->\n\n", page.number);
+                    self.state = StreamState::InPage {
+                        page_index,
+                        block_index: 0,
+                    };
+                    return Some(RenderEvent::Block(marker));
                 }
 
                 StreamState::PagesComplete => {
@@ -604,5 +624,38 @@ mod tests {
         let event = RenderEvent::PageStart { number: 1 };
         assert!(!event.has_content());
         assert!(event.content().is_none());
+    }
+
+    #[test]
+    fn test_streaming_renderer_emits_page_markers() {
+        let mut doc = Document::new();
+        let mut page1 = Page::letter(1);
+        page1.add_paragraph(Paragraph::with_text("Page one"));
+        doc.add_page(page1);
+        let mut page2 = Page::letter(2);
+        page2.add_paragraph(Paragraph::with_text("Page two"));
+        doc.add_page(page2);
+
+        let options = RenderOptions::default().with_page_markers(super::PageMarkerStyle::Comment);
+        let renderer = StreamingRenderer::new(&doc, options);
+        let content = collect_content(renderer);
+
+        assert!(content.contains("<!-- page 1 -->"), "page 1 marker missing:\n{}", content);
+        assert!(content.contains("<!-- page 2 -->"), "page 2 marker missing:\n{}", content);
+        let p1 = content.find("<!-- page 1 -->").unwrap();
+        let p2 = content.find("<!-- page 2 -->").unwrap();
+        assert!(p1 < p2, "page 1 marker must precede page 2 marker");
+    }
+
+    #[test]
+    fn test_streaming_renderer_no_markers_by_default() {
+        let mut doc = Document::new();
+        let mut page = Page::letter(1);
+        page.add_paragraph(Paragraph::with_text("Content"));
+        doc.add_page(page);
+
+        let renderer = StreamingRenderer::new(&doc, RenderOptions::default());
+        let content = collect_content(renderer);
+        assert!(!content.contains("<!-- page "), "unexpected marker:\n{}", content);
     }
 }

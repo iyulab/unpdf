@@ -567,6 +567,26 @@ mod tests {
     }
 
     #[test]
+    fn test_page_markers_respect_page_selection() {
+        let mut doc = Document::new();
+        for i in 1..=3u32 {
+            let mut page = Page::letter(i);
+            page.add_paragraph(Paragraph::with_text(&format!("Page {}", i)));
+            doc.add_page(page);
+        }
+
+        // Only render page 2
+        let options = RenderOptions::new()
+            .with_page_markers(PageMarkerStyle::Comment)
+            .with_page_list(vec![2]);
+        let result = to_markdown(&doc, &options).unwrap();
+
+        assert!(!result.contains("<!-- page 1 -->"), "page 1 marker must be absent when filtered");
+        assert!(result.contains("<!-- page 2 -->"), "page 2 marker must be present");
+        assert!(!result.contains("<!-- page 3 -->"), "page 3 marker must be absent when filtered");
+    }
+
+    #[test]
     fn test_page_markers_after_frontmatter() {
         let mut doc = Document::new();
         doc.metadata.title = Some("Test".to_string());
