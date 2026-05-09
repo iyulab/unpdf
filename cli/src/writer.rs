@@ -3,7 +3,7 @@ use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use unpdf::model::{Metadata, Page};
-use unpdf::render::{CleanupPipeline, RenderOptions, StreamingRenderer};
+use unpdf::render::{CleanupPipeline, PageMarkerStyle, RenderOptions, StreamingRenderer};
 
 /// Output format selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -120,6 +120,15 @@ impl MultiFormatWriter {
         self.flush_page_images(page)?;
 
         if let Some(w) = self.md.as_mut() {
+            if self.render_opts.page_markers == PageMarkerStyle::Comment {
+                // Leading `\n` ensures a blank line after frontmatter (which ends with `\n`).
+                // For page 1 without frontmatter, the leading `\n` is trimmed by the cleanup
+                // pipeline (enabled by default). Page 2+ content always ends with `\n\n`,
+                // so the extra `\n` produces clean spacing before cleanup.
+                w.write_all(
+                    format!("\n<!-- page {} -->\n\n", page.number).as_bytes(),
+                )?;
+            }
             let placeholder = unpdf::model::Document::new();
             let renderer = StreamingRenderer::new(&placeholder, self.render_opts.clone());
             for block in &page.elements {
@@ -180,4 +189,70 @@ impl MultiFormatWriter {
 
 fn io_err(e: serde_json::Error) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::Other, e)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use unpdf::model::{Page, Paragraph};
+    use unpdf::render::PageMarkerStyle;
+
+    #[test]
+    fn test_streaming_writer_inserts_page_marker() {
+        let tmp = std::env::temp_dir().join("unpdf_writer_marker_test");
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let doc = unpdf::model::Document::new();
+        let render_opts = RenderOptions::new()
+            .with_page_markers(PageMarkerStyle::Comment)
+            .with_cleanup(unpdf::render::CleanupOptions::from_preset(
+                unpdf::CleanupPreset::Minimal,
+            ));
+        let formats = vec![OutputFormat::Markdown];
+        let mut mfw = MultiFormatWriter::new(&tmp, &formats, render_opts, None).unwrap();
+
+        mfw.write_document_start(&doc.metadata, 2).unwrap();
+
+        let mut page1 = Page::letter(1);
+        page1.add_paragraph(Paragraph::with_text("Page one text"));
+        mfw.write_page(&page1).unwrap();
+
+        let mut page2 = Page::letter(2);
+        page2.add_paragraph(Paragraph::with_text("Page two text"));
+        mfw.write_page(&page2).unwrap();
+
+        mfw.finish().unwrap();
+
+        let content = std::fs::read_to_string(tmp.join("extract.md")).unwrap();
+        assert!(content.contains("<!-- page 1 -->"), "page 1 marker missing:\n{}", content);
+        assert!(content.contains("<!-- page 2 -->"), "page 2 marker missing:\n{}", content);
+
+        let p1_pos = content.find("<!-- page 1 -->").unwrap();
+        let p2_pos = content.find("<!-- page 2 -->").unwrap();
+        assert!(p1_pos < p2_pos, "page 1 marker must precede page 2 marker");
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn test_streaming_writer_no_marker_by_default() {
+        let tmp = std::env::temp_dir().join("unpdf_writer_no_marker_test");
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let doc = unpdf::model::Document::new();
+        let render_opts = RenderOptions::new();
+        let formats = vec![OutputFormat::Markdown];
+        let mut mfw = MultiFormatWriter::new(&tmp, &formats, render_opts, None).unwrap();
+
+        mfw.write_document_start(&doc.metadata, 1).unwrap();
+        let mut page = Page::letter(1);
+        page.add_paragraph(Paragraph::with_text("Content"));
+        mfw.write_page(&page).unwrap();
+        mfw.finish().unwrap();
+
+        let content = std::fs::read_to_string(tmp.join("extract.md")).unwrap();
+        assert!(!content.contains("<!-- page "), "unexpected marker:\n{}", content);
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
 }
