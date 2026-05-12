@@ -44,7 +44,7 @@ fn main() {
         "{:<35} {:>8} {:>6} {:>8} {:>6} {:>5} Status",
         "File", "Size", "Pages", "TextLen", "Outln", "Imgs"
     );
-    println!("{}", "-".repeat(95));  // separator line
+    println!("{}", "-".repeat(95)); // separator line
     for (name, size, status, pages, text_len, outline, imgs) in &results {
         let size_str = if *size > 1_000_000 {
             format!("{:.1}MB", *size as f64 / 1_000_000.0)

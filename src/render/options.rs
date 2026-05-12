@@ -124,7 +124,9 @@ impl RenderOptions {
 
     /// Enable aggressive cleanup (for LLM training data).
     pub fn with_aggressive_cleanup(mut self) -> Self {
-        self.cleanup = Some(CleanupOptions::from_preset(super::CleanupPreset::Aggressive));
+        self.cleanup = Some(CleanupOptions::from_preset(
+            super::CleanupPreset::Aggressive,
+        ));
         self
     }
 
