@@ -623,7 +623,10 @@ mod tests {
     #[test]
     fn test_parse_real() {
         let (obj, _) = parse_object(b"3.14 ", 0).unwrap();
-        assert!((obj.as_f64().unwrap() - 3.14).abs() < 0.001);
+        // 3.14 is intentional test input (PDF literal), not an approximation of PI.
+        #[allow(clippy::approx_constant)]
+        let expected = 3.14_f64;
+        assert!((obj.as_f64().unwrap() - expected).abs() < 0.001);
     }
 
     #[test]

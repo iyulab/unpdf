@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.6.3 — 2026-05-12
+
+### Added
+- `RenderOptions::with_minimal_cleanup()`, `with_standard_cleanup()`, `with_aggressive_cleanup()`,
+  `without_cleanup()` — convenience builder shortcuts (previously required `with_cleanup_preset(CleanupPreset::…)`)
+- CLI `convert` completion now reports written file paths, image count → directory, and total word count
+
+### Changed
+- `MultiFormatWriter::finish()` now returns `WriteSummary { md_path, txt_path, json_path, image_count, word_count }`
+  instead of `()`. Callers no longer need to call `image_count()` before `finish()`.
+- CLI `convert`: word count displayed in completion summary (non-quiet mode)
+
+### Fixed
+- Pre-existing Clippy warnings cleaned up: `approx_constant` (tokenizer, backend tests),
+  `single_match` (raw_parser_test), `map_or` and `print_literal` (realworld_test example)
+
+## 0.6.2 — 2026-05-12
+
+### Performance
+- RwLock font caches — parallel reads on cache hit instead of exclusive Mutex lock;
+  ~25% faster on multi-threaded parallel parsing workloads
+
+## 0.6.1 — 2026-05-12
+
+### Performance
+- Sample-based image hash — O(1) per image (head+tail 64-byte sample) instead of O(size) full hash
+
+## 0.6.0 — 2026-05-12
+
+### Added
+- **Image deduplication** — identical images (same bytes) are written to disk only once;
+  duplicate references in Markdown reuse the canonical file path. Reduces output size for
+  PDFs that repeat logos, watermarks, or decorative images across pages.
+
 ## 0.5.0 — 2026-05-09
 
 ### Added

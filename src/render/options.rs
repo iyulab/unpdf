@@ -110,6 +110,30 @@ impl RenderOptions {
         self
     }
 
+    /// Enable minimal cleanup (Unicode normalization only).
+    pub fn with_minimal_cleanup(mut self) -> Self {
+        self.cleanup = Some(CleanupOptions::from_preset(super::CleanupPreset::Minimal));
+        self
+    }
+
+    /// Enable standard cleanup (default level).
+    pub fn with_standard_cleanup(mut self) -> Self {
+        self.cleanup = Some(CleanupOptions::from_preset(super::CleanupPreset::Standard));
+        self
+    }
+
+    /// Enable aggressive cleanup (for LLM training data).
+    pub fn with_aggressive_cleanup(mut self) -> Self {
+        self.cleanup = Some(CleanupOptions::from_preset(super::CleanupPreset::Aggressive));
+        self
+    }
+
+    /// Disable all cleanup.
+    pub fn without_cleanup(mut self) -> Self {
+        self.cleanup = None;
+        self
+    }
+
     /// Set page selection.
     pub fn with_pages(mut self, selection: PageSelection) -> Self {
         self.page_selection = selection;

@@ -597,10 +597,15 @@ mod tests {
 
     #[test]
     fn test_cleanup_preset_variants() {
-        // All cleanup presets should be usable
+        // All cleanup presets should be usable via preset enum
         let _minimal = RenderOptions::new().with_cleanup_preset(CleanupPreset::Minimal);
         let _standard = RenderOptions::new().with_cleanup_preset(CleanupPreset::Standard);
         let _aggressive = RenderOptions::new().with_cleanup_preset(CleanupPreset::Aggressive);
+        // Shortcut convenience methods
+        let _a = RenderOptions::new().with_minimal_cleanup();
+        let _b = RenderOptions::new().with_standard_cleanup();
+        let _c = RenderOptions::new().with_aggressive_cleanup();
+        let _d = RenderOptions::new().without_cleanup();
     }
 
     #[test]

@@ -118,9 +118,8 @@ fn test_encrypted_pdf_detected() {
     let Some(data) = try_read("test-files/encrypted/password-protected.pdf") else {
         return;
     };
-    match RawDocument::load(&data) {
-        Ok(doc) => assert!(doc.is_encrypted()),
-        Err(_) => {}
+    if let Ok(doc) = RawDocument::load(&data) {
+        assert!(doc.is_encrypted());
     }
 }
 

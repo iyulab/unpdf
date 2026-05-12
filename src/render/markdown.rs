@@ -571,7 +571,7 @@ mod tests {
         let mut doc = Document::new();
         for i in 1..=3u32 {
             let mut page = Page::letter(i);
-            page.add_paragraph(Paragraph::with_text(&format!("Page {}", i)));
+            page.add_paragraph(Paragraph::with_text(format!("Page {}", i)));
             doc.add_page(page);
         }
 

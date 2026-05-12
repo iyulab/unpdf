@@ -8,7 +8,7 @@ fn main() {
     for entry in fs::read_dir(dir).unwrap() {
         let entry = entry.unwrap();
         let path = entry.path();
-        if path.extension().map_or(false, |e| e == "pdf") {
+        if path.extension().is_some_and(|e| e == "pdf") {
             let name = path.file_name().unwrap().to_string_lossy().to_string();
             let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
 
@@ -41,10 +41,10 @@ fn main() {
     results.sort_by(|a, b| a.0.cmp(&b.0));
 
     println!(
-        "{:<35} {:>8} {:>6} {:>8} {:>6} {:>5} {}",
-        "File", "Size", "Pages", "TextLen", "Outln", "Imgs", "Status"
+        "{:<35} {:>8} {:>6} {:>8} {:>6} {:>5} Status",
+        "File", "Size", "Pages", "TextLen", "Outln", "Imgs"
     );
-    println!("{}", "-".repeat(95));
+    println!("{}", "-".repeat(95));  // separator line
     for (name, size, status, pages, text_len, outline, imgs) in &results {
         let size_str = if *size > 1_000_000 {
             format!("{:.1}MB", *size as f64 / 1_000_000.0)

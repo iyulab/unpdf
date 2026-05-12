@@ -514,17 +514,29 @@ fn cmd_convert(args: &ConvertArgs) -> Result<bool, Box<dyn std::error::Error>> {
         return Err(e.into());
     }
 
-    let img_count = mfw.image_count();
-    mfw.finish()?;
+    let summary = mfw.finish()?;
     pb.finish_with_message("Done");
 
-    if !args.quiet && img_count > 0 {
-        println!(
-            "{} {} image{} extracted to images/",
-            "✓".green(),
-            img_count,
-            if img_count == 1 { "" } else { "s" }
-        );
+    if !args.quiet {
+        for path in [&summary.md_path, &summary.txt_path, &summary.json_path]
+            .into_iter()
+            .flatten()
+        {
+            println!("{} {}", "✓".green(), path.display());
+        }
+        if summary.image_count > 0 {
+            let img_dir = image_dir.as_deref().unwrap_or_else(|| Path::new("images"));
+            println!(
+                "{} {} image{} → {}",
+                "✓".green(),
+                summary.image_count,
+                if summary.image_count == 1 { "" } else { "s" },
+                img_dir.display()
+            );
+        }
+        if summary.word_count > 0 {
+            println!("{} {} words", "✓".green(), summary.word_count);
+        }
     }
 
     let had_warnings = quality

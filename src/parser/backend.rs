@@ -1315,7 +1315,10 @@ mod tests {
     #[test]
     fn test_get_number_from_value() {
         assert_eq!(get_number_from_value(&PdfValue::Integer(42)), Some(42.0));
-        assert_eq!(get_number_from_value(&PdfValue::Real(3.14)), Some(3.14));
+        assert_eq!(
+            get_number_from_value(&PdfValue::Real(std::f32::consts::PI)),
+            Some(std::f32::consts::PI)
+        );
         assert_eq!(get_number_from_value(&PdfValue::Other), None);
     }
 }

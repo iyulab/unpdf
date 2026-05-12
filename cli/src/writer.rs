@@ -28,6 +28,18 @@ pub enum OutputFormat {
     Json,
 }
 
+/// Summary of files written by the convert pipeline.
+#[derive(Debug, Default)]
+pub struct WriteSummary {
+    pub md_path: Option<PathBuf>,
+    pub txt_path: Option<PathBuf>,
+    pub json_path: Option<PathBuf>,
+    /// Number of unique images written to disk.
+    pub image_count: u32,
+    /// Total word count across all pages.
+    pub word_count: usize,
+}
+
 /// Fan-out writer that appends MD/TXT/JSON files page-by-page.
 ///
 /// JSON is written as `{"metadata":..., "pages":[ <p1>, <p2>, ... ]}`
@@ -36,7 +48,9 @@ pub struct MultiFormatWriter {
     md: Option<BufWriter<File>>,
     md_path: Option<PathBuf>,
     txt: Option<BufWriter<File>>,
+    txt_path: Option<PathBuf>,
     json: Option<BufWriter<File>>,
+    json_path: Option<PathBuf>,
     render_opts: RenderOptions,
     json_first_page: bool,
     /// 이미지 출력 디렉토리. None 이면 이미지를 디스크에 쓰지 않음.
@@ -45,6 +59,7 @@ pub struct MultiFormatWriter {
     images_dir: Option<PathBuf>,
     images_created: bool,
     image_count: u32,
+    word_count: usize,
     /// (hash, byte_len) → canonical resource_id. 동일 바이트 이미지 중복 방지.
     image_dedup: HashMap<(u64, usize), String>,
     /// Tracks whether any content has been written to the MD file.
@@ -66,13 +81,15 @@ impl MultiFormatWriter {
         } else {
             None
         };
-        let txt = if has(OutputFormat::Text) {
-            Some(BufWriter::new(File::create(out_dir.join("extract.txt"))?))
+        let txt_path = has(OutputFormat::Text).then(|| out_dir.join("extract.txt"));
+        let txt = if let Some(ref p) = txt_path {
+            Some(BufWriter::new(File::create(p)?))
         } else {
             None
         };
-        let json = if has(OutputFormat::Json) {
-            Some(BufWriter::new(File::create(out_dir.join("content.json"))?))
+        let json_path = has(OutputFormat::Json).then(|| out_dir.join("content.json"));
+        let json = if let Some(ref p) = json_path {
+            Some(BufWriter::new(File::create(p)?))
         } else {
             None
         };
@@ -80,12 +97,15 @@ impl MultiFormatWriter {
             md,
             md_path,
             txt,
+            txt_path,
             json,
+            json_path,
             render_opts,
             json_first_page: true,
             images_dir,
             images_created: false,
             image_count: 0,
+            word_count: 0,
             image_dedup: HashMap::new(),
             md_written: false,
         })
@@ -140,11 +160,6 @@ impl MultiFormatWriter {
         Ok(())
     }
 
-    /// 디스크로 flush 된 이미지 개수 (finish 후 호출 시 최종값).
-    pub fn image_count(&self) -> u32 {
-        self.image_count
-    }
-
     pub fn write_document_start(
         &mut self,
         metadata: &Metadata,
@@ -170,6 +185,13 @@ impl MultiFormatWriter {
         // 이미지 먼저 flush — MD 의 `![](images/X.jpg)` 참조가 가리키는 파일이
         // 존재하도록 순서 보장. 중복 이미지 dedup도 여기서 처리됨.
         self.flush_page_images(page)?;
+
+        // Accumulate word count from this page's text blocks.
+        for block in &page.elements {
+            let mut buf = String::new();
+            block.append_plain_text(&mut buf);
+            self.word_count += buf.split_whitespace().count();
+        }
 
         if let Some(w) = self.md.as_mut() {
             if self.render_opts.page_markers == PageMarkerStyle::Comment {
@@ -211,7 +233,7 @@ impl MultiFormatWriter {
         Ok(())
     }
 
-    pub fn finish(mut self) -> std::io::Result<()> {
+    pub fn finish(mut self) -> std::io::Result<WriteSummary> {
         if let Some(w) = self.json.as_mut() {
             w.write_all(b"]}")?;
         }
@@ -236,7 +258,13 @@ impl MultiFormatWriter {
         if let Some(mut w) = self.json.take() {
             w.flush()?;
         }
-        Ok(())
+        Ok(WriteSummary {
+            md_path: self.md_path,
+            txt_path: self.txt_path,
+            json_path: self.json_path,
+            image_count: self.image_count,
+            word_count: self.word_count,
+        })
     }
 }
 
@@ -360,9 +388,8 @@ mod tests {
         mfw.write_page(&mut page1).unwrap();
         mfw.write_page(&mut page2).unwrap();
 
-        // finish() 전에 image_count 확인 (finish는 소유권 소비)
-        assert_eq!(mfw.image_count(), 1);
-        mfw.finish().unwrap();
+        let summary = mfw.finish().unwrap();
+        assert_eq!(summary.image_count, 1);
 
         // 디스크에 이미지 파일이 하나만 존재해야 함
         let files: Vec<_> = std::fs::read_dir(&images_dir)
