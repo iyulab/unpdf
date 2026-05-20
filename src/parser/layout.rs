@@ -483,9 +483,31 @@ impl<'a> LayoutAnalyzer<'a> {
         let mut current_font_size: f32 = 12.0;
         let mut text_matrix = TextMatrix::default();
         let mut in_text_block = false;
+        // Current Transformation Matrix (starts as identity [1,0,0,1,0,0])
+        let mut ctm: [f32; 6] = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+        let mut ctm_stack: Vec<[f32; 6]> = Vec::new();
 
         for op in &operations {
             match op.operator.as_str() {
+                "q" => {
+                    ctm_stack.push(ctm);
+                }
+                "Q" => {
+                    if let Some(saved) = ctm_stack.pop() {
+                        ctm = saved;
+                    }
+                }
+                "cm" if op.operands.len() >= 6 => {
+                    let cm = [
+                        get_number_from_value(&op.operands[0]).unwrap_or(1.0),
+                        get_number_from_value(&op.operands[1]).unwrap_or(0.0),
+                        get_number_from_value(&op.operands[2]).unwrap_or(0.0),
+                        get_number_from_value(&op.operands[3]).unwrap_or(1.0),
+                        get_number_from_value(&op.operands[4]).unwrap_or(0.0),
+                        get_number_from_value(&op.operands[5]).unwrap_or(0.0),
+                    ];
+                    ctm = concat_matrix(&ctm, &cm);
+                }
                 "BT" => {
                     in_text_block = true;
                     text_matrix = TextMatrix::default();
@@ -565,8 +587,10 @@ impl<'a> LayoutAnalyzer<'a> {
                     };
 
                     if !text.trim().is_empty() {
-                        let (x, y) = text_matrix.get_position();
-                        let effective_size = current_font_size * text_matrix.get_scale();
+                        let (tx, ty) = text_matrix.get_position();
+                        let (x, y) = apply_ctm(&ctm, tx, ty);
+                        let effective_size =
+                            current_font_size * text_matrix.get_scale() * ctm_y_scale(&ctm);
                         spans.push(TextSpan::new(
                             text,
                             x,
@@ -584,8 +608,10 @@ impl<'a> LayoutAnalyzer<'a> {
                             let text = self.backend.decode_text(page_id, &current_font_name, bytes);
 
                             if !text.trim().is_empty() {
-                                let (x, y) = text_matrix.get_position();
-                                let effective_size = current_font_size * text_matrix.get_scale();
+                                let (tx, ty) = text_matrix.get_position();
+                                let (x, y) = apply_ctm(&ctm, tx, ty);
+                                let effective_size =
+                                    current_font_size * text_matrix.get_scale() * ctm_y_scale(&ctm);
                                 spans.push(TextSpan::new(
                                     text,
                                     x,
@@ -1411,6 +1437,37 @@ fn maybe_insert_space_tj(text: &mut String, adjustment: f32) {
             text.push(' ');
         }
     }
+}
+
+/// Concatenate two PDF transformation matrices (right-multiply: result = a × b).
+/// Matrix form: `[a, b, c, d, e, f]` where a point `(x,y)` transforms as
+/// `x' = a*x + c*y + e`,  `y' = b*x + d*y + f`.
+fn concat_matrix(a: &[f32; 6], b: &[f32; 6]) -> [f32; 6] {
+    [
+        a[0] * b[0] + a[1] * b[2],
+        a[0] * b[1] + a[1] * b[3],
+        a[2] * b[0] + a[3] * b[2],
+        a[2] * b[1] + a[3] * b[3],
+        a[4] * b[0] + a[5] * b[2] + b[4],
+        a[4] * b[1] + a[5] * b[3] + b[5],
+    ]
+}
+
+/// Apply a CTM to a user-space point, returning device-space coordinates.
+#[inline]
+fn apply_ctm(ctm: &[f32; 6], x: f32, y: f32) -> (f32, f32) {
+    (
+        ctm[0] * x + ctm[2] * y + ctm[4],
+        ctm[1] * x + ctm[3] * y + ctm[5],
+    )
+}
+
+/// Return the scaling factor applied by `ctm` to the Y axis.
+/// Used to scale font sizes into device space for layout comparisons.
+#[inline]
+fn ctm_y_scale(ctm: &[f32; 6]) -> f32 {
+    // Y-axis unit vector (0,1) transforms to (ctm[2], ctm[3]).
+    (ctm[2] * ctm[2] + ctm[3] * ctm[3]).sqrt().max(0.01)
 }
 
 /// Check if a character is a Hangul (Korean) syllable or jamo.
