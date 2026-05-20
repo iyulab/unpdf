@@ -210,12 +210,7 @@ pub(crate) fn parse_to_unicode_cmap(data: &[u8]) -> Option<ToUnicodeMap> {
         if let Some(end) = text[block_start..].find("endbfrange") {
             let block = &text[block_start..block_start + end];
             let mut rest = block;
-            loop {
-                // Read lo
-                let (lo_hex, r) = match next_angle_token(rest) {
-                    Some(x) => x,
-                    None => break,
-                };
+            while let Some((lo_hex, r)) = next_angle_token(rest) {
                 let lo = match parse_hex(lo_hex) {
                     Some(v) => v,
                     None => {
