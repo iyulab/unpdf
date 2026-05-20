@@ -78,6 +78,14 @@ fn parse_hex(s: &str) -> Option<u32> {
     u32::from_str_radix(s, 16).ok()
 }
 
+/// Extract the content of the next `<...>` token from the start of `s`.
+/// Returns `(hex_str, remaining_after_>)` or `None` if no `<` is found.
+fn next_angle_token(s: &str) -> Option<(&str, &str)> {
+    let start = s.find('<')? + 1;
+    let end = s[start..].find('>')? + start;
+    Some((s[start..end].trim(), &s[end + 1..]))
+}
+
 /// Filter out Unicode noncharacters and control sentinels that ToUnicode CMaps
 /// commonly use to indicate "no mapping" (U+FFFF, U+FFFE, U+FFFD).
 /// Also drops other noncharacters (U+FDD0..U+FDEF, U+xFFFE, U+xFFFF).
@@ -163,28 +171,27 @@ pub(crate) fn parse_to_unicode_cmap(data: &[u8]) -> Option<ToUnicodeMap> {
         }
     }
 
-    // Parse beginbfchar sections
+    // Parse beginbfchar sections.
+    // CMap producers may place all entries on a single line (no newlines), so we
+    // scan the whole block for consecutive <code> <unicode> token pairs rather
+    // than relying on one-pair-per-line formatting.
     let mut search_pos = 0;
     while let Some(start) = text[search_pos..].find("beginbfchar") {
         let block_start = search_pos + start + "beginbfchar".len();
         if let Some(end) = text[block_start..].find("endbfchar") {
             let block = &text[block_start..block_start + end];
-            // Parse lines like: <0003> <0020>
-            for line in block.lines() {
-                let line = line.trim();
-                if line.is_empty() {
-                    continue;
-                }
-                let parts: Vec<&str> = line
-                    .split(['<', '>'])
-                    .filter(|s| !s.trim().is_empty())
-                    .collect();
-                if parts.len() >= 2 {
-                    if let Some(code) = parse_hex(parts[0].trim()) {
-                        if let Some(unicode_str) = hex_to_unicode(parts[1].trim()) {
+            let mut rest = block;
+            while let Some((code_hex, r)) = next_angle_token(rest) {
+                rest = r;
+                if let Some((uni_hex, r2)) = next_angle_token(rest) {
+                    rest = r2;
+                    if let Some(code) = parse_hex(code_hex) {
+                        if let Some(unicode_str) = hex_to_unicode(uni_hex) {
                             mappings.insert(code, unicode_str);
                         }
                     }
+                } else {
+                    break;
                 }
             }
             search_pos = block_start + end;
@@ -193,55 +200,87 @@ pub(crate) fn parse_to_unicode_cmap(data: &[u8]) -> Option<ToUnicodeMap> {
         }
     }
 
-    // Parse beginbfrange sections
+    // Parse beginbfrange sections.
+    // Same single-line tolerance as above.  Each entry is one of:
+    //   simple form: <lo> <hi> <dst_start>
+    //   array form:  <lo> <hi> [<u1> <u2> ...]
     search_pos = 0;
     while let Some(start) = text[search_pos..].find("beginbfrange") {
         let block_start = search_pos + start + "beginbfrange".len();
         if let Some(end) = text[block_start..].find("endbfrange") {
             let block = &text[block_start..block_start + end];
-            for line in block.lines() {
-                let line = line.trim();
-                if line.is_empty() {
-                    continue;
-                }
-                // Check for array form: <start> <end> [<u1> <u2> ...]
-                if line.contains('[') {
-                    let parts: Vec<&str> = line
-                        .split(['<', '>', '[', ']'])
-                        .filter(|s| !s.trim().is_empty())
-                        .collect();
-                    if parts.len() >= 3 {
-                        if let (Some(lo), Some(hi)) =
-                            (parse_hex(parts[0].trim()), parse_hex(parts[1].trim()))
-                        {
-                            for (i, code) in (lo..=hi).enumerate() {
-                                if let Some(unicode_str) =
-                                    parts.get(2 + i).and_then(|h| hex_to_unicode(h.trim()))
-                                {
-                                    mappings.insert(code, unicode_str);
-                                }
+            let mut rest = block;
+            loop {
+                // Read lo
+                let (lo_hex, r) = match next_angle_token(rest) {
+                    Some(x) => x,
+                    None => break,
+                };
+                let lo = match parse_hex(lo_hex) {
+                    Some(v) => v,
+                    None => {
+                        rest = r;
+                        continue;
+                    }
+                };
+                rest = r;
+
+                // Read hi
+                let (hi_hex, r) = match next_angle_token(rest) {
+                    Some(x) => x,
+                    None => break,
+                };
+                let hi = match parse_hex(hi_hex) {
+                    Some(v) => v,
+                    None => {
+                        rest = r;
+                        continue;
+                    }
+                };
+                rest = r;
+
+                // Third element: <dst_start> or [<u1> <u2> ...]
+                let trimmed = rest.trim_start();
+                if trimmed.starts_with('[') {
+                    // Array form
+                    let arr_end = match trimmed.find(']') {
+                        Some(e) => e,
+                        None => break,
+                    };
+                    let arr = &trimmed[1..arr_end];
+                    let mut unicodes: Vec<&str> = Vec::new();
+                    let mut scan = arr;
+                    while let Some((h, r)) = next_angle_token(scan) {
+                        unicodes.push(h);
+                        scan = r;
+                    }
+                    for (i, code) in (lo..=hi).enumerate() {
+                        if let Some(uni_hex) = unicodes.get(i) {
+                            if let Some(unicode_str) = hex_to_unicode(uni_hex) {
+                                mappings.insert(code, unicode_str);
                             }
                         }
                     }
+                    rest = &trimmed[arr_end + 1..];
                 } else {
-                    // Simple form: <start> <end> <dst_start>
-                    let parts: Vec<&str> = line
-                        .split(['<', '>'])
-                        .filter(|s| !s.trim().is_empty())
-                        .collect();
-                    if parts.len() >= 3 {
-                        if let (Some(lo), Some(hi), Some(dst_start)) = (
-                            parse_hex(parts[0].trim()),
-                            parse_hex(parts[1].trim()),
-                            parse_hex(parts[2].trim()),
-                        ) {
-                            for (i, code) in (lo..=hi).enumerate() {
-                                let dst = dst_start + i as u32;
-                                if let Some(c) = char::from_u32(dst) {
-                                    if let Some(s) = sanitize_unicode(c.to_string()) {
-                                        mappings.insert(code, s);
-                                    }
-                                }
+                    // Simple form
+                    let (dst_hex, r) = match next_angle_token(trimmed) {
+                        Some(x) => x,
+                        None => break,
+                    };
+                    let dst_start = match parse_hex(dst_hex) {
+                        Some(v) => v,
+                        None => {
+                            rest = r;
+                            continue;
+                        }
+                    };
+                    rest = r;
+                    for (i, code) in (lo..=hi).enumerate() {
+                        let dst = dst_start + i as u32;
+                        if let Some(c) = char::from_u32(dst) {
+                            if let Some(s) = sanitize_unicode(c.to_string()) {
+                                mappings.insert(code, s);
                             }
                         }
                     }
@@ -670,5 +709,32 @@ endbfchar";
         // Decode 2-byte codes
         let result = map.decode(&[0x01, 0x00, 0x01, 0x01]);
         assert_eq!(result, "\u{AC00}\u{AC01}");
+    }
+
+    #[test]
+    fn test_parse_to_unicode_cmap_single_line_bfchar() {
+        // All entries on a single line — the format produced by some Korean PDF generators.
+        // Previously only the first pair was extracted; now all 100 must be registered.
+        let cmap = b"1 begincodespacerange <0000> <FFFF> endcodespacerange 100 beginbfchar <0047> <0020> <004C> <0025> <004F> <0028> <0050> <0029> <0051> <002A> <0053> <002C> <0054> <002D> <0055> <002E> <0056> <002F> <0057> <0030> <0058> <0031> <0059> <0032> <005A> <0033> <005B> <0034> <005C> <0035> <005D> <0036> <005E> <0037> <005F> <0038> <0060> <0039> <0061> <003A> <0068> <0041> <006C> <0045> <006D> <0046> <0070> <0049> <0073> <004C> <0075> <004E> <0078> <0051> <007B> <0054> <007D> <0056> <0088> <0061> <008C> <0065> <008E> <0067> <0092> <006B> <0093> <006C> <0094> <006D> <009F> <0078> <00A2> <007B> <00A4> <007D> <00A5> <007E> <0E49> <2161> <1D34> <AC00> <1D38> <AC04> <1D3C> <AC08> <1D44> <AC10> <1D49> <AC15> <1D50> <AC1C> <1DA4> <AC70> <1DA8> <AC74> <1DB4> <AC80> <1DC0> <AC8C> <1DF1> <ACBD> <1DF8> <ACC4> <1E14> <ACE0> <1E18> <ACE4> <1E29> <ACF5> <1E30> <ACFC> <1E84> <AD50> <1EA0> <AD6C> <1EA1> <AD6D> <1F2C> <ADF8> <1F30> <ADFC> <1F3C> <AE08> <1F3D> <AE09> <1F64> <AE30> <1F6C> <AE38> <1F74> <AE40> <1F80> <AE4C> <1F81> <AE4D> <1F84> <AE50> <1F9C> <AE68> <1FAF> <AE7B> <20F4> <AFC0> endbfchar endcmap";
+        let map = parse_to_unicode_cmap(cmap).unwrap();
+        assert_eq!(map.code_width, 2);
+        assert_eq!(map.mappings.len(), 72, "all 72 pairs must be registered");
+        assert_eq!(map.mappings.get(&0x0047), Some(&" ".to_string())); // first pair
+        assert_eq!(map.mappings.get(&0x1D34), Some(&"\u{AC00}".to_string())); // 가
+        assert_eq!(map.mappings.get(&0x1F3C), Some(&"\u{AE08}".to_string())); // 게
+        assert_eq!(map.mappings.get(&0x20F4), Some(&"\u{AFC0}".to_string())); // last pair
+    }
+
+    #[test]
+    fn test_parse_to_unicode_cmap_single_line_bfrange() {
+        // Multiple ranges on a single line (no newlines).
+        let cmap = b"1 begincodespacerange <0000> <FFFF> endcodespacerange 2 beginbfrange <0020> <0021> <0041> <0030> <0039> <0030> endbfrange endcmap";
+        let map = parse_to_unicode_cmap(cmap).unwrap();
+        // Range 1: <0020>-<0021> starting at U+0041 → A, B
+        assert_eq!(map.mappings.get(&0x0020), Some(&"A".to_string()));
+        assert_eq!(map.mappings.get(&0x0021), Some(&"B".to_string()));
+        // Range 2: <0030>-<0039> starting at U+0030 → 0..9
+        assert_eq!(map.mappings.get(&0x0030), Some(&"0".to_string()));
+        assert_eq!(map.mappings.get(&0x0039), Some(&"9".to_string()));
     }
 }
