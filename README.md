@@ -52,8 +52,9 @@ Download the latest release from [GitHub Releases](https://github.com/iyulab/unp
 #### Windows (x64)
 
 ```powershell
-# Download and extract
-Invoke-WebRequest -Uri "https://github.com/iyulab/unpdf/releases/latest/download/unpdf-cli-x86_64-pc-windows-msvc.zip" -OutFile "unpdf.zip"
+# Download and extract (replace VERSION with the actual version, e.g. v0.6.4)
+$VERSION = (Invoke-RestMethod "https://api.github.com/repos/iyulab/unpdf/releases/latest").tag_name
+Invoke-WebRequest -Uri "https://github.com/iyulab/unpdf/releases/latest/download/unpdf-windows-x86_64-${VERSION}.zip" -OutFile "unpdf.zip"
 Expand-Archive -Path "unpdf.zip" -DestinationPath "."
 
 # Move to a directory in PATH (optional)
@@ -66,9 +67,10 @@ unpdf version
 #### Linux (x64)
 
 ```bash
-# Download and extract
-curl -LO https://github.com/iyulab/unpdf/releases/latest/download/unpdf-cli-x86_64-unknown-linux-gnu.tar.gz
-tar -xzf unpdf-cli-x86_64-unknown-linux-gnu.tar.gz
+# Download and extract (replace VERSION with the actual version, e.g. v0.6.4)
+VERSION=$(curl -s "https://api.github.com/repos/iyulab/unpdf/releases/latest" | grep '"tag_name"' | cut -d'"' -f4)
+curl -LO "https://github.com/iyulab/unpdf/releases/latest/download/unpdf-linux-x86_64-${VERSION}.tar.gz"
+tar -xzf "unpdf-linux-x86_64-${VERSION}.tar.gz"
 
 # Install to /usr/local/bin (requires sudo)
 sudo mv unpdf /usr/local/bin/
@@ -86,13 +88,14 @@ unpdf version
 #### macOS
 
 ```bash
-# Intel Mac
-curl -LO https://github.com/iyulab/unpdf/releases/latest/download/unpdf-cli-x86_64-apple-darwin.tar.gz
-tar -xzf unpdf-cli-x86_64-apple-darwin.tar.gz
+# Intel Mac (replace VERSION with the actual version, e.g. v0.6.4)
+VERSION=$(curl -s "https://api.github.com/repos/iyulab/unpdf/releases/latest" | grep '"tag_name"' | cut -d'"' -f4)
+curl -LO "https://github.com/iyulab/unpdf/releases/latest/download/unpdf-macos-x86_64-${VERSION}.tar.gz"
+tar -xzf "unpdf-macos-x86_64-${VERSION}.tar.gz"
 
 # Apple Silicon (M1/M2/M3/M4)
-curl -LO https://github.com/iyulab/unpdf/releases/latest/download/unpdf-cli-aarch64-apple-darwin.tar.gz
-tar -xzf unpdf-cli-aarch64-apple-darwin.tar.gz
+curl -LO "https://github.com/iyulab/unpdf/releases/latest/download/unpdf-macos-aarch64-${VERSION}.tar.gz"
+tar -xzf "unpdf-macos-aarch64-${VERSION}.tar.gz"
 
 # Install
 sudo mv unpdf /usr/local/bin/
@@ -105,10 +108,11 @@ unpdf version
 
 | Platform | Architecture | File |
 |----------|--------------|------|
-| Windows | x64 | `unpdf-cli-x86_64-pc-windows-msvc.zip` |
-| Linux | x64 | `unpdf-cli-x86_64-unknown-linux-gnu.tar.gz` |
-| macOS | Intel | `unpdf-cli-x86_64-apple-darwin.tar.gz` |
-| macOS | Apple Silicon | `unpdf-cli-aarch64-apple-darwin.tar.gz` |
+| Windows | x64 | `unpdf-windows-x86_64-{version}.zip` |
+| Linux | x64 | `unpdf-linux-x86_64-{version}.tar.gz` |
+| Linux | x64 (musl) | `unpdf-linux-x86_64-musl-{version}.tar.gz` |
+| macOS | Intel | `unpdf-macos-x86_64-{version}.tar.gz` |
+| macOS | Apple Silicon | `unpdf-macos-aarch64-{version}.tar.gz` |
 
 ### Updating
 
