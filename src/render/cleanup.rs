@@ -179,9 +179,11 @@ impl CleanupPipeline {
             page_number_regex: Regex::new(r"(?m)^[\s]*[-–—]?\s*\d+\s*[-–—]?\s*$").unwrap(),
             // End-of-line dot leaders: "Chapter 1 ...... 6" → "Chapter 1 (p.6)"
             toc_dot_leader_regex: Regex::new(r"\s*\.{4,}\s*(\d+)?\s*$").unwrap(),
-            // Inline dot leaders: "Chapter 1 ........ Chapter 2" → "Chapter 1 Chapter 2"
-            // and "Chapter 1 ......... 6 Chapter 2" → "Chapter 1 (p.6) Chapter 2"
-            toc_dot_leader_inline_regex: Regex::new(r"\s+\.{4,}\s*(\d+)?\s+").unwrap(),
+            // Inline dot leaders: "Chapter 1 ................ Chapter 2" → "Chapter 1 Chapter 2"
+            // and "Chapter 1 ................ 6 Chapter 2" → "Chapter 1 (p.6) Chapter 2"
+            // Threshold is 8+ dots (not 4+) to avoid matching prose ellipses like " .... ".
+            // Real TOC leaders are typically 15–30+ dots; 8 is the safe lower bound.
+            toc_dot_leader_inline_regex: Regex::new(r"\s+\.{8,}\s*(\d+)?\s+").unwrap(),
             ligature_map: vec![
                 ("\u{FB00}", "ff"),  // ﬀ
                 ("\u{FB01}", "fi"),  // ﬁ
@@ -693,17 +695,23 @@ mod tests {
     #[test]
     fn test_toc_dot_leaders_preserves_prose_with_few_dots() {
         let pipeline = CleanupPipeline::from_preset(CleanupPreset::Standard);
-        // Prose with only 1-3 dots should be untouched
-        let text = "See section 1.2.3 for details.";
+        // 4-dot prose run between spaces: must survive (threshold is 8+)
+        // This verifies the inline regex doesn't eat common prose patterns.
+        let text = "We waited .... and waited.";
         let result = pipeline.process(text);
-        assert_eq!(
-            result, text,
-            "Prose with few dots should be preserved"
+        assert!(
+            result.contains("...."),
+            "4-dot prose run must be preserved (threshold is 8+), got: {}",
+            result
         );
-        // Two dots: also untouched
-        let text2 = "Loading.. done.";
+        // 7-dot run: also untouched
+        let text2 = "Hold on ....... done.";
         let result2 = pipeline.process(text2);
-        assert!(result2.contains("Loading.."), "Two dots should be preserved");
+        assert!(
+            result2.contains("......."),
+            "7-dot run must be preserved, got: {}",
+            result2
+        );
     }
 
     #[test]
