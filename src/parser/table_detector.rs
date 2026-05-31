@@ -3,7 +3,7 @@
 //! Inspired by Camelot's Stream mode, this module detects tables by analyzing
 //! text alignment patterns without relying on graphical lines.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use crate::model::{Table, TableCell, TableRow};
 
@@ -370,7 +370,7 @@ impl TableDetector {
         }
 
         // Collect all left edges from multi-span rows
-        let mut edge_counts: HashMap<i32, usize> = HashMap::new();
+        let mut edge_counts: BTreeMap<i32, usize> = BTreeMap::new();
         let bucket_size = 5.0; // Group X positions within 5pt
 
         for row in &multi_span_rows {
@@ -430,7 +430,7 @@ impl TableDetector {
             return vec![];
         }
 
-        let mut edge_counts: HashMap<i32, usize> = HashMap::new();
+        let mut edge_counts: BTreeMap<i32, usize> = BTreeMap::new();
         let bucket_size = 5.0;
 
         for row in rows {

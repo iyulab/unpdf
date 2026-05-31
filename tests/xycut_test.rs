@@ -107,3 +107,17 @@ fn test_two_column_pdf_with_xycut() {
     let text = doc.plain_text();
     assert!(!text.is_empty());
 }
+
+#[test]
+fn test_extraction_quality_serializes_is_scan_pdf() {
+    let q = unpdf::ExtractionQuality {
+        char_count: 0,
+        word_count: 0,
+        replacement_char_count: 0,
+        encrypted: false,
+        is_scan_pdf: true,
+    };
+    let json = serde_json::to_string(&q).unwrap();
+    assert!(json.contains("is_scan_pdf"), "is_scan_pdf should appear: {json}");
+    assert!(json.contains("true"), "is_scan_pdf should be true: {json}");
+}

@@ -397,7 +397,11 @@ fn merge_same_row_paragraphs(elements: Vec<(f32, Block)>) -> Vec<(f32, Block)> {
 
 fn extract_page_with_tables_fn(backend: &dyn PdfBackend, page_num: u32) -> Result<Vec<Block>> {
     let analyzer = super::layout::LayoutAnalyzer::new(backend);
-    let spans = analyzer.extract_page_spans(page_num)?;
+    let mut spans = analyzer.extract_page_spans(page_num)?;
+
+    // Apply header/footer filter before table detection so page numbers
+    // in margins don't end up as spurious table rows or body paragraphs.
+    analyzer.filter_spans_for_page(&mut spans, page_num);
 
     if spans.is_empty() {
         return Ok(vec![]);

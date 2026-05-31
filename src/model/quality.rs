@@ -16,6 +16,12 @@ pub struct ExtractionQuality {
 
     /// Whether the source PDF was encrypted.
     pub encrypted: bool,
+
+    /// Whether the PDF appears to be a scanned image (no text layer).
+    /// Detected by sampling content stream operators across the first few pages:
+    /// image (`Do`) operators present with no text (`Tj`/`TJ`) operators.
+    #[serde(default)]
+    pub is_scan_pdf: bool,
 }
 
 impl ExtractionQuality {
@@ -26,6 +32,7 @@ impl ExtractionQuality {
             word_count: text.split_whitespace().count(),
             replacement_char_count: text.chars().filter(|&c| c == '\u{FFFD}').count(),
             encrypted: false,
+            is_scan_pdf: false,
         }
     }
 
@@ -41,6 +48,8 @@ impl ExtractionQuality {
     /// Returns `true` if the extraction produced usable text.
     ///
     /// Criteria: non-empty text with less than 30% replacement characters.
+    /// `is_scan_pdf` is intentionally excluded: `char_count == 0` already covers pure
+    /// scan PDFs, and mixed PDFs (some scanned pages, some text) should not be penalised.
     pub fn is_good(&self) -> bool {
         self.char_count > 0 && self.replacement_char_ratio() < 0.3
     }
@@ -55,6 +64,13 @@ impl ExtractionQuality {
             );
         }
         if self.char_count == 0 {
+            if self.is_scan_pdf {
+                return Some(
+                    "This PDF appears to be a scanned image (no text layer detected). \
+                     OCR processing is required to extract text."
+                        .to_string(),
+                );
+            }
             return Some(
                 "No text was extracted. Possible causes: scanned/image-based PDF, \
                  encrypted PDF, unsupported font encoding"
@@ -112,6 +128,7 @@ impl QualityAccumulator {
             word_count: self.word_count,
             replacement_char_count: self.replacement_char_count,
             encrypted: false,
+            is_scan_pdf: false,
         }
     }
 }

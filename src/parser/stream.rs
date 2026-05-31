@@ -202,6 +202,42 @@ use std::ops::ControlFlow;
 use super::backend::PdfBackend;
 use super::pdf_parser::{convert_outline_item_pub, parse_pdf_date_pub, parse_single_page};
 
+/// Sample the first `max_pages` pages of content stream operators to detect
+/// scan-only PDFs. Returns `true` when image (`Do`) operators are present but
+/// no text-show operators (`Tj`, `TJ`, `'`, `"`) are found, which is the
+/// signature of a PDF composed entirely of raster images without a text layer.
+fn detect_scan_pdf(
+    backend: &(dyn PdfBackend + Sync),
+    page_map: &std::collections::BTreeMap<u32, super::backend::PageId>,
+    targets: &[u32],
+    max_pages: usize,
+) -> bool {
+    let sample = &targets[..targets.len().min(max_pages)];
+    let mut image_ops: u32 = 0;
+
+    for &page_num in sample {
+        let Some(&page_id) = page_map.get(&page_num) else {
+            continue;
+        };
+        let Ok(content) = backend.page_content(page_id) else {
+            continue;
+        };
+        let Ok(ops) = backend.decode_content(&content) else {
+            continue;
+        };
+        for op in &ops {
+            match op.operator.as_str() {
+                "Tj" | "TJ" | "'" | "\"" => return false, // Text found — not a scan PDF
+                "Do" => image_ops += 1,
+                _ => {}
+            }
+        }
+    }
+
+    // Scan PDF: image operators present and no text operators encountered (early return on text)
+    image_ops > 0
+}
+
 /// 페이지를 page_num ASC 순서로 스트리밍. 콜백이 `Break`를 반환하면 조기 종료.
 /// 반환값은 누적된 `ExtractionQuality`.
 pub(crate) fn run_stream<F>(
@@ -265,6 +301,9 @@ where
         .collect();
     targets.sort_unstable();
     let first_expected = targets.first().copied().unwrap_or(0);
+
+    // 2a. Scan detection: sample first 5 pages before full parsing
+    let is_scan_pdf = detect_scan_pdf(backend, &page_map, &targets, 5);
 
     // ParseOptions 재구성
     let parse_opts = ParseOptions {
@@ -422,6 +461,7 @@ where
 
     let mut final_q = quality.finalize();
     final_q.encrypted = metadata.encrypted;
+    final_q.is_scan_pdf = is_scan_pdf;
     let _ = on_event(ParseEvent::DocumentEnd {
         quality: final_q.clone(),
     });

@@ -3,7 +3,7 @@
 //! This module provides text extraction with position and font information,
 //! enabling proper heading detection, paragraph separation, and structure analysis.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use super::backend::{get_number_from_value, PdfBackend, PdfValue};
 use crate::error::{Error, Result};
@@ -308,8 +308,8 @@ pub struct FontStatistics {
     pub body_size: f32,
     /// Font sizes larger than body (potential headings)
     pub heading_sizes: Vec<f32>,
-    /// All observed font sizes with frequency
-    pub size_histogram: HashMap<i32, usize>,
+    /// All observed font sizes with frequency (BTreeMap for deterministic iteration)
+    pub size_histogram: BTreeMap<i32, usize>,
 }
 
 impl FontStatistics {
@@ -408,6 +408,18 @@ impl<'a> LayoutAnalyzer<'a> {
     /// Public wrapper for group_lines_into_blocks.
     pub fn group_lines_into_blocks_pub(&self, lines: Vec<TextLine>) -> Vec<TextBlock> {
         self.group_lines_into_blocks(lines)
+    }
+
+    /// Filter header/footer spans in-place using page dimensions.
+    ///
+    /// Exposed so callers that operate on raw spans (e.g., the table-detection
+    /// path) can apply the same margin filtering that `extract_page_blocks` uses.
+    pub fn filter_spans_for_page(&self, spans: &mut Vec<TextSpan>, page_num: u32) {
+        let pages = self.backend.pages();
+        if let Some(&page_id) = pages.get(&page_num) {
+            let (_, page_height) = self.backend.page_dimensions(page_id);
+            filter_header_footer_spans(spans, page_height);
+        }
     }
 
     /// Extract text spans from a page with position and font information.

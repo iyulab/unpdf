@@ -167,6 +167,7 @@ pub struct CleanupPipeline {
     options: CleanupOptions,
     page_number_regex: Regex,
     toc_dot_leader_regex: Regex,
+    toc_dot_leader_inline_regex: Regex,
     ligature_map: Vec<(&'static str, &'static str)>,
 }
 
@@ -176,7 +177,11 @@ impl CleanupPipeline {
         Self {
             options,
             page_number_regex: Regex::new(r"(?m)^[\s]*[-–—]?\s*\d+\s*[-–—]?\s*$").unwrap(),
+            // End-of-line dot leaders: "Chapter 1 ...... 6" → "Chapter 1 (p.6)"
             toc_dot_leader_regex: Regex::new(r"\s*\.{4,}\s*(\d+)?\s*$").unwrap(),
+            // Inline dot leaders: "Chapter 1 ........ Chapter 2" → "Chapter 1 Chapter 2"
+            // and "Chapter 1 ......... 6 Chapter 2" → "Chapter 1 (p.6) Chapter 2"
+            toc_dot_leader_inline_regex: Regex::new(r"\s+\.{4,}\s*(\d+)?\s+").unwrap(),
             ligature_map: vec![
                 ("\u{FB00}", "ff"),  // ﬀ
                 ("\u{FB01}", "fi"),  // ﬁ
@@ -487,10 +492,23 @@ impl CleanupPipeline {
         // Remove dot leaders from TOC entries per line.
         // "Chapter 1 ................................ 6"  → "Chapter 1 (p.6)"
         // "Introduction ............................"      → "Introduction"
+        // "Chapter 1 ......... Chapter 2"               → "Chapter 1 Chapter 2"  (inline)
+        // "Chapter 1 ......... 6 Chapter 2"             → "Chapter 1 (p.6) Chapter 2"  (inline+page)
         text.lines()
             .map(|line| {
+                // Step 1: remove inline dot leaders (between TOC entries on same line)
+                let line = self.toc_dot_leader_inline_regex
+                    .replace_all(line, |caps: &regex::Captures| {
+                        if let Some(page) = caps.get(1) {
+                            format!(" (p.{}) ", page.as_str())
+                        } else {
+                            " ".to_string()
+                        }
+                    })
+                    .into_owned();
+                // Step 2: remove end-of-line dot leaders
                 self.toc_dot_leader_regex
-                    .replace(line, |caps: &regex::Captures| {
+                    .replace(&line, |caps: &regex::Captures| {
                         if let Some(page) = caps.get(1) {
                             format!(" (p.{})", page.as_str())
                         } else {
@@ -653,6 +671,39 @@ mod tests {
             "Expected CJK merged, got: {}",
             result
         );
+    }
+
+    #[test]
+    fn test_toc_dot_leaders_inline() {
+        let pipeline = CleanupPipeline::from_preset(CleanupPreset::Standard);
+        // Inline dots between TOC entries (no page number)
+        let text = "개요 ................................ 소개 ................................ 요구 사항";
+        let result = pipeline.process(text);
+        assert!(
+            !result.contains("................"),
+            "Expected inline dots removed, got: {}",
+            result
+        );
+        // Should preserve entry names
+        assert!(result.contains("개요"), "개요 should be preserved");
+        assert!(result.contains("소개"), "소개 should be preserved");
+        assert!(result.contains("요구 사항"), "요구 사항 should be preserved");
+    }
+
+    #[test]
+    fn test_toc_dot_leaders_preserves_prose_with_few_dots() {
+        let pipeline = CleanupPipeline::from_preset(CleanupPreset::Standard);
+        // Prose with only 1-3 dots should be untouched
+        let text = "See section 1.2.3 for details.";
+        let result = pipeline.process(text);
+        assert_eq!(
+            result, text,
+            "Prose with few dots should be preserved"
+        );
+        // Two dots: also untouched
+        let text2 = "Loading.. done.";
+        let result2 = pipeline.process(text2);
+        assert!(result2.contains("Loading.."), "Two dots should be preserved");
     }
 
     #[test]
