@@ -50,3 +50,7 @@ bindings/csharp/**/obj/
 bindings/csharp/**/runtimes/
 bindings/csharp/artifacts/
 *.nupkg
+
+# WASM bindings
+unpdf-wasm/pkg/
+unpdf-wasm/pkg-node/
