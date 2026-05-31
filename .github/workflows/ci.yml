@@ -169,5 +169,5 @@ jobs:
         run: wasm-pack build unpdf-wasm --target nodejs --out-dir pkg-node
 
       - name: Run WASM tests
-        run: wasm-pack test unpdf-wasm --node
+        run: wasm-pack test --node unpdf-wasm
 
