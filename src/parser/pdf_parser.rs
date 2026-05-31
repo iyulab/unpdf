@@ -2,8 +2,10 @@
 
 use std::collections::HashMap;
 use std::io::Read;
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
 
+#[cfg(not(target_arch = "wasm32"))]
 use crate::detect::detect_format_from_path;
 use crate::error::{Error, Result};
 use crate::model::{Block, Document, OutlineItem, Page, Paragraph, Resource, ResourceType};
@@ -19,11 +21,13 @@ pub struct PdfParser {
 
 impl PdfParser {
     /// Open a PDF file.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         Self::open_with_options(path, ParseOptions::default())
     }
 
     /// Open a PDF file with custom options.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn open_with_options<P: AsRef<Path>>(path: P, options: ParseOptions) -> Result<Self> {
         let path = path.as_ref();
 

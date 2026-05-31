@@ -46,7 +46,9 @@ pub mod ffi;
 pub use convert::{
     ConvertOptions, ConvertResult, ConverterRegistry, DocumentConverter, OutputFormat,
 };
-pub use detect::{detect_format_from_bytes, detect_format_from_path, is_pdf, PdfFormat};
+pub use detect::{detect_format_from_bytes, PdfFormat};
+#[cfg(not(target_arch = "wasm32"))]
+pub use detect::{detect_format_from_path, is_pdf};
 pub use error::{Error, Result};
 pub use model::{
     Alignment, Block, Document, ExtractionQuality, FieldType, FieldValue, FormField, InlineContent,
@@ -60,6 +62,7 @@ pub use render::{
 };
 
 use std::io::Read;
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
 
 /// Parse a PDF file and return a structured document.
@@ -80,6 +83,7 @@ use std::path::Path;
 /// let doc = parse_file("document.pdf").unwrap();
 /// println!("Pages: {}", doc.page_count());
 /// ```
+#[cfg(not(target_arch = "wasm32"))]
 pub fn parse_file<P: AsRef<Path>>(path: P) -> Result<Document> {
     let parser = PdfParser::open(path)?;
     parser.parse()
@@ -102,6 +106,7 @@ pub fn parse_file<P: AsRef<Path>>(path: P) -> Result<Document> {
 ///     .text_only();
 /// let doc = parse_file_with_options("document.pdf", options).unwrap();
 /// ```
+#[cfg(not(target_arch = "wasm32"))]
 pub fn parse_file_with_options<P: AsRef<Path>>(path: P, options: ParseOptions) -> Result<Document> {
     let parser = PdfParser::open_with_options(path, options)?;
     parser.parse()
@@ -172,6 +177,7 @@ pub fn parse_reader_with_options<R: Read>(reader: R, options: ParseOptions) -> R
 ///
 /// let doc = parse_file_with_password("encrypted.pdf", "secret").unwrap();
 /// ```
+#[cfg(not(target_arch = "wasm32"))]
 pub fn parse_file_with_password<P: AsRef<Path>>(path: P, password: &str) -> Result<Document> {
     let options = ParseOptions::new().with_password(password);
     parse_file_with_options(path, options)
@@ -191,6 +197,7 @@ pub fn parse_file_with_password<P: AsRef<Path>>(path: P, password: &str) -> Resu
 /// let text = extract_text("document.pdf").unwrap();
 /// println!("{}", text);
 /// ```
+#[cfg(not(target_arch = "wasm32"))]
 pub fn extract_text<P: AsRef<Path>>(path: P) -> Result<String> {
     let doc = parse_file(path)?;
     Ok(doc.plain_text())
@@ -210,6 +217,7 @@ pub fn extract_text<P: AsRef<Path>>(path: P) -> Result<String> {
 /// let markdown = to_markdown("document.pdf").unwrap();
 /// std::fs::write("output.md", markdown).unwrap();
 /// ```
+#[cfg(not(target_arch = "wasm32"))]
 pub fn to_markdown<P: AsRef<Path>>(path: P) -> Result<String> {
     let doc = parse_file(path)?;
     let options = RenderOptions::default();
@@ -228,6 +236,7 @@ pub fn to_markdown<P: AsRef<Path>>(path: P) -> Result<String> {
 ///     .with_cleanup_preset(CleanupPreset::Aggressive);
 /// let markdown = to_markdown_with_options("document.pdf", &options).unwrap();
 /// ```
+#[cfg(not(target_arch = "wasm32"))]
 pub fn to_markdown_with_options<P: AsRef<Path>>(
     path: P,
     options: &RenderOptions,
@@ -247,6 +256,7 @@ pub fn to_markdown_with_options<P: AsRef<Path>>(
 ///     .with_cleanup_preset(CleanupPreset::Standard);
 /// let text = to_text("document.pdf", &options).unwrap();
 /// ```
+#[cfg(not(target_arch = "wasm32"))]
 pub fn to_text<P: AsRef<Path>>(path: P, options: &RenderOptions) -> Result<String> {
     let doc = parse_file(path)?;
     render::to_text(&doc, options)
@@ -262,6 +272,7 @@ pub fn to_text<P: AsRef<Path>>(path: P, options: &RenderOptions) -> Result<Strin
 /// let json = to_json("document.pdf", JsonFormat::Pretty).unwrap();
 /// std::fs::write("output.json", json).unwrap();
 /// ```
+#[cfg(not(target_arch = "wasm32"))]
 pub fn to_json<P: AsRef<Path>>(path: P, format: JsonFormat) -> Result<String> {
     let doc = parse_file(path)?;
     render::to_json(&doc, format)
@@ -359,6 +370,7 @@ impl Unpdf {
     }
 
     /// Parse a PDF file and return a result wrapper.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn parse<P: AsRef<Path>>(self, path: P) -> Result<UnpdfResult> {
         let parser = PdfParser::open_with_options(path, self.parse_options)?;
         let document = parser.parse()?;

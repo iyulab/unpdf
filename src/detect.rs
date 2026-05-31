@@ -1,8 +1,11 @@
 //! PDF format detection and validation.
 
 use crate::error::{Error, Result};
+#[cfg(not(target_arch = "wasm32"))]
 use std::fs::File;
+#[cfg(not(target_arch = "wasm32"))]
 use std::io::{BufReader, Read};
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
 
 /// PDF format information.
@@ -41,6 +44,7 @@ const VERSION_LEN: usize = 3; // e.g., "1.7"
 /// let format = detect_format_from_path("document.pdf").unwrap();
 /// println!("PDF version: {}", format.version);
 /// ```
+#[cfg(not(target_arch = "wasm32"))]
 pub fn detect_format_from_path<P: AsRef<Path>>(path: P) -> Result<PdfFormat> {
     let file = File::open(path)?;
     let mut reader = BufReader::new(file);
@@ -102,6 +106,7 @@ fn is_valid_version(version: &str) -> bool {
 /// # Returns
 /// * `true` if the file is a valid PDF
 /// * `false` otherwise
+#[cfg(not(target_arch = "wasm32"))]
 pub fn is_pdf<P: AsRef<Path>>(path: P) -> bool {
     detect_format_from_path(path).is_ok()
 }

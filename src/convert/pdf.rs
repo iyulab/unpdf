@@ -3,6 +3,7 @@
 use crate::error::Result;
 use crate::parser::{ParseOptions, PdfParser};
 use crate::render::{to_json, to_markdown_with_stats, to_text, JsonFormat};
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
 
 use super::{ConvertOptions, ConvertResult, DocumentConverter, OutputFormat};
@@ -71,6 +72,7 @@ impl DocumentConverter for PdfConverter {
         "pdf"
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn convert(&self, path: &Path, options: &ConvertOptions) -> Result<ConvertResult> {
         let parse_opts = self.build_parse_options(options);
         let parser = PdfParser::open_with_options(path, parse_opts)?;

@@ -29,6 +29,7 @@ use crate::error::{Error, Result};
 use crate::model::Metadata;
 use crate::render::{ExtractionStats, RenderOptions};
 use std::collections::HashMap;
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
 use std::sync::Arc;
 
@@ -151,6 +152,7 @@ pub trait DocumentConverter: Send + Sync {
     fn name(&self) -> &str;
 
     /// Convert a file at the given path.
+    #[cfg(not(target_arch = "wasm32"))]
     fn convert(&self, path: &Path, options: &ConvertOptions) -> Result<ConvertResult>;
 
     /// Convert from bytes.
@@ -221,6 +223,7 @@ impl ConverterRegistry {
     }
 
     /// Convert a file using the appropriate converter.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn convert(&self, path: &Path, options: &ConvertOptions) -> Result<ConvertResult> {
         let ext = path
             .extension()
