@@ -70,7 +70,10 @@ impl Default for PageStreamOptions {
             pages: PageSelection::All,
             password: None,
             parallel: true,
+            #[cfg(not(target_arch = "wasm32"))]
             window_size: rayon::current_num_threads().saturating_mul(2).max(2),
+            #[cfg(target_arch = "wasm32")]
+            window_size: 2,
             emit_progress_every: 16,
             flush_resources_to: None,
         }
@@ -192,6 +195,7 @@ impl<T> ReorderBuffer<T> {
 // run_stream — rayon+crossbeam streaming pipeline
 // ---------------------------------------------------------------------------
 
+#[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::*;
 use std::ops::ControlFlow;
 
@@ -322,7 +326,13 @@ where
     let mut cancelled = false;
     let mut strict_err: Option<Error> = None;
 
-    if opts.parallel && targets.len() > 1 {
+    #[cfg(not(target_arch = "wasm32"))]
+    let effective_parallel = opts.parallel && targets.len() > 1;
+    #[cfg(target_arch = "wasm32")]
+    let effective_parallel = false;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    if effective_parallel {
         // Use unbounded channel: the ReorderBuffer already limits outstanding pages.
         // A bounded channel here would deadlock because the consumer (on_event) is
         // on the current thread and cannot run concurrently with std::thread::scope.
@@ -370,7 +380,9 @@ where
             // Drop rx here so the producer isn't blocked on send if we broke early.
             drop(rx);
         });
-    } else {
+    }
+
+    if !effective_parallel {
         for &page_num in &targets {
             let item = match parse_single_page(backend, page_num, &parse_opts) {
                 Ok(p) => Ok(p),
