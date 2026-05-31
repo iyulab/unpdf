@@ -74,7 +74,7 @@ impl MultiFormatWriter {
         render_opts: RenderOptions,
         images_dir: Option<PathBuf>,
     ) -> std::io::Result<Self> {
-        let has = |f: OutputFormat| formats.iter().any(|x| *x == f);
+        let has = |f: OutputFormat| formats.contains(&f);
         let md_path = has(OutputFormat::Markdown).then(|| out_dir.join("extract.md"));
         let md = if let Some(ref p) = md_path {
             Some(BufWriter::new(File::create(p)?))
@@ -269,7 +269,7 @@ impl MultiFormatWriter {
 }
 
 fn io_err(e: serde_json::Error) -> std::io::Error {
-    std::io::Error::new(std::io::ErrorKind::Other, e)
+    std::io::Error::other(e)
 }
 
 #[cfg(test)]
