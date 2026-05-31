@@ -1,0 +1,21 @@
+[package]
+name = "unpdf-wasm"
+version = "0.6.4"
+edition = "2021"
+description = "High-performance PDF extraction to Markdown, text, and JSON (WebAssembly)"
+repository = "https://github.com/iyulab/unpdf"
+license = "MIT"
+keywords = ["pdf", "markdown", "wasm", "webassembly", "text-extraction"]
+categories = ["wasm", "parser-implementations"]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+unpdf = { path = "..", version = "0.6.4" }
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+serde_json = "1.0"
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
