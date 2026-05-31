@@ -3,6 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/unpdf.svg)](https://crates.io/crates/unpdf)
 [![PyPI](https://img.shields.io/pypi/v/unpdf-markdown.svg)](https://pypi.org/project/unpdf-markdown/)
 [![NuGet](https://img.shields.io/nuget/v/Unpdf.svg)](https://www.nuget.org/packages/Unpdf/)
+[![npm](https://img.shields.io/npm/v/@iyulab/unpdf.svg)](https://www.npmjs.com/package/@iyulab/unpdf)
 [![Documentation](https://docs.rs/unpdf/badge.svg)](https://docs.rs/unpdf)
 [![CI](https://github.com/iyulab/unpdf/actions/workflows/ci.yml/badge.svg)](https://github.com/iyulab/unpdf/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -23,6 +24,7 @@ A high-performance Rust library for extracting content from PDF documents to str
 - **Extraction quality diagnostics**: Automatic detection and reporting of extraction issues
 - **Text cleanup**: Multiple presets for LLM training data preparation
 - **Self-update**: Built-in update mechanism via GitHub releases
+- **WebAssembly / npm** (0.7.0+): `@iyulab/unpdf` — browser and Node.js via wasm-bindgen; [live playground](https://iyulab.github.io/unpdf/)
 - **C-ABI FFI**: Native library for C#, Python, and other languages
 - **Parallel processing**: Uses Rayon for multi-page documents
 - **Streaming pipeline** (0.4.0+): `PdfParser::for_each_page` yields pages as they parse; peak memory bounded by window size regardless of document size
@@ -36,6 +38,7 @@ A high-performance Rust library for extracting content from PDF documents to str
 - [Installation](#installation)
 - [CLI Usage](#cli-usage)
 - [Rust Library Usage](#rust-library-usage)
+- [WebAssembly / JavaScript](#webassembly--javascript)
 - [Python Integration](#python-integration)
 - [C# / .NET Integration](#c--net-integration)
 - [Output Formats](#output-formats)
@@ -53,7 +56,7 @@ Download the latest release from [GitHub Releases](https://github.com/iyulab/unp
 #### Windows (x64)
 
 ```powershell
-# Download and extract (replace VERSION with the actual version, e.g. v0.6.4)
+# Download and extract (replace VERSION with the actual version, e.g. v0.7.0)
 $VERSION = (Invoke-RestMethod "https://api.github.com/repos/iyulab/unpdf/releases/latest").tag_name
 Invoke-WebRequest -Uri "https://github.com/iyulab/unpdf/releases/latest/download/unpdf-windows-x86_64-${VERSION}.zip" -OutFile "unpdf.zip"
 Expand-Archive -Path "unpdf.zip" -DestinationPath "."
@@ -68,7 +71,7 @@ unpdf version
 #### Linux (x64)
 
 ```bash
-# Download and extract (replace VERSION with the actual version, e.g. v0.6.4)
+# Download and extract (replace VERSION with the actual version, e.g. v0.7.0)
 VERSION=$(curl -s "https://api.github.com/repos/iyulab/unpdf/releases/latest" | grep '"tag_name"' | cut -d'"' -f4)
 curl -LO "https://github.com/iyulab/unpdf/releases/latest/download/unpdf-linux-x86_64-${VERSION}.tar.gz"
 tar -xzf "unpdf-linux-x86_64-${VERSION}.tar.gz"
@@ -89,7 +92,7 @@ unpdf version
 #### macOS
 
 ```bash
-# Intel Mac (replace VERSION with the actual version, e.g. v0.6.4)
+# Intel Mac (replace VERSION with the actual version, e.g. v0.7.0)
 VERSION=$(curl -s "https://api.github.com/repos/iyulab/unpdf/releases/latest" | grep '"tag_name"' | cut -d'"' -f4)
 curl -LO "https://github.com/iyulab/unpdf/releases/latest/download/unpdf-macos-x86_64-${VERSION}.tar.gz"
 tar -xzf "unpdf-macos-x86_64-${VERSION}.tar.gz"
@@ -523,6 +526,88 @@ for field in &doc.form_fields {
 
 ---
 
+## WebAssembly / JavaScript
+
+```bash
+npm install @iyulab/unpdf
+```
+
+**[Live playground →](https://iyulab.github.io/unpdf/)**  Drag and drop a PDF in the browser; no install required.
+
+### Browser / Bundler (webpack, vite)
+
+```js
+import init, { parse, ParseOptions } from '@iyulab/unpdf';
+
+await init();
+
+const response = await fetch('document.pdf');
+const bytes = new Uint8Array(await response.arrayBuffer());
+
+const doc = parse(bytes);
+console.log(doc.toMarkdown());
+console.log(doc.toText());
+console.log(`Pages: ${doc.pageCount()}`);
+```
+
+### Node.js
+
+```js
+const { parse } = require('@iyulab/unpdf');
+const fs = require('fs');
+
+const bytes = new Uint8Array(fs.readFileSync('document.pdf'));
+const doc = parse(bytes);
+console.log(doc.toText());
+```
+
+### With Options
+
+```js
+import init, { parseWithOptions, ParseOptions } from '@iyulab/unpdf';
+
+await init();
+
+const opts = new ParseOptions()
+  .lenient()
+  .withPassword('secret')
+  .withPages(1, 10);
+
+const doc = parseWithOptions(bytes, opts);
+console.log(doc.toMarkdown());
+```
+
+### API Reference
+
+**Functions**
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `parse` | `(data: Uint8Array) => PdfDocument` | Parse PDF bytes |
+| `parseWithOptions` | `(data: Uint8Array, opts: ParseOptions) => PdfDocument` | Parse with options |
+
+**PdfDocument**
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `toMarkdown()` | `string` | Convert to Markdown |
+| `toText()` | `string` | Convert to plain text |
+| `toJson()` | `string` | Convert to JSON |
+| `pageCount()` | `number` | Total page count |
+| `metadata()` | `string` | Metadata as JSON string |
+
+**ParseOptions**
+
+| Method | Description |
+|--------|-------------|
+| `new()` | Default options |
+| `lenient()` | Ignore recoverable errors |
+| `textOnly()` | Skip image extraction |
+| `withPassword(pw: string)` | Set decryption password |
+| `withPages(from: number, to: number)` | Page range (1-indexed) |
+
+---
+
 ## Python Integration
 
 Install the Python package:
@@ -790,7 +875,7 @@ Complete document structure with metadata:
 ```toml
 # Cargo.toml - enable features
 [dependencies]
-unpdf = { version = "0.6", features = ["ffi", "async"] }
+unpdf = { version = "0.7", features = ["ffi", "async"] }
 ```
 
 ---
