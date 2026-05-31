@@ -1,8 +1,10 @@
 use unpdf::render::PageSelection;
 use wasm_bindgen::prelude::*;
 
+#[derive(Default)]
 #[wasm_bindgen]
 pub struct ParseOptions {
+    #[allow(dead_code)]
     pub(crate) inner: unpdf::ParseOptions,
 }
 
@@ -10,9 +12,7 @@ pub struct ParseOptions {
 impl ParseOptions {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
-        Self {
-            inner: unpdf::ParseOptions::default(),
-        }
+        Self::default()
     }
 
     pub fn lenient(mut self) -> Self {
