@@ -256,6 +256,60 @@ jobs:
         run: cargo publish -p unpdf-cli --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
         continue-on-error: true
 
+  publish-npm:
+    name: Publish to npm
+    needs: [check-version, create-release]
+    if: needs.check-version.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: ${{ runner.os }}-cargo-wasm-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-wasm-
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Build WASM
+        run: wasm-pack build unpdf-wasm --target bundler
+
+      - name: Patch npm package name to "unpdf"
+        run: |
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('unpdf-wasm/pkg/package.json', 'utf8'));
+            pkg.name = 'unpdf';
+            fs.writeFileSync('unpdf-wasm/pkg/package.json', JSON.stringify(pkg, null, 2));
+          "
+
+      - name: Copy README to pkg
+        run: cp bindings/wasm/README.md unpdf-wasm/pkg/
+
+      - name: Publish to npm
+        run: wasm-pack publish unpdf-wasm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        continue-on-error: true
+
   cleanup-old-releases:
     name: Cleanup Old Releases
     # Run after the new release is published. We only need create-release
