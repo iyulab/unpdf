@@ -1,0 +1,63 @@
+name: Publish npm package
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (e.g. 0.7.0 — must match Cargo.toml)'
+        required: false
+        type: string
+
+jobs:
+  publish:
+    name: Publish @iyulab/unpdf to npm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: ${{ runner.os }}-cargo-wasm-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-wasm-
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Build WASM
+        run: wasm-pack build unpdf-wasm --target bundler
+
+      - name: Patch package name to @iyulab/unpdf
+        run: |
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('unpdf-wasm/pkg/package.json', 'utf8'));
+            pkg.name = '@iyulab/unpdf';
+            fs.writeFileSync('unpdf-wasm/pkg/package.json', JSON.stringify(pkg, null, 2));
+          "
+
+      - name: Copy README and LICENSE to pkg
+        run: |
+          cp bindings/wasm/README.md unpdf-wasm/pkg/
+          cp LICENSE unpdf-wasm/pkg/
+
+      - name: Publish to npm (public)
+        run: wasm-pack publish unpdf-wasm --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

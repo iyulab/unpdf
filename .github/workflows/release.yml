@@ -307,7 +307,7 @@ jobs:
           cp LICENSE unpdf-wasm/pkg/
 
       - name: Publish to npm
-        run: wasm-pack publish unpdf-wasm
+        run: wasm-pack publish unpdf-wasm --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         continue-on-error: true
