@@ -1,11 +1,11 @@
-# unpdf
+# @iyulab/unpdf
 
 High-performance PDF extraction to Markdown, text, and JSON — WebAssembly build.
 
 ## Installation
 
 ```bash
-npm install unpdf
+npm install @iyulab/unpdf
 ```
 
 ## Usage
@@ -13,7 +13,7 @@ npm install unpdf
 ### Browser / Bundler (webpack, vite)
 
 ```js
-import init, { parse, ParseOptions } from 'unpdf';
+import init, { parse, ParseOptions } from '@iyulab/unpdf';
 
 await init();
 
@@ -29,7 +29,7 @@ console.log(`Pages: ${doc.pageCount()}`);
 ### With Options
 
 ```js
-import init, { parseWithOptions, ParseOptions } from 'unpdf';
+import init, { parseWithOptions, ParseOptions } from '@iyulab/unpdf';
 
 await init();
 
@@ -45,7 +45,7 @@ console.log(doc.toMarkdown());
 ### Node.js
 
 ```js
-const { parse } = require('unpdf');
+const { parse } = require('@iyulab/unpdf');
 const fs = require('fs');
 
 const bytes = fs.readFileSync('document.pdf');

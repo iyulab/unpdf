@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.7.0 — 2026-05-31
+
+### Added
+- **WebAssembly support** — `unpdf-wasm` crate with wasm-bindgen bindings (`PdfDocument`, `ParseOptions`,
+  `parse()`, `parseWithOptions()`). Published to npm as `@iyulab/unpdf`.
+- CI: `build-wasm` job (bundler + nodejs targets + wasm-pack test)
+- CI/CD: `publish-npm` job in release workflow for automatic npm publishing
+
+### Changed
+- Node.js runtime upgraded from 20 → 24 in GitHub Actions (EOL: 2026-06-02)
+
+### Fixed
+- `ExtractionQuality::warning_message()` returned strings with a "Warning: " prefix, causing the CLI
+  to output "Warning: Warning: …" when displaying quality diagnostics. Prefix removed; callers own the label.
+
+## 0.6.4 — 2026-05-31
+
+### Fixed
+- CLI: `manual_contains` and `io_other_error` Clippy suggestions applied
+- WASM: suppress `dead_code` warnings on wasm-bindgen struct fields
+
 ## 0.6.3 — 2026-05-12
 
 ### Added

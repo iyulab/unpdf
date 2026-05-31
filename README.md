@@ -27,6 +27,7 @@ A high-performance Rust library for extracting content from PDF documents to str
 - **Parallel processing**: Uses Rayon for multi-page documents
 - **Streaming pipeline** (0.4.0+): `PdfParser::for_each_page` yields pages as they parse; peak memory bounded by window size regardless of document size
 - **Deterministic page ordering**: Parallel page parsing emits results in `page_num` ASC order via internal reorder buffer
+- **Image deduplication** (0.6.0+): Identical images across pages are written to disk only once; duplicate references are resolved to the canonical copy
 
 ---
 
@@ -148,7 +149,7 @@ cargo add unpdf
 ### Quick Start
 
 ```bash
-# Extract all formats (Markdown, text, JSON) + images to output directory
+# Extract to Markdown + images (default)
 unpdf document.pdf
 
 # Specify output directory
@@ -163,18 +164,26 @@ unpdf document.pdf --cleanup aggressive
 ```
 document_output/
 ├── extract.md      # Markdown output with frontmatter
-├── extract.txt     # Plain text output
-├── content.json    # Full structured JSON
-└── images/         # Extracted images
+└── images/         # Extracted images (if any)
     ├── page1_img1.png
     └── page2_img1.jpg
+```
+
+Use `unpdf convert <file> --all` to produce all three formats at once:
+
+```
+document_output/
+├── extract.md      # Markdown output with frontmatter
+├── extract.txt     # Plain text output
+├── content.json    # Full structured JSON
+└── images/
 ```
 
 ### Commands
 
 ```bash
-unpdf <file> [output]              # Extract all formats (default)
-unpdf convert <file> [OPTIONS]     # Same as above, explicit command
+unpdf <file> [output]              # Convert to Markdown + extract images (default)
+unpdf convert <file> [OPTIONS]     # Convert with full format/streaming control
 unpdf markdown <file> [OPTIONS]    # Convert to Markdown only (alias: md)
 unpdf text <file> [OPTIONS]        # Convert to plain text only
 unpdf json <file> [OPTIONS]        # Convert to JSON only
@@ -183,6 +192,46 @@ unpdf extract <file> [OPTIONS]     # Extract images only
 unpdf update [OPTIONS]             # Self-update to latest version
 unpdf version                      # Show version information
 ```
+
+### Convert (multi-format streaming pipeline)
+
+```bash
+# Markdown only (default)
+unpdf convert document.pdf
+
+# All formats + images
+unpdf convert document.pdf --all -o ./output
+
+# Specific formats
+unpdf convert document.pdf --formats md,txt,json
+
+# Skip image extraction
+unpdf convert document.pdf --no-images
+
+# Custom image directory
+unpdf convert document.pdf --image-dir ./assets
+
+# Drop images smaller than 128px (filter decorative icons)
+unpdf convert document.pdf --min-image-size 128
+
+# Tune streaming window size (pages in-flight, default: auto)
+unpdf convert document.pdf --window 4
+```
+
+#### Convert Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `-o, --output` | Output directory | `<stem>_output/` |
+| `--formats` | Comma-separated formats: `md,txt,json` | `md` |
+| `--all` | Output all formats (MD + TXT + JSON) | false |
+| `--no-images` | Skip image extraction | false |
+| `--image-dir` | Custom image output directory | `<out>/images` |
+| `--min-image-size` | Min pixel dimension; smaller images skipped | 64 |
+| `--window` | Streaming window size (pages in-flight) | auto |
+| `--cleanup` | Text cleanup: `minimal`, `standard`, `aggressive` | none |
+| `--page-markers` | Insert `<!-- page N -->` markers | false |
+| `-q, --quiet` | Suppress progress and warnings | false |
 
 ### Convert to Markdown
 
@@ -220,7 +269,7 @@ unpdf markdown document.pdf --page-markers -o output.md
 | `--max-heading` | Maximum heading level (1-6) | 6 |
 | `--pages` | Page range (e.g., `1-10`, `1,3,5`) | all |
 | `--page-markers` | Insert `<!-- page N -->` markers at page boundaries | false |
-| `-q, --quiet` | Suppress quality warnings | false |
+| `-q, --quiet` | Suppress quality warnings (root-level flag: `unpdf --quiet markdown ...`) | false |
 
 ### Convert to Plain Text
 
@@ -305,9 +354,6 @@ unpdf update --force
 # Convert PDF to Markdown with frontmatter
 unpdf md report.pdf --frontmatter -o report.md
 
-# Extract text from scanned PDF (requires OCR feature)
-unpdf text scanned.pdf --ocr -o output.txt
-
 # Convert with aggressive cleanup for AI training
 unpdf md document.pdf --cleanup aggressive -o cleaned.md
 
@@ -344,6 +390,39 @@ fn main() -> unpdf::Result<()> {
 
     Ok(())
 }
+```
+
+### Builder API
+
+`Unpdf` provides a fluent builder for the common parse-then-render workflow:
+
+```rust
+use unpdf::{Unpdf, CleanupPreset, TableFallback, PageSelection};
+
+let markdown = Unpdf::new()
+    .lenient()
+    .with_frontmatter()
+    .with_cleanup(CleanupPreset::Aggressive)
+    .with_table_fallback(TableFallback::Html)
+    .with_pages(PageSelection::Range(1..=20))
+    .parse("document.pdf")?
+    .to_markdown()?;
+```
+
+### Convenience Functions
+
+```rust
+// Parse from bytes or a reader
+let doc = unpdf::parse_bytes(&pdf_bytes)?;
+let doc = unpdf::parse_reader(std::fs::File::open("doc.pdf")?)?;
+
+// Password-protected PDF
+let doc = unpdf::parse_file_with_password("protected.pdf", "secret")?;
+
+// One-shot conversions without building a Document first
+let text     = unpdf::extract_text("document.pdf")?;
+let markdown = unpdf::to_markdown("document.pdf")?;
+let json     = unpdf::to_json("document.pdf", unpdf::JsonFormat::Pretty)?;
 ```
 
 ### Render Options
@@ -704,14 +783,14 @@ Complete document structure with metadata:
 
 | Feature | Description | Default |
 |---------|-------------|---------|
-| `default` | Core PDF parsing and rendering | Yes |
+| `fast-parse` | Enable optimised nom-based PDF tokeniser | Yes |
 | `ffi` | C-ABI foreign function interface | No |
 | `async` | Async I/O with Tokio | No |
 
 ```toml
 # Cargo.toml - enable features
 [dependencies]
-unpdf = { version = "0.2", features = ["ffi", "async"] }
+unpdf = { version = "0.6", features = ["ffi", "async"] }
 ```
 
 ---

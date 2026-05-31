@@ -283,7 +283,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           registry-url: 'https://registry.npmjs.org'
 
       - name: Install wasm-pack
@@ -292,17 +292,19 @@ jobs:
       - name: Build WASM
         run: wasm-pack build unpdf-wasm --target bundler
 
-      - name: Patch npm package name to "unpdf"
+      - name: Patch npm package name to "@iyulab/unpdf"
         run: |
           node -e "
             const fs = require('fs');
             const pkg = JSON.parse(fs.readFileSync('unpdf-wasm/pkg/package.json', 'utf8'));
-            pkg.name = 'unpdf';
+            pkg.name = '@iyulab/unpdf';
             fs.writeFileSync('unpdf-wasm/pkg/package.json', JSON.stringify(pkg, null, 2));
           "
 
-      - name: Copy README to pkg
-        run: cp bindings/wasm/README.md unpdf-wasm/pkg/
+      - name: Copy README and LICENSE to pkg
+        run: |
+          cp bindings/wasm/README.md unpdf-wasm/pkg/
+          cp LICENSE unpdf-wasm/pkg/
 
       - name: Publish to npm
         run: wasm-pack publish unpdf-wasm

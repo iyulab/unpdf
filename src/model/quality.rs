@@ -45,24 +45,25 @@ impl ExtractionQuality {
         self.char_count > 0 && self.replacement_char_ratio() < 0.3
     }
 
-    /// Returns a human-readable warning if extraction quality is poor, or `None` if good.
+    /// Returns a human-readable warning message if extraction quality is poor, or `None` if good.
+    ///
+    /// The returned string does NOT include a "Warning:" prefix — callers add their own label.
     pub fn warning_message(&self) -> Option<String> {
         if self.encrypted {
             return Some(
-                "Warning: PDF is encrypted. Text extraction may be incomplete or unavailable."
-                    .to_string(),
+                "PDF is encrypted. Text extraction may be incomplete or unavailable.".to_string(),
             );
         }
         if self.char_count == 0 {
             return Some(
-                "Warning: No text was extracted. Possible causes: scanned/image-based PDF, \
+                "No text was extracted. Possible causes: scanned/image-based PDF, \
                  encrypted PDF, unsupported font encoding"
                     .to_string(),
             );
         }
         if self.replacement_char_ratio() >= 0.3 {
             return Some(format!(
-                "Warning: Low extraction quality ({} of {} chars are replacement characters). \
+                "Low extraction quality ({} of {} chars are replacement characters). \
                  The PDF may use unsupported font encodings.",
                 self.replacement_char_count, self.char_count
             ));
