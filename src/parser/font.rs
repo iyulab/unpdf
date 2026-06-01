@@ -3,7 +3,7 @@
 //! Contains ToUnicode CMap parsing, TrueType cmap table parsing,
 //! and simple text decoding fallbacks.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 // ---------------------------------------------------------------------------
 // Simple text decoding
@@ -44,8 +44,8 @@ pub fn decode_text_simple(bytes: &[u8]) -> String {
 pub(crate) struct ToUnicodeMap {
     /// Bytes per character code (1 or 2). Determined from codespace range.
     pub(crate) code_width: usize,
-    /// Character code → Unicode string mapping.
-    pub(crate) mappings: HashMap<u32, String>,
+    /// Character code → Unicode string mapping (BTreeMap for deterministic key order).
+    pub(crate) mappings: BTreeMap<u32, String>,
 }
 
 impl ToUnicodeMap {
@@ -151,7 +151,7 @@ fn hex_to_unicode(hex: &str) -> Option<String> {
 /// Parse a ToUnicode CMap stream into a `ToUnicodeMap`.
 pub(crate) fn parse_to_unicode_cmap(data: &[u8]) -> Option<ToUnicodeMap> {
     let text = String::from_utf8_lossy(data);
-    let mut mappings = HashMap::new();
+    let mut mappings = BTreeMap::new();
     let mut code_width: usize = 2; // default for Identity-H
 
     // Parse codespace range to determine code width
@@ -409,9 +409,13 @@ pub(crate) fn parse_truetype_cmap_table(data: &[u8]) -> Option<ToUnicodeMap> {
         }
     };
 
-    // Reverse: GID → Unicode
-    let mut gid_to_unicode: HashMap<u32, String> = HashMap::new();
-    for (unicode_cp, gid) in &unicode_to_gid {
+    // Reverse: GID → Unicode using BTreeMap so iteration over unicode_to_gid
+    // proceeds in code-point order — guarantees we keep the lowest Unicode
+    // code point for each GID, matching the comment's intent deterministically.
+    let mut gid_to_unicode: BTreeMap<u32, String> = BTreeMap::new();
+    let mut sorted_unicode_gid: Vec<(u32, u16)> = unicode_to_gid.into_iter().collect();
+    sorted_unicode_gid.sort_unstable_by_key(|(cp, _)| *cp);
+    for (unicode_cp, gid) in &sorted_unicode_gid {
         if *gid > 0 {
             // Only keep the first mapping for each GID (lowest Unicode code point)
             if let Some(s) = char::from_u32(*unicode_cp)

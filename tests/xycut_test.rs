@@ -106,6 +106,20 @@ fn test_two_column_pdf_with_xycut() {
     let doc = parse_file(path).unwrap();
     let text = doc.plain_text();
     assert!(!text.is_empty());
+    // T-C3-2 regression: two-column PDFs must produce substantial text without
+    // mid-sentence word splits at column boundaries.
+    let word_count = text.split_whitespace().count();
+    assert!(
+        word_count > 100,
+        "Two-column PDF should extract substantial text, got {} words",
+        word_count
+    );
+    // No excessive word-splitting (common column join artifacts look like "text\nmore text")
+    // The quality should be "good" (not encrypted, not scan)
+    assert!(
+        doc.extraction_quality.is_good(),
+        "Two-column PDF quality should be good"
+    );
 }
 
 #[test]
