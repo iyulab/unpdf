@@ -499,7 +499,8 @@ impl CleanupPipeline {
         text.lines()
             .map(|line| {
                 // Step 1: remove inline dot leaders (between TOC entries on same line)
-                let line = self.toc_dot_leader_inline_regex
+                let line = self
+                    .toc_dot_leader_inline_regex
                     .replace_all(line, |caps: &regex::Captures| {
                         if let Some(page) = caps.get(1) {
                             format!(" (p.{}) ", page.as_str())
@@ -679,7 +680,8 @@ mod tests {
     fn test_toc_dot_leaders_inline() {
         let pipeline = CleanupPipeline::from_preset(CleanupPreset::Standard);
         // Inline dots between TOC entries (no page number)
-        let text = "개요 ................................ 소개 ................................ 요구 사항";
+        let text =
+            "개요 ................................ 소개 ................................ 요구 사항";
         let result = pipeline.process(text);
         assert!(
             !result.contains("................"),
@@ -689,7 +691,10 @@ mod tests {
         // Should preserve entry names
         assert!(result.contains("개요"), "개요 should be preserved");
         assert!(result.contains("소개"), "소개 should be preserved");
-        assert!(result.contains("요구 사항"), "요구 사항 should be preserved");
+        assert!(
+            result.contains("요구 사항"),
+            "요구 사항 should be preserved"
+        );
     }
 
     #[test]

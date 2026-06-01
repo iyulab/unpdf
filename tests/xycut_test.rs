@@ -139,10 +139,7 @@ fn test_scan_pdf_detection() {
         "Scan PDF should have no extracted text"
     );
     let warning = doc.extraction_quality.warning_message();
-    assert!(
-        warning.is_some(),
-        "Scan PDF should emit a warning"
-    );
+    assert!(warning.is_some(), "Scan PDF should emit a warning");
     assert!(
         warning.unwrap().contains("scanned image"),
         "Warning should mention scanned image"
@@ -159,6 +156,9 @@ fn test_extraction_quality_serializes_is_scan_pdf() {
         is_scan_pdf: true,
     };
     let json = serde_json::to_string(&q).unwrap();
-    assert!(json.contains("is_scan_pdf"), "is_scan_pdf should appear: {json}");
+    assert!(
+        json.contains("is_scan_pdf"),
+        "is_scan_pdf should appear: {json}"
+    );
     assert!(json.contains("true"), "is_scan_pdf should be true: {json}");
 }
