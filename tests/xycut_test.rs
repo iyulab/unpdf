@@ -123,6 +123,33 @@ fn test_two_column_pdf_with_xycut() {
 }
 
 #[test]
+fn test_scan_pdf_detection() {
+    let path = Path::new("test-files/realworld/patent-document.pdf");
+    if !path.exists() {
+        return;
+    }
+    let doc = parse_file(path).unwrap();
+    // T-C1-4 regression: image-only Hancom PDF must be classified as scan
+    assert!(
+        doc.extraction_quality.is_scan_pdf,
+        "patent-document.pdf should be detected as scan PDF"
+    );
+    assert_eq!(
+        doc.extraction_quality.char_count, 0,
+        "Scan PDF should have no extracted text"
+    );
+    let warning = doc.extraction_quality.warning_message();
+    assert!(
+        warning.is_some(),
+        "Scan PDF should emit a warning"
+    );
+    assert!(
+        warning.unwrap().contains("scanned image"),
+        "Warning should mention scanned image"
+    );
+}
+
+#[test]
 fn test_extraction_quality_serializes_is_scan_pdf() {
     let q = unpdf::ExtractionQuality {
         char_count: 0,

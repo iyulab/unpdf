@@ -1,6 +1,5 @@
 //! PDF document parser.
 
-use std::collections::HashMap;
 use std::io::Read;
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
@@ -132,23 +131,6 @@ impl PdfParser {
         document.extraction_quality = final_q;
 
         Ok(document)
-    }
-
-    /// Extract embedded resources (images).
-    #[allow(dead_code)]
-    fn extract_resources(&self) -> Result<HashMap<String, Resource>> {
-        let mut resources = HashMap::new();
-        for (page_num, page_id) in self.backend.pages() {
-            if let Ok(xobjects) = self.backend.page_xobjects(page_id) {
-                for xobj in xobjects {
-                    let key = format!("page{}_{}", page_num, xobj.name);
-                    if let Some(resource) = Self::convert_xobject(xobj) {
-                        resources.insert(key, resource);
-                    }
-                }
-            }
-        }
-        Ok(resources)
     }
 
     /// Convert a raw XObject into a model Resource.
