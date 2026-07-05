@@ -54,6 +54,26 @@ jobs:
           fi
           echo "All versions match: $root"
 
+  security-audit:
+    name: Security Audit
+    needs: version-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Prebuilt binary — avoids compiling cargo-audit on every run.
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      # Fails on any vulnerability not listed in .cargo/audit.toml. Accepted
+      # advisories (transitive, unreachable) are documented there with the
+      # reasoning, so this gate stays green until a NEW advisory appears.
+      # Informational warnings (unmaintained/unsound) are reported, not fatal.
+      - name: Audit dependencies
+        run: cargo audit
+
   build:
     name: Build and Test
     needs: version-check
