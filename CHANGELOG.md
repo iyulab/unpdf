@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.1 — 2026-07-05
+
+### Security
+- Bump `tar` 0.4.44 → 0.4.46 (RUSTSEC-2026-0067 symlink-traversal chmod, RUSTSEC-2026-0068 PAX size
+  header ignored). Both fixed in ≥ 0.4.45; lifted within the existing semver range.
+- Add a `cargo audit` CI gate (Security Audit job) with a documented `.cargo/audit.toml`. The only
+  accepted advisories are quick-xml 0.23 RUSTSEC-2026-0194/-0195 — an optional, uncompiled transitive
+  of self_update's S3 backend (unused; unpdf has no direct quick-xml dependency).
+
 ## 0.7.0 — 2026-05-31
 
 ### Added
