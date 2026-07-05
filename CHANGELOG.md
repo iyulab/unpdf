@@ -2,12 +2,27 @@
 
 ## 0.7.1 — 2026-07-05
 
+Also ships the parsing-quality and CI work that accumulated on `main` after the v0.7.0 tag.
+
 ### Security
 - Bump `tar` 0.4.44 → 0.4.46 (RUSTSEC-2026-0067 symlink-traversal chmod, RUSTSEC-2026-0068 PAX size
   header ignored). Both fixed in ≥ 0.4.45; lifted within the existing semver range.
 - Add a `cargo audit` CI gate (Security Audit job) with a documented `.cargo/audit.toml`. The only
   accepted advisories are quick-xml 0.23 RUSTSEC-2026-0194/-0195 — an optional, uncompiled transitive
   of self_update's S3 backend (unused; unpdf has no direct quick-xml dependency).
+
+### Added
+- Scanned-PDF detection — recognizes image-only PDFs with no embedded fonts and flags them via
+  extraction-quality diagnostics instead of emitting empty output.
+
+### Fixed
+- Header/footer filtering was skipped on pages containing tables, leaking page numbers and running
+  headers into extracted headings; the filter now runs regardless of table presence.
+- Deterministic layout output — `ToUnicodeMap` and TrueType `cmap` tables now use `BTreeMap`, so
+  repeated runs over the same document produce byte-identical Markdown (verified via two-run diff).
+- Inline table-of-contents dot-leader cleanup threshold raised from 4+ to 8+ dots, avoiding false
+  removal of legitimate dotted text.
+- CI: npm publish uses `--access public` so `@iyulab/unpdf` publishes correctly.
 
 ## 0.7.0 — 2026-05-31
 
