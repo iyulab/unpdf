@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- Composite (Type0/CID) fonts with no usable CMap no longer fall back to byte-wise Latin-1 decoding,
+  which produced mojibake (`°Ë ,¥õ ²ô`). The guard previously covered only `Identity-H/V`, so Type0
+  fonts using a predefined CMap (e.g. `/Encoding /KSC-EUC-H` in scanner OCR layers) leaked garbage
+  text. Such fonts now yield no text. Predefined CJK CMap support itself is tracked separately.
+
 ## 0.7.1 — 2026-07-05
 
 Also ships the parsing-quality and CI work that accumulated on `main` after the v0.7.0 tag.
