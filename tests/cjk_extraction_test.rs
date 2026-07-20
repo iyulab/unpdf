@@ -148,3 +148,69 @@ fn test_cjk_table_no_oversplit() {
         }
     }
 }
+
+/// A Type0 font with a predefined CMap (`/Encoding /KSC-EUC-H`) and no ToUnicode /
+/// no embedded font file must not fall back to byte-wise Latin-1 decoding — that
+/// produces mojibake like `°Ë ,¥õ ²ô`. Emitting nothing is the correct behaviour
+/// until predefined CJK CMaps are supported.
+#[test]
+fn test_type0_predefined_cmap_no_mojibake() {
+    let doc = unpdf::parse_bytes(&ksc_euc_h_pdf()).unwrap();
+    let text = doc.plain_text();
+    assert!(
+        text.trim().is_empty(),
+        "Type0 font without usable CMap must yield no text, got {text:?}"
+    );
+}
+
+/// Minimal PDF whose only font is a Type0/CIDFontType2 font using the predefined
+/// `KSC-EUC-H` CMap, with no ToUnicode and no embedded font file — the structure
+/// emitted by scanner OCR layers (e.g. Canon SC1011).
+fn ksc_euc_h_pdf() -> Vec<u8> {
+    let content = b"BT /F1 12 Tf 20 50 Td <B0CBBEDFA4C3> Tj ET\n";
+    let objects: Vec<Vec<u8>> = vec![
+        b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+        b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 100]\
+          /Resources<</Font<</F1 5 0 R>>>>/Contents 4 0 R>>"
+            .to_vec(),
+        format!(
+            "<</Length {}>>\nstream\n{}\nendstream",
+            content.len(),
+            String::from_utf8_lossy(content)
+        )
+        .into_bytes(),
+        b"<</Type/Font/Subtype/Type0/BaseFont/Dotum\
+          /DescendantFonts[6 0 R]/Encoding/KSC-EUC-H>>"
+            .to_vec(),
+        b"<</Type/Font/Subtype/CIDFontType2/BaseFont/Dotum\
+          /CIDSystemInfo<</Registry(Adobe)/Ordering(Korea1)/Supplement 2>>\
+          /FontDescriptor 7 0 R/DW 1000>>"
+            .to_vec(),
+        b"<</Type/FontDescriptor/FontName/Dotum/Flags 39\
+          /FontBBox[-150 -136 1100 864]/ItalicAngle 0/Ascent 864/Descent -136\
+          /CapHeight 864/StemV 91>>"
+            .to_vec(),
+    ];
+
+    let mut pdf = b"%PDF-1.4\n".to_vec();
+    let mut offsets = Vec::with_capacity(objects.len());
+    for (idx, body) in objects.iter().enumerate() {
+        offsets.push(pdf.len());
+        pdf.extend_from_slice(format!("{} 0 obj\n", idx + 1).as_bytes());
+        pdf.extend_from_slice(body);
+        pdf.extend_from_slice(b"\nendobj\n");
+    }
+
+    let xref_start = pdf.len();
+    let size = objects.len() + 1;
+    pdf.extend_from_slice(format!("xref\n0 {size}\n0000000000 65535 f \n").as_bytes());
+    for offset in &offsets {
+        pdf.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+    }
+    pdf.extend_from_slice(
+        format!("trailer\n<</Size {size}/Root 1 0 R>>\nstartxref\n{xref_start}\n%%EOF\n")
+            .as_bytes(),
+    );
+    pdf
+}

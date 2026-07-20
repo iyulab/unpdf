@@ -756,6 +756,7 @@ impl RawFontResolver {
     ) -> String {
         let font_obj_id = self.find_font_dict(doc, page, font_name);
         let mut is_identity_h = false;
+        let mut is_composite = false;
 
         // 1. Try ToUnicode CMap first
         if let Some(fid) = font_obj_id {
@@ -766,6 +767,7 @@ impl RawFontResolver {
                 }
             }
             is_identity_h = self.is_identity_cid_font(doc, fid);
+            is_composite = self.is_composite_font(doc, fid);
         }
 
         // 2. Try embedded TrueType cmap table (for Identity-H CID fonts without ToUnicode)
@@ -803,8 +805,11 @@ impl RawFontResolver {
             }
         }
 
-        // For Identity-H/V fonts, simple fallback always produces garbage
-        if is_identity_h {
+        // For composite (Type0/CID) fonts the content-stream bytes are CID codes, not
+        // single-byte character codes. Byte-wise Latin-1 interpretation is categorically
+        // wrong for them and only produces mojibake (e.g. `/Encoding /KSC-EUC-H` fonts
+        // without ToUnicode), so emit nothing rather than unreadable text.
+        if is_identity_h || is_composite {
             return String::new();
         }
 
@@ -934,6 +939,25 @@ impl RawFontResolver {
             .and_then(|e| e.as_name())
             .map(|n| n == b"Identity-H" || n == b"Identity-V")
             .unwrap_or(false)
+    }
+
+    /// Check if a font is a composite (Type0/CID) font.
+    ///
+    /// Composite fonts address glyphs through CIDs, so their content-stream bytes must
+    /// be decoded via a CMap (ToUnicode, embedded cmap, or a predefined CMap). Any
+    /// single-byte fallback decoding is meaningless for them.
+    fn is_composite_font(&self, doc: &RawDocument, font_obj_id: PageId) -> bool {
+        let font_dict = match doc.get_dict(font_obj_id) {
+            Ok(d) => d,
+            Err(_) => return false,
+        };
+
+        let is_type0 = raw_dict_get(font_dict, b"Subtype")
+            .and_then(|s| s.as_name())
+            .map(|n| n == b"Type0")
+            .unwrap_or(false);
+
+        is_type0 || raw_dict_get(font_dict, b"DescendantFonts").is_some()
     }
 
     /// Get the CIDFont's object ID from a Type0 font.
