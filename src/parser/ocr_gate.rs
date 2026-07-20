@@ -17,9 +17,9 @@
 /// Below this many characters a page carries too little evidence to judge.
 const MIN_CHARS: usize = 40;
 
-/// Thresholds sit roughly 1.4× below the lowest value measured across the test
-/// corpus (word-like 0.556, coherent 0.770), while the OCR garbage that motivated
-/// this gate scores 0.231 and 0.293. Both must be crossed to call text incoherent.
+/// Thresholds sit well below the lowest value measured across the test corpus
+/// (word-like 0.556, coherent 0.771), while the OCR garbage that motivated this
+/// gate scores 0.256 and 0.434. Both must be crossed to call text incoherent.
 const MAX_WORD_LIKE_RATIO: f32 = 0.40;
 const MAX_COHERENT_CHAR_RATIO: f32 = 0.55;
 
@@ -71,20 +71,25 @@ impl TextMetrics {
 
 /// A character that carries meaning in running text.
 ///
-/// Deliberately excludes isolated Hangul jamo (`ㄱ`, `ㅓ`), which appear in real
-/// Korean only as pronunciation notes but flood failed OCR output, along with the
-/// symbol, radical and Greek blocks that OCR falls back to on unrecognised strokes.
+/// Any letter of any script counts — listing scripts instead would mean every
+/// unlisted one (Greek, Devanagari, Georgian, the CJK extension blocks…) read as
+/// garbage, and a page of it would be dropped. Only the marks that failed OCR
+/// actually produces are excluded: isolated Hangul jamo, which appear in real
+/// Korean only as pronunciation notes, and the radical blocks, which duplicate
+/// ideographs.
 fn is_coherent(c: char) -> bool {
+    if !c.is_alphabetic() && !c.is_numeric() {
+        return false;
+    }
+
     let cp = c as u32;
-    matches!(cp,
-        0xAC00..=0xD7A3   // Hangul syllables
-        | 0x4E00..=0x9FFF // CJK ideographs
-        | 0x3040..=0x30FF // Kana
-        | 0x0400..=0x04FF // Cyrillic
-        | 0x0590..=0x06FF // Hebrew, Arabic
-        | 0x0E00..=0x0E7F // Thai
-    ) || c.is_ascii_alphanumeric()
-        || ((0x00C0..=0x024F).contains(&cp) && c.is_alphabetic()) // Latin with diacritics
+    !matches!(cp,
+        0x1100..=0x11FF   // Hangul jamo
+        | 0x3130..=0x318F // Hangul compatibility jamo
+        | 0xFFA0..=0xFFDC // Halfwidth Hangul jamo
+        | 0x2E80..=0x2EFF // CJK Radicals Supplement
+        | 0x2F00..=0x2FDF // Kangxi Radicals
+    )
 }
 
 #[cfg(test)]
@@ -121,6 +126,18 @@ mod tests {
         let labels = "700A 1K 32EA SS275 SOFF 1200 x 800 mm t=6 SCALE 1:50 REV B \
                       2024-08-12 DWG No. 1927";
         assert!(!is_incoherent_text(labels));
+    }
+
+    /// Scripts the gate was not tuned on must still read as language — otherwise a
+    /// scan in Hindi or Greek would have its whole text layer dropped.
+    #[test]
+    fn accepts_scripts_beyond_the_tuning_corpus() {
+        let hindi = "यह दस्तावेज़ स्थापना और संचालन प्रक्रिया का वर्णन करता है। \
+                     स्थापना से पहले सिस्टम आवश्यकताओं की जाँच करें।";
+        let greek = "Το έγγραφο περιγράφει τη διαδικασία εγκατάστασης και λειτουργίας \
+                     του προϊόντος. Ελέγξτε πρώτα τις απαιτήσεις του συστήματος.";
+        assert!(!is_incoherent_text(hindi));
+        assert!(!is_incoherent_text(greek));
     }
 
     #[test]

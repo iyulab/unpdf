@@ -586,8 +586,8 @@ impl<'a> LayoutAnalyzer<'a> {
                     }
                 }
                 "Tr" if !op.operands.is_empty() => {
-                    if let PdfValue::Integer(mode) = op.operands[0] {
-                        render_mode = mode;
+                    if let Some(mode) = get_number_from_value(&op.operands[0]) {
+                        render_mode = mode as i64;
                     }
                 }
                 "Do" if page_area > 0.0 => {
