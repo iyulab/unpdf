@@ -3,6 +3,7 @@
 //! This module provides text extraction with position and font information,
 //! enabling proper heading detection, paragraph separation, and structure analysis.
 
+use std::cell::Cell;
 use std::collections::{BTreeMap, HashMap};
 
 use super::backend::{get_number_from_value, PdfBackend, PdfValue};
@@ -299,6 +300,36 @@ pub struct LayoutAnalyzer<'a> {
     backend: &'a dyn PdfBackend,
     /// Font size statistics for the document
     font_stats: FontStatistics,
+    /// Whether to drop an invisible OCR text layer that decodes to nothing meaningful.
+    suppress_low_confidence_ocr: bool,
+    /// Set when a page's text layer was dropped by that gate.
+    ocr_text_suppressed: Cell<bool>,
+}
+
+/// What a page's content stream says about how its text was produced.
+///
+/// A searchable scan draws the page as one raster image and puts the OCR result on
+/// top in rendering mode 3, which paints nothing — the text exists only to be
+/// selected and searched. That combination identifies an OCR layer; whether the
+/// layer is worth keeping is a separate question, answered by [`super::ocr_gate`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PageTextLayerSignals {
+    /// Share of characters drawn in text rendering mode 3 (invisible).
+    pub invisible_char_ratio: f32,
+    /// Whether an XObject was drawn covering essentially the whole page.
+    pub has_page_covering_image: bool,
+}
+
+impl PageTextLayerSignals {
+    /// Fraction of the page an image must cover to count as the page itself.
+    const PAGE_COVERAGE: f32 = 0.9;
+    /// Share of invisible characters above which the layer is not meant to be read.
+    const INVISIBLE_TEXT: f32 = 0.9;
+
+    /// Whether the page looks like a scan with an OCR text layer on top.
+    pub fn is_ocr_layer_over_scan(&self) -> bool {
+        self.has_page_covering_image && self.invisible_char_ratio >= Self::INVISIBLE_TEXT
+    }
 }
 
 /// Font statistics for heading detection.
@@ -387,7 +418,20 @@ impl<'a> LayoutAnalyzer<'a> {
         Self {
             backend,
             font_stats: FontStatistics::default(),
+            suppress_low_confidence_ocr: true,
+            ocr_text_suppressed: Cell::new(false),
         }
+    }
+
+    /// Enable or disable dropping of low-confidence OCR text layers.
+    pub fn with_ocr_suppression(mut self, enabled: bool) -> Self {
+        self.suppress_low_confidence_ocr = enabled;
+        self
+    }
+
+    /// Whether any page analysed so far had its OCR text layer dropped.
+    pub fn ocr_text_suppressed(&self) -> bool {
+        self.ocr_text_suppressed.get()
     }
 
     /// Get mutable reference to font statistics (for external use).
@@ -442,7 +486,25 @@ impl<'a> LayoutAnalyzer<'a> {
         }
 
         let content = self.backend.page_content(*page_id)?;
-        self.parse_operations(&content, &fonts, *page_id)
+        let (spans, signals) = self.parse_operations(&content, &fonts, *page_id)?;
+
+        if self.suppress_low_confidence_ocr && signals.is_ocr_layer_over_scan() {
+            let text = spans
+                .iter()
+                .map(|s| s.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            if super::ocr_gate::is_incoherent_text(&text) {
+                log::debug!(
+                    "Page {}: dropping invisible OCR text layer — no readable text recognised",
+                    page_num
+                );
+                self.ocr_text_suppressed.set(true);
+                return Ok(Vec::new());
+            }
+        }
+
+        Ok(spans)
     }
 
     /// Extract structured text blocks from a page.
@@ -486,8 +548,18 @@ impl<'a> LayoutAnalyzer<'a> {
         content: &[u8],
         fonts: &HashMap<Vec<u8>, FontInfo>,
         page_id: super::backend::PageId,
-    ) -> Result<Vec<TextSpan>> {
+    ) -> Result<(Vec<TextSpan>, PageTextLayerSignals)> {
         let operations = self.backend.decode_content(content)?;
+        let page_area = {
+            let (w, h) = self.backend.page_dimensions(page_id);
+            w * h
+        };
+        // Text rendering mode (`Tr`): 3 paints nothing — the mode OCR layers use.
+        let mut render_mode: i64 = 0;
+        let mut render_mode_stack: Vec<i64> = Vec::new();
+        let mut invisible_chars = 0usize;
+        let mut total_chars = 0usize;
+        let mut signals = PageTextLayerSignals::default();
 
         let mut spans = Vec::new();
         let mut current_font = String::new();
@@ -503,10 +575,28 @@ impl<'a> LayoutAnalyzer<'a> {
             match op.operator.as_str() {
                 "q" => {
                     ctm_stack.push(ctm);
+                    render_mode_stack.push(render_mode);
                 }
                 "Q" => {
                     if let Some(saved) = ctm_stack.pop() {
                         ctm = saved;
+                    }
+                    if let Some(saved) = render_mode_stack.pop() {
+                        render_mode = saved;
+                    }
+                }
+                "Tr" if !op.operands.is_empty() => {
+                    if let PdfValue::Integer(mode) = op.operands[0] {
+                        render_mode = mode;
+                    }
+                }
+                "Do" if page_area > 0.0 => {
+                    // The CTM maps the unit square to where the XObject lands, so its
+                    // column lengths are the drawn width and height.
+                    let drawn_w = ctm[0].hypot(ctm[1]);
+                    let drawn_h = ctm[2].hypot(ctm[3]);
+                    if drawn_w * drawn_h / page_area >= PageTextLayerSignals::PAGE_COVERAGE {
+                        signals.has_page_covering_image = true;
                     }
                 }
                 "cm" if op.operands.len() >= 6 => {
@@ -599,6 +689,12 @@ impl<'a> LayoutAnalyzer<'a> {
                     };
 
                     if !text.trim().is_empty() {
+                        count_render_mode(
+                            &text,
+                            render_mode,
+                            &mut total_chars,
+                            &mut invisible_chars,
+                        );
                         let (tx, ty) = text_matrix.get_position();
                         let (x, y) = apply_ctm(&ctm, tx, ty);
                         let effective_size =
@@ -620,6 +716,12 @@ impl<'a> LayoutAnalyzer<'a> {
                             let text = self.backend.decode_text(page_id, &current_font_name, bytes);
 
                             if !text.trim().is_empty() {
+                                count_render_mode(
+                                    &text,
+                                    render_mode,
+                                    &mut total_chars,
+                                    &mut invisible_chars,
+                                );
                                 let (tx, ty) = text_matrix.get_position();
                                 let (x, y) = apply_ctm(&ctm, tx, ty);
                                 let effective_size =
@@ -639,7 +741,11 @@ impl<'a> LayoutAnalyzer<'a> {
             }
         }
 
-        Ok(spans)
+        if total_chars > 0 {
+            signals.invisible_char_ratio = invisible_chars as f32 / total_chars as f32;
+        }
+
+        Ok((spans, signals))
     }
 
     /// Detect columns in a page based on vertical gap (gutter) detection.
@@ -1467,6 +1573,17 @@ fn concat_matrix(a: &[f32; 6], b: &[f32; 6]) -> [f32; 6] {
 
 /// Apply a CTM to a user-space point, returning device-space coordinates.
 #[inline]
+/// Tally characters by whether they were painted, for [`PageTextLayerSignals`].
+///
+/// Rendering mode 3 (and 7, which only sets a clipping path) draws nothing.
+fn count_render_mode(text: &str, render_mode: i64, total: &mut usize, invisible: &mut usize) {
+    let chars = text.chars().filter(|c| !c.is_whitespace()).count();
+    *total += chars;
+    if render_mode == 3 || render_mode == 7 {
+        *invisible += chars;
+    }
+}
+
 fn apply_ctm(ctm: &[f32; 6], x: f32, y: f32) -> (f32, f32) {
     (
         ctm[0] * x + ctm[2] * y + ctm[4],

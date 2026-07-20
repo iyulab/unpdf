@@ -220,19 +220,23 @@ pub(crate) fn parse_single_page(
     let mut page = Page::new(page_num, width, height);
 
     if options.extract_mode != ExtractMode::StructureOnly {
-        match extract_page_with_tables_fn(backend, page_num) {
+        // One analyzer per page: the text paths below share its font statistics and
+        // its record of whether an unreadable OCR layer was dropped.
+        let mut analyzer = super::layout::LayoutAnalyzer::new(backend)
+            .with_ocr_suppression(options.suppress_low_confidence_ocr);
+
+        match extract_page_with_tables_fn(&mut analyzer, page_num) {
             Ok(blocks) if !blocks.is_empty() => {
                 for block in blocks {
                     page.add_block(block);
                 }
             }
-            Ok(_) => {
-                fallback_text_extraction_fn(backend, &mut page, page_num, options)?;
-            }
-            Err(_) => {
-                fallback_text_extraction_fn(backend, &mut page, page_num, options)?;
+            _ => {
+                fallback_text_extraction_fn(&analyzer, &mut page, page_num, options)?;
             }
         }
+
+        page.ocr_text_suppressed = analyzer.ocr_text_suppressed();
     }
 
     // 이미지(XObject) 수집 — extract_resources 가 활성화된 경우.
@@ -377,8 +381,10 @@ fn merge_same_row_paragraphs(elements: Vec<(f32, Block)>) -> Vec<(f32, Block)> {
     out
 }
 
-fn extract_page_with_tables_fn(backend: &dyn PdfBackend, page_num: u32) -> Result<Vec<Block>> {
-    let analyzer = super::layout::LayoutAnalyzer::new(backend);
+fn extract_page_with_tables_fn(
+    analyzer: &mut super::layout::LayoutAnalyzer,
+    page_num: u32,
+) -> Result<Vec<Block>> {
     let mut spans = analyzer.extract_page_spans(page_num)?;
 
     // Apply header/footer filter before table detection so page numbers
@@ -431,7 +437,7 @@ fn extract_page_with_tables_fn(backend: &dyn PdfBackend, page_num: u32) -> Resul
         }
 
         if !remaining_spans.is_empty() {
-            let mut a = super::layout::LayoutAnalyzer::new(backend);
+            let a = &mut *analyzer;
             for span in &remaining_spans {
                 a.font_stats_mut().add_size(span.font_size);
             }
@@ -466,8 +472,7 @@ fn extract_page_with_tables_fn(backend: &dyn PdfBackend, page_num: u32) -> Resul
         let merged = merge_same_row_paragraphs(elements);
         blocks = merged.into_iter().map(|(_, block)| block).collect();
     } else {
-        let mut a = super::layout::LayoutAnalyzer::new(backend);
-        let text_blocks = a.extract_page_blocks(page_num)?;
+        let text_blocks = analyzer.extract_page_blocks(page_num)?;
         for block in text_blocks {
             if !block.is_empty() {
                 let text = block.text();
@@ -504,12 +509,11 @@ fn extract_page_with_tables_fn(backend: &dyn PdfBackend, page_num: u32) -> Resul
 }
 
 fn fallback_text_extraction_fn(
-    backend: &dyn PdfBackend,
+    analyzer: &super::layout::LayoutAnalyzer,
     page: &mut Page,
     page_num: u32,
     options: &ParseOptions,
 ) -> Result<()> {
-    let analyzer = super::layout::LayoutAnalyzer::new(backend);
     match analyzer.extract_page_spans(page_num) {
         Ok(spans) if !spans.is_empty() => {
             let lines = analyzer.group_spans_into_lines_pub(spans);

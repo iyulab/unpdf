@@ -22,6 +22,14 @@ pub struct ExtractionQuality {
     /// image (`Do`) operators present with no text (`Tj`/`TJ`) operators.
     #[serde(default)]
     pub is_scan_pdf: bool,
+
+    /// Number of pages whose OCR text layer was dropped as unreadable.
+    ///
+    /// A searchable scan puts the OCR result on the page as invisible text. When
+    /// that text recognises nothing real it is discarded, leaving the page image
+    /// alone. Set `ParseOptions::suppress_low_confidence_ocr` to `false` to keep it.
+    #[serde(default)]
+    pub suppressed_ocr_pages: usize,
 }
 
 impl ExtractionQuality {
@@ -33,6 +41,7 @@ impl ExtractionQuality {
             replacement_char_count: text.chars().filter(|&c| c == '\u{FFFD}').count(),
             encrypted: false,
             is_scan_pdf: false,
+            suppressed_ocr_pages: 0,
         }
     }
 
@@ -77,6 +86,13 @@ impl ExtractionQuality {
                     .to_string(),
             );
         }
+        if self.suppressed_ocr_pages > 0 {
+            return Some(format!(
+                "Dropped the OCR text layer on {} page(s): the scan's recognised text \
+                 was not readable. Use --keep-ocr-text to extract it anyway.",
+                self.suppressed_ocr_pages
+            ));
+        }
         if self.replacement_char_ratio() >= 0.3 {
             return Some(format!(
                 "Low extraction quality ({} of {} chars are replacement characters). \
@@ -99,6 +115,7 @@ pub struct QualityAccumulator {
     replacement_char_count: usize,
     word_count: usize,
     last_was_non_ws: bool,
+    suppressed_ocr_pages: usize,
 }
 
 impl QualityAccumulator {
@@ -122,6 +139,11 @@ impl QualityAccumulator {
         self.last_was_non_ws = prev_non_ws;
     }
 
+    /// Record that a page's unreadable OCR text layer was dropped.
+    pub fn note_suppressed_ocr_page(&mut self) {
+        self.suppressed_ocr_pages += 1;
+    }
+
     pub fn finalize(self) -> ExtractionQuality {
         ExtractionQuality {
             char_count: self.char_count,
@@ -129,6 +151,7 @@ impl QualityAccumulator {
             replacement_char_count: self.replacement_char_count,
             encrypted: false,
             is_scan_pdf: false,
+            suppressed_ocr_pages: self.suppressed_ocr_pages,
         }
     }
 }

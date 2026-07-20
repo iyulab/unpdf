@@ -52,6 +52,8 @@ pub struct PageStreamOptions {
     pub pages: PageSelection,
     pub password: Option<String>,
     pub parallel: bool,
+    /// 읽을 수 없는 OCR 텍스트 레이어를 버릴지 여부. `ParseOptions` 참고.
+    pub suppress_low_confidence_ocr: bool,
     /// 동시에 in-flight 상태로 둘 페이지 수의 상한. 기본 cores*2.
     pub window_size: usize,
     pub emit_progress_every: u32,
@@ -70,6 +72,7 @@ impl Default for PageStreamOptions {
             pages: PageSelection::All,
             password: None,
             parallel: true,
+            suppress_low_confidence_ocr: true,
             #[cfg(not(target_arch = "wasm32"))]
             window_size: rayon::current_num_threads().saturating_mul(2).max(2),
             #[cfg(target_arch = "wasm32")]
@@ -90,6 +93,7 @@ impl From<&ParseOptions> for PageStreamOptions {
             pages: o.pages.clone(),
             password: o.password.clone(),
             parallel: o.parallel,
+            suppress_low_confidence_ocr: o.suppress_low_confidence_ocr,
             ..Self::default()
         }
     }
@@ -314,6 +318,7 @@ where
         pages: opts.pages.clone(),
         password: opts.password.clone(),
         parallel: opts.parallel,
+        suppress_low_confidence_ocr: opts.suppress_low_confidence_ocr,
     };
 
     // 3. 실행
@@ -334,6 +339,9 @@ where
         while let Some((n, item)) = reorder.try_pop_next() {
             match item {
                 Ok(page) => {
+                    if page.ocr_text_suppressed {
+                        quality.note_suppressed_ocr_page();
+                    }
                     for block in &page.elements {
                         let mut buf = String::new();
                         block.append_plain_text(&mut buf);

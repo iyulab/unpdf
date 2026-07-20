@@ -42,6 +42,10 @@ pub struct ConvertArgs {
     #[arg(long)]
     pub no_images: bool,
 
+    /// Keep a scan's OCR text layer even when it recognised nothing readable
+    #[arg(long)]
+    pub keep_ocr_text: bool,
+
     /// Directory for extracted images (defaults to `<out>/images`)
     #[arg(long, value_name = "DIR")]
     pub image_dir: Option<PathBuf>,
@@ -344,6 +348,7 @@ fn main() {
                     formats: vec!["md".to_string()],
                     all: false,
                     no_images: false,
+                    keep_ocr_text: false,
                     image_dir: None,
                     min_image_size: 64,
                     window: None,
@@ -442,7 +447,9 @@ fn cmd_convert(args: &ConvertArgs) -> Result<bool, Box<dyn std::error::Error>> {
     }
 
     // Open parser
-    let mut parse_options = ParseOptions::new().lenient();
+    let mut parse_options = ParseOptions::new()
+        .lenient()
+        .with_ocr_suppression(!args.keep_ocr_text);
     if image_dir.is_some() {
         parse_options = parse_options.with_resources(true);
     }
@@ -456,6 +463,7 @@ fn cmd_convert(args: &ConvertArgs) -> Result<bool, Box<dyn std::error::Error>> {
     let mut stream_opts = PageStreamOptions {
         extract_resources: image_dir.is_some(),
         min_image_dimension: args.min_image_size,
+        suppress_low_confidence_ocr: !args.keep_ocr_text,
         ..PageStreamOptions::default()
     };
     if let Some(w) = args.window {
@@ -539,11 +547,13 @@ fn cmd_convert(args: &ConvertArgs) -> Result<bool, Box<dyn std::error::Error>> {
         }
     }
 
-    let had_warnings = quality
-        .as_ref()
-        .map(|q| q.warning_message().is_some())
-        .unwrap_or(false);
-    Ok(had_warnings)
+    let warning = quality.as_ref().and_then(|q| q.warning_message());
+    if let Some(warning) = &warning {
+        if !args.quiet {
+            eprintln!("{}: {}", "Warning".yellow().bold(), warning);
+        }
+    }
+    Ok(warning.is_some())
 }
 
 #[allow(clippy::too_many_arguments)]

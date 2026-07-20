@@ -26,6 +26,11 @@ pub struct Page {
     /// 가 페이지 파싱 직후 즉시 디스크로 flush 할 수 있도록 제공.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<(String, Resource)>,
+
+    /// 이 페이지의 OCR 텍스트 레이어가 읽을 수 없다고 판단되어 폐기된 경우 `true`.
+    /// 스캔 이미지 위의 투명 텍스트가 아무 의미도 이루지 못할 때만 설정된다.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ocr_text_suppressed: bool,
 }
 
 impl Page {
@@ -38,6 +43,7 @@ impl Page {
             elements: Vec::new(),
             rotation: 0,
             images: Vec::new(),
+            ocr_text_suppressed: false,
         }
     }
 

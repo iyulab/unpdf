@@ -6,6 +6,7 @@ pub mod cmap_table;
 pub(crate) mod encoding;
 pub(crate) mod font;
 mod layout;
+mod ocr_gate;
 mod options;
 mod pdf_parser;
 pub(crate) mod predefined_cmap;

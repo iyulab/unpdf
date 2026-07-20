@@ -153,6 +153,7 @@ fn test_extraction_quality_serializes_is_scan_pdf() {
         word_count: 0,
         replacement_char_count: 0,
         encrypted: false,
+        suppressed_ocr_pages: 0,
         is_scan_pdf: true,
     };
     let json = serde_json::to_string(&q).unwrap();

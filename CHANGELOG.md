@@ -3,6 +3,13 @@
 ## Unreleased
 
 ### Added
+- Low-confidence OCR text layers are dropped. A searchable scan carries its OCR result
+  as invisible text over the page image; when the OCR recognised nothing readable — a
+  drawing, a stamp, a poor scan — the page now yields the image alone instead of a wall
+  of meaningless characters. A page qualifies only when a raster image covers it, the
+  text is drawn in rendering mode 3, *and* the text has no word structure, so visible
+  text is never affected. Reported via `ExtractionQuality::suppressed_ocr_pages`; opt
+  out with `ParseOptions::with_ocr_suppression(false)` or `unpdf convert --keep-ocr-text`.
 - Predefined CJK CMap support for Type0 fonts without a ToUnicode map: `KSC-EUC`,
   `KSCms-UHC` (Adobe-Korea1), `90ms-RKSJ` (Adobe-Japan1), `GBK-EUC` (Adobe-GB1) and
   `ETen-B5` (Adobe-CNS1), in both writing modes, plus the `UniXX-UCS2`/`UniXX-UTF16`
@@ -13,6 +20,7 @@
   codec legitimately disagree (e.g. `⋯` vs `…`).
 
 ### Fixed
+- `unpdf convert` computed extraction-quality warnings but never printed them.
 - CID→Unicode lookup picked the first code point listed for a CID, which is sometimes
   a compatibility duplicate — Adobe-GB1 CID 3795 resolved to the Kangxi radical `⽂`
   instead of `文`. Radicals, compatibility ideographs, Hangul fillers and U+2329/232A

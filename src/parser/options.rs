@@ -32,12 +32,26 @@ pub struct ParseOptions {
 
     /// Password for encrypted documents
     pub password: Option<String>,
+
+    /// Whether to drop an invisible OCR text layer whose text is not readable.
+    ///
+    /// Searchable scans carry the OCR result as invisible text over the page
+    /// image. When the OCR recognised nothing real — a drawing, a stamp, a poor
+    /// scan — that layer decodes to meaningless characters, which are worse than
+    /// no text at all. Default `true`; set `false` to keep the raw layer.
+    pub suppress_low_confidence_ocr: bool,
 }
 
 impl ParseOptions {
     /// Create new parse options with defaults.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Keep or drop unreadable OCR text layers (default: drop).
+    pub fn with_ocr_suppression(mut self, enabled: bool) -> Self {
+        self.suppress_low_confidence_ocr = enabled;
+        self
     }
 
     /// Set error mode.
@@ -112,6 +126,7 @@ impl Default for ParseOptions {
             parallel: true,
             pages: PageSelection::All,
             password: None,
+            suppress_low_confidence_ocr: true,
         }
     }
 }
