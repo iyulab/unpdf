@@ -2,7 +2,22 @@
 
 ## Unreleased
 
+### Added
+- Predefined CJK CMap support for Type0 fonts without a ToUnicode map: `KSC-EUC`,
+  `KSCms-UHC` (Adobe-Korea1), `90ms-RKSJ` (Adobe-Japan1), `GBK-EUC` (Adobe-GB1) and
+  `ETen-B5` (Adobe-CNS1), in both writing modes, plus the `UniXX-UCS2`/`UniXX-UTF16`
+  CMaps (decoded as UTF-16BE). Code→CID tables are generated at build time from the
+  Adobe `cid2code.txt` files already shipped for CID→Unicode lookup. Decoding agrees
+  with the vendor codecs (EUC-KR, CP949, CP932, GBK, Big5) on 98.7% of mapped codes;
+  the remainder are punctuation where Adobe's character collection and the vendor
+  codec legitimately disagree (e.g. `⋯` vs `…`).
+
 ### Fixed
+- CID→Unicode lookup picked the first code point listed for a CID, which is sometimes
+  a compatibility duplicate — Adobe-GB1 CID 3795 resolved to the Kangxi radical `⽂`
+  instead of `文`. Radicals, compatibility ideographs, Hangul fillers and U+2329/232A
+  are now skipped when the CID has an ordinary code point. Affects every CID-keyed
+  font, including the Identity-H path.
 - Composite (Type0/CID) fonts with no usable CMap no longer fall back to byte-wise Latin-1 decoding,
   which produced mojibake (`°Ë ,¥õ ²ô`). The guard previously covered only `Identity-H/V`, so Type0
   fonts using a predefined CMap (e.g. `/Encoding /KSC-EUC-H` in scanner OCR layers) leaked garbage

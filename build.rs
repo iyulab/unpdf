@@ -3,6 +3,22 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 
+/// Predefined CMaps we generate code→CID tables for, as
+/// `(collection, cid2code column, generated table suffix)`.
+///
+/// The column name is the predefined CMap name without its `-H`/`-V` writing-mode
+/// suffix, which is how `predefined_cmap.rs` resolves a `/Encoding` name to a table.
+/// Only the legacy (non-Unicode) CMaps need a table — `UniXX-UCS2`/`UniXX-UTF16`
+/// codes are UTF-16BE and are decoded directly. The list is deliberately limited to
+/// the CMaps that appear in real-world PDFs; adding one is a single line here.
+const PREDEFINED_CMAPS: &[(&str, &str, &str)] = &[
+    ("KOREA1", "KSC-EUC", "KOREA1_KSC_EUC"),
+    ("KOREA1", "KSCms-UHC", "KOREA1_KSCMS_UHC"),
+    ("JAPAN1", "90ms-RKSJ", "JAPAN1_90MS_RKSJ"),
+    ("GB1", "GBK-EUC", "GB1_GBK_EUC"),
+    ("CNS1", "ETen-B5", "CNS1_ETEN_B5"),
+];
+
 fn main() {
     let out_dir = env::var("OUT_DIR").unwrap();
 
@@ -42,9 +58,162 @@ fn main() {
         all_code.push_str("];\n\n");
     }
 
+    for (collection, path) in &collections {
+        let data = fs::read_to_string(Path::new(path)).unwrap_or_default();
+
+        for (coll, column, suffix) in PREDEFINED_CMAPS {
+            if coll != collection {
+                continue;
+            }
+
+            let table = parse_code_to_cid(&data, column);
+            let lead_bytes = lead_bytes_of(&table);
+
+            all_code.push_str(&format!(
+                "pub(crate) static CODE_TO_CID_{}: &[(u16, u16)] = &[\n",
+                suffix
+            ));
+            for (code, cid) in &table {
+                all_code.push_str(&format!("    (0x{:04X}, {}),\n", code, cid));
+            }
+            all_code.push_str("];\n\n");
+
+            all_code.push_str(&format!(
+                "pub(crate) static LEAD_BYTES_{}: &[u8] = &{:?};\n\n",
+                suffix, lead_bytes
+            ));
+        }
+    }
+
+    all_code.push_str("pub(crate) static PREDEFINED_CMAPS: &[PredefinedCmap] = &[\n");
+    for (collection, column, suffix) in PREDEFINED_CMAPS {
+        all_code.push_str(&format!(
+            "    PredefinedCmap {{ collection: \"{}\", column: \"{}\", \
+             codes: CODE_TO_CID_{}, lead_bytes: LEAD_BYTES_{} }},\n",
+            collection, column, suffix, suffix
+        ));
+    }
+    all_code.push_str("];\n\n");
+
     let dest = Path::new(&out_dir).join("cmap_tables.rs");
     let mut f = fs::File::create(&dest).unwrap();
     f.write_all(all_code.as_bytes()).unwrap();
+}
+
+/// Pick the best Unicode code point from a `cid2code.txt` cell.
+///
+/// A cell may list several comma-separated code points for one CID, and the first is
+/// not always the useful one — Adobe-GB1 CID 3795 is `2F42,6587`, i.e. the Kangxi
+/// radical ⽂ before the ideograph 文. Compatibility forms are skipped in favour of
+/// the first ordinary code point; if every candidate is a compatibility form the
+/// first one is kept. A `v` suffix (vertical writing mode) is not part of the value.
+fn preferred_code_point(cell: &str) -> Option<u32> {
+    let candidates: Vec<u32> = cell
+        .split(',')
+        .filter_map(|v| u32::from_str_radix(v.trim().trim_end_matches('v'), 16).ok())
+        .filter(|cp| *cp > 0 && *cp <= 0x10FFFF)
+        .collect();
+
+    candidates
+        .iter()
+        .find(|cp| !is_compatibility_form(**cp))
+        .or_else(|| candidates.first())
+        .copied()
+}
+
+/// Code points that duplicate an ordinary character for legacy round-tripping.
+///
+/// Skipping these picks the character a reader expects: the ideograph rather than
+/// its Kangxi radical, a space rather than a filler, `〈` (U+3008) rather than the
+/// canonically-equivalent U+2329 that Unicode discourages.
+fn is_compatibility_form(cp: u32) -> bool {
+    matches!(cp,
+        0x00A0              // no-break space
+        | 0x2329..=0x232A   // angle brackets, canonically equivalent to U+3008/3009
+        | 0x2E80..=0x2EFF   // CJK Radicals Supplement
+        | 0x2F00..=0x2FDF   // Kangxi Radicals
+        | 0x3164 | 0xFFA0   // Hangul fillers
+        | 0xF900..=0xFAFF   // CJK Compatibility Ideographs
+        | 0xFE30..=0xFE4F   // CJK Compatibility Forms
+        | 0x2F800..=0x2FA1F // CJK Compatibility Ideographs Supplement
+    )
+}
+
+/// Build a `character code → CID` table from one encoding column of `cid2code.txt`.
+///
+/// Codes are hexadecimal; their byte width is the number of hex digits / 2, so a
+/// one-byte code `41` and a two-byte code `A1A1` are distinguishable by magnitude.
+///
+/// A `v` suffix marks a code used by the vertical (`-V`) CMap, which maps it to a
+/// rotated-glyph CID. Those entries are skipped: the same code then appears twice
+/// with different CIDs, and the vertical variant is the wrong one for text — its
+/// CID resolves to a compatibility form (or nothing) rather than the character.
+fn parse_code_to_cid(data: &str, column: &str) -> Vec<(u16, u16)> {
+    let mut result: Vec<(u16, u16)> = Vec::new();
+    let mut col_idx: Option<usize> = None;
+
+    for line in data.lines() {
+        let cols: Vec<&str> = line.split('\t').collect();
+
+        if cols.first().map(|c| c.trim() == "CID").unwrap_or(false) {
+            col_idx = cols.iter().position(|c| c.trim() == column);
+            continue;
+        }
+
+        let (idx, cid) = match (col_idx, cols[0].trim().parse::<u32>()) {
+            (Some(idx), Ok(cid)) if idx < cols.len() && cid <= u16::MAX as u32 => (idx, cid as u16),
+            _ => continue,
+        };
+
+        let field = cols[idx].trim();
+        if field.is_empty() || field == "*" {
+            continue;
+        }
+
+        for entry in field.split(',') {
+            let entry = entry.trim();
+            if entry.ends_with('v') {
+                continue;
+            }
+            if entry.len() > 4 {
+                continue; // only 1- and 2-byte codes are representable as u16
+            }
+            if let Ok(code) = u16::from_str_radix(entry, 16) {
+                result.push((code, cid));
+            }
+        }
+    }
+
+    result.sort_unstable();
+    result.dedup_by_key(|entry| entry.0);
+    result
+}
+
+/// Lead bytes that begin a two-byte code in the given table.
+///
+/// Used at decode time to decide how many bytes the next character code occupies.
+/// Panics if a lead byte is also a valid single-byte code, which would make the
+/// table ambiguous — none of the shipped CMaps have that overlap.
+fn lead_bytes_of(table: &[(u16, u16)]) -> Vec<u8> {
+    let mut leads: Vec<u8> = table
+        .iter()
+        .filter(|(code, _)| *code > 0xFF)
+        .map(|(code, _)| (code >> 8) as u8)
+        .collect();
+    leads.sort_unstable();
+    leads.dedup();
+
+    for lead in &leads {
+        assert!(
+            table
+                .binary_search_by_key(&(*lead as u16), |&(c, _)| c)
+                .is_err(),
+            "ambiguous CMap table: 0x{:02X} is both a lead byte and a single-byte code",
+            lead
+        );
+    }
+
+    leads
 }
 
 fn parse_cid2code(data: &str) -> Vec<(u32, u32)> {
@@ -97,14 +266,8 @@ fn parse_cid2code(data: &str) -> Vec<(u32, u32)> {
             continue;
         }
 
-        // Take the first value if comma-separated
-        let first = val.split(',').next().unwrap_or(val).trim();
-
-        // Parse hex
-        if let Ok(cp) = u32::from_str_radix(first, 16) {
-            if cp > 0 && cp <= 0x10FFFF {
-                result.push((cid, cp));
-            }
+        if let Some(cp) = preferred_code_point(val) {
+            result.push((cid, cp));
         }
     }
 

@@ -8,6 +8,7 @@ pub(crate) mod font;
 mod layout;
 mod options;
 mod pdf_parser;
+pub(crate) mod predefined_cmap;
 pub mod raw;
 pub mod stream;
 mod table_detector;

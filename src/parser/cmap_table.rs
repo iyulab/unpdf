@@ -2,6 +2,18 @@
 //!
 //! Tables are generated at compile time from Adobe's cid2code.txt files.
 
+/// A predefined CMap's `character code → CID` table, generated from `cid2code.txt`.
+pub(crate) struct PredefinedCmap {
+    /// Character collection the CIDs belong to (e.g. `KOREA1`).
+    pub collection: &'static str,
+    /// CMap name without its writing-mode suffix (e.g. `KSC-EUC`).
+    pub column: &'static str,
+    /// Code → CID pairs, sorted by code. One-byte codes are `0x00..=0xFF`.
+    pub codes: &'static [(u16, u16)],
+    /// Bytes that always begin a two-byte code, sorted.
+    pub lead_bytes: &'static [u8],
+}
+
 // Include the generated tables
 include!(concat!(env!("OUT_DIR"), "/cmap_tables.rs"));
 

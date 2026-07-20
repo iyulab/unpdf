@@ -149,13 +149,20 @@ fn test_cjk_table_no_oversplit() {
     }
 }
 
-/// A Type0 font with a predefined CMap (`/Encoding /KSC-EUC-H`) and no ToUnicode /
-/// no embedded font file must not fall back to byte-wise Latin-1 decoding — that
-/// produces mojibake like `°Ë ,¥õ ²ô`. Emitting nothing is the correct behaviour
-/// until predefined CJK CMaps are supported.
+/// A Type0 font with the predefined `KSC-EUC-H` CMap and no ToUnicode / no embedded
+/// font file decodes through the CMap: the codes are EUC-KR.
 #[test]
-fn test_type0_predefined_cmap_no_mojibake() {
-    let doc = unpdf::parse_bytes(&ksc_euc_h_pdf()).unwrap();
+fn test_type0_ksc_euc_h_decodes_korean() {
+    let doc = unpdf::parse_bytes(&predefined_cmap_pdf("KSC-EUC-H")).unwrap();
+    assert_eq!(doc.plain_text().trim(), "검야ㅓ");
+}
+
+/// A predefined CMap outside the supported set must not fall back to byte-wise
+/// Latin-1 decoding — that produced mojibake like `°Ë ,¥õ ²ô`. Emitting nothing is
+/// the correct behaviour for a composite font with no usable CMap.
+#[test]
+fn test_type0_unsupported_cmap_no_mojibake() {
+    let doc = unpdf::parse_bytes(&predefined_cmap_pdf("KSC-Johab-H")).unwrap();
     let text = doc.plain_text();
     assert!(
         text.trim().is_empty(),
@@ -163,10 +170,10 @@ fn test_type0_predefined_cmap_no_mojibake() {
     );
 }
 
-/// Minimal PDF whose only font is a Type0/CIDFontType2 font using the predefined
-/// `KSC-EUC-H` CMap, with no ToUnicode and no embedded font file — the structure
-/// emitted by scanner OCR layers (e.g. Canon SC1011).
-fn ksc_euc_h_pdf() -> Vec<u8> {
+/// Minimal PDF whose only font is a Type0/CIDFontType2 font using a predefined CMap,
+/// with no ToUnicode and no embedded font file — the structure emitted by scanner
+/// OCR layers (e.g. Canon SC1011). The text bytes are `검야ㅓ` in EUC-KR.
+fn predefined_cmap_pdf(encoding: &str) -> Vec<u8> {
     let content = b"BT /F1 12 Tf 20 50 Td <B0CBBEDFA4C3> Tj ET\n";
     let objects: Vec<Vec<u8>> = vec![
         b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
@@ -180,9 +187,11 @@ fn ksc_euc_h_pdf() -> Vec<u8> {
             String::from_utf8_lossy(content)
         )
         .into_bytes(),
-        b"<</Type/Font/Subtype/Type0/BaseFont/Dotum\
-          /DescendantFonts[6 0 R]/Encoding/KSC-EUC-H>>"
-            .to_vec(),
+        format!(
+            "<</Type/Font/Subtype/Type0/BaseFont/Dotum\
+             /DescendantFonts[6 0 R]/Encoding/{encoding}>>"
+        )
+        .into_bytes(),
         b"<</Type/Font/Subtype/CIDFontType2/BaseFont/Dotum\
           /CIDSystemInfo<</Registry(Adobe)/Ordering(Korea1)/Supplement 2>>\
           /FontDescriptor 7 0 R/DW 1000>>"

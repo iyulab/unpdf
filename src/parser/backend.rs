@@ -795,7 +795,25 @@ impl RawFontResolver {
             }
         }
 
-        // 4. Try encoding dictionary (BaseEncoding + Differences)
+        // 4. Try a predefined CJK CMap (`/Encoding /KSC-EUC-H` and friends)
+        if is_composite && !is_identity_h {
+            if let Some(fid) = font_obj_id {
+                if let (Some(name), Some((registry, ordering))) = (
+                    self.get_encoding_name(doc, fid),
+                    self.get_cid_system_info_cached(doc, fid),
+                ) {
+                    if let Some(decoded) =
+                        crate::parser::predefined_cmap::decode(&name, &registry, &ordering, bytes)
+                    {
+                        if !decoded.is_empty() {
+                            return decoded;
+                        }
+                    }
+                }
+            }
+        }
+
+        // 5. Try encoding dictionary (BaseEncoding + Differences)
         if let Some(fid) = font_obj_id {
             if let Some(enc_map) = self.get_encoding_map(doc, fid) {
                 let decoded = decode_with_encoding_map(bytes, &enc_map);
@@ -813,7 +831,7 @@ impl RawFontResolver {
             return String::new();
         }
 
-        // 5. Final fallback
+        // 6. Final fallback
         let simple = decode_text_simple(bytes);
         if is_likely_binary(&simple) {
             String::new()
@@ -939,6 +957,14 @@ impl RawFontResolver {
             .and_then(|e| e.as_name())
             .map(|n| n == b"Identity-H" || n == b"Identity-V")
             .unwrap_or(false)
+    }
+
+    /// Get the font's `/Encoding` when it is a name (a predefined CMap), not a
+    /// dictionary or an embedded CMap stream.
+    fn get_encoding_name(&self, doc: &RawDocument, font_obj_id: PageId) -> Option<String> {
+        let font_dict = doc.get_dict(font_obj_id).ok()?;
+        let name = raw_dict_get(font_dict, b"Encoding")?.as_name()?;
+        Some(String::from_utf8_lossy(name).into_owned())
     }
 
     /// Check if a font is a composite (Type0/CID) font.
