@@ -342,12 +342,12 @@ fn decode_ascii_hex(data: &[u8]) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
+    use std::collections::BTreeMap;
 
     #[test]
     fn test_decompress_uncompressed() {
         let stream = PdfStream {
-            dict: HashMap::new(),
+            dict: BTreeMap::new(),
             raw_data: b"Hello World".to_vec(),
         };
         let result = decompress(&stream).unwrap();
@@ -364,7 +364,7 @@ mod tests {
         encoder.write_all(b"Hello Compressed").unwrap();
         let compressed = encoder.finish().unwrap();
 
-        let mut dict = HashMap::new();
+        let mut dict = BTreeMap::new();
         dict.insert(b"Filter".to_vec(), PdfObject::Name(b"FlateDecode".to_vec()));
 
         let stream = PdfStream {
@@ -383,7 +383,7 @@ mod tests {
 
     #[test]
     fn test_unsupported_filter() {
-        let mut dict = HashMap::new();
+        let mut dict = BTreeMap::new();
         dict.insert(b"Filter".to_vec(), PdfObject::Name(b"LZWDecode".to_vec()));
         let stream = PdfStream {
             dict,

@@ -30,6 +30,12 @@
   which produced mojibake (`°Ë ,¥õ ²ô`). The guard previously covered only `Identity-H/V`, so Type0
   fonts using a predefined CMap (e.g. `/Encoding /KSC-EUC-H` in scanner OCR layers) leaked garbage
   text. Such fonts now yield no text. Predefined CJK CMap support itself is tracked separately.
+- Extracting the same PDF twice produced different output. PDF dictionaries were `HashMap`s, whose
+  iteration order is seeded per instance, so a page's XObjects came out shuffled on every run:
+  images were appended to the Markdown in a different order, and — because image dedup keeps the
+  first occurrence as canonical — the same picture was written under a different filename each
+  time. Dictionaries are now `BTreeMap`s, so every dictionary traversal is ordered by key. Verified
+  byte-identical across repeated extractions of 38 documents.
 
 ## 0.7.1 — 2026-07-05
 

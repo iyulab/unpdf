@@ -1,7 +1,7 @@
 //! PDF object tokenizer/parser.
 
 use crate::error::{Error, Result};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 /// A PDF object.
 #[derive(Debug, Clone, PartialEq)]
@@ -19,7 +19,11 @@ pub enum PdfObject {
 }
 
 /// A PDF dictionary.
-pub type PdfDict = HashMap<Vec<u8>, PdfObject>;
+///
+/// `BTreeMap` (not `HashMap`) — 순회 순서가 키 바이트 정렬로 고정되어야 한다.
+/// `HashMap` 은 인스턴스마다 랜덤 시드를 쓰므로 리소스 딕셔너리(XObject 등)를
+/// 순회하는 순간 같은 PDF 라도 실행마다 다른 출력이 나온다.
+pub type PdfDict = BTreeMap<Vec<u8>, PdfObject>;
 
 /// A PDF stream object.
 #[derive(Debug, Clone, PartialEq)]
