@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.8.0 — 2026-07-21
+
+### Security
+- Bump `crossbeam-epoch` 0.9.18 → 0.9.20 (RUSTSEC-2026-0204: invalid pointer dereference in the
+  `fmt::Pointer` impl for `Atomic`/`Shared`). A transitive dependency of `rayon`; lifted within the
+  existing semver range, so it is a lockfile-only change.
 
 ### Added
 - Low-confidence OCR text layers are dropped. A searchable scan carries its OCR result
