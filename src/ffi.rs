@@ -562,6 +562,9 @@ pub unsafe extern "C" fn unpdf_get_extraction_quality(doc: *const UnpdfDocument)
 ///   may include form XObjects).
 /// - Both `0` → genuinely blank page. `text_op_count == 0` with
 ///   `image_op_count > 0` → image-only (scanned) page, OCR required.
+/// - Note: a *searchable* scan (page image plus an invisible OCR text layer)
+///   reports `text_op_count > 0` — combine with `ocr_text_suppressed` to
+///   detect scans whose OCR layer was dropped as unreadable.
 ///
 /// # Safety
 ///

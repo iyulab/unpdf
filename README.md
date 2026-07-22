@@ -680,6 +680,10 @@ elif stats["text_op_count"] == 0:
     print("Page 1 is genuinely blank")
 ```
 
+Note: a *searchable* scan (page image plus an invisible OCR text layer) reports
+`text_op_count > 0` — combine the check with `ocr_text_suppressed`, which flags
+pages whose unreadable OCR layer was dropped.
+
 ---
 
 ## C# / .NET Integration
@@ -772,6 +776,10 @@ if (stats.TextOpCount == 0 && stats.ImageOpCount > 0)
 else if (stats.TextOpCount == 0)
     Console.WriteLine("Page 1 is genuinely blank");
 ```
+
+Note: a *searchable* scan (page image plus an invisible OCR text layer) reports
+`TextOpCount > 0` — combine the check with `OcrTextSuppressed`, which flags
+pages whose unreadable OCR layer was dropped.
 
 ### ASP.NET Core Example
 
