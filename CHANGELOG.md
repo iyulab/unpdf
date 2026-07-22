@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.0 — 2026-07-23
 
 ### Added
 - Introspection surface for telling a scanned (image-only) page apart from a genuinely
