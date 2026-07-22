@@ -3,6 +3,7 @@ High-level Python API for unpdf.
 """
 
 import ctypes
+import json
 from typing import Any
 
 from ._native import get_library, UNPDF_JSON_PRETTY, UNPDF_JSON_COMPACT
@@ -108,6 +109,14 @@ def get_info(path: str) -> dict[str, Any]:
     """
     Get document metadata from a PDF file.
 
+    Note:
+        ``resource_count`` counts the extracted-resource inventory, which is
+        populated only when parsing runs with resource extraction enabled — the
+        FFI parse path keeps it off by default (since 0.4.0), so it is 0 here.
+        It is not a count of images referenced by page content streams; to detect
+        image-only (scanned) pages use :func:`get_page_stats` or
+        :func:`get_extraction_quality` instead.
+
     Args:
         path: Path to the PDF file.
 
@@ -134,6 +143,64 @@ def get_info(path: str) -> dict[str, Any]:
         info["resource_count"] = lib.unpdf_resource_count(handle)
 
         return info
+    finally:
+        lib.unpdf_free_document(handle)
+
+
+def get_extraction_quality(path: str) -> dict[str, Any]:
+    """
+    Get extraction quality diagnostics for a PDF file.
+
+    Use this to tell why extraction produced little or no text:
+    ``is_scan_pdf`` identifies an image-only (scanned) document that needs OCR.
+    For page-level discrimination in mixed documents use :func:`get_page_stats`.
+
+    Args:
+        path: Path to the PDF file.
+
+    Returns:
+        Dictionary with ``char_count``, ``word_count``, ``replacement_char_count``,
+        ``encrypted``, ``is_scan_pdf``, ``suppressed_ocr_pages``.
+
+    Raises:
+        RuntimeError: If parsing or retrieval fails.
+    """
+    lib = get_library()
+    handle = _parse_file(lib, path)
+    try:
+        result = lib.unpdf_get_extraction_quality(handle)
+        if not result:
+            raise RuntimeError(f"unpdf error: {_check_last_error(lib)}")
+        return json.loads(result.decode("utf-8"))
+    finally:
+        lib.unpdf_free_document(handle)
+
+
+def get_page_stats(path: str, page_number: int) -> dict[str, Any]:
+    """
+    Get content-stream operator statistics for a single page.
+
+    ``text_op_count == 0`` with ``image_op_count > 0`` identifies an image-only
+    (scanned) page — OCR required. Both 0 means a genuinely blank page.
+
+    Args:
+        path: Path to the PDF file.
+        page_number: Page number (1-indexed).
+
+    Returns:
+        Dictionary with ``page``, ``text_op_count``, ``image_op_count``,
+        ``ocr_text_suppressed``.
+
+    Raises:
+        RuntimeError: If parsing fails or the page is out of range.
+    """
+    lib = get_library()
+    handle = _parse_file(lib, path)
+    try:
+        result = lib.unpdf_page_stats(handle, page_number)
+        if not result:
+            raise RuntimeError(f"unpdf error: {_check_last_error(lib)}")
+        return json.loads(result.decode("utf-8"))
     finally:
         lib.unpdf_free_document(handle)
 

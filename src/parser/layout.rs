@@ -304,6 +304,11 @@ pub struct LayoutAnalyzer<'a> {
     suppress_low_confidence_ocr: bool,
     /// Set when a page's text layer was dropped by that gate.
     ocr_text_suppressed: Cell<bool>,
+    /// 마지막으로 분석한 페이지의 텍스트 쇼잉 오퍼레이터(Tj/TJ/'/") 수.
+    /// `parse_operations` 진입 시 리셋 — 같은 페이지가 재분석돼도 최종값이 유효.
+    text_op_count: Cell<u32>,
+    /// 마지막으로 분석한 페이지의 XObject `Do` 호출 수.
+    image_op_count: Cell<u32>,
 }
 
 /// What a page's content stream says about how its text was produced.
@@ -420,6 +425,8 @@ impl<'a> LayoutAnalyzer<'a> {
             font_stats: FontStatistics::default(),
             suppress_low_confidence_ocr: true,
             ocr_text_suppressed: Cell::new(false),
+            text_op_count: Cell::new(0),
+            image_op_count: Cell::new(0),
         }
     }
 
@@ -432,6 +439,13 @@ impl<'a> LayoutAnalyzer<'a> {
     /// Whether any page analysed so far had its OCR text layer dropped.
     pub fn ocr_text_suppressed(&self) -> bool {
         self.ocr_text_suppressed.get()
+    }
+
+    /// 마지막으로 분석한 페이지의 `(text_op_count, image_op_count)`.
+    /// 텍스트 쇼잉 오퍼레이터 수와 XObject `Do` 호출 수 — 스캔 페이지와
+    /// 빈 페이지를 가르는 판별자로 `parse_single_page` 가 Page 에 옮겨 적는다.
+    pub fn page_op_counts(&self) -> (u32, u32) {
+        (self.text_op_count.get(), self.image_op_count.get())
     }
 
     /// Get mutable reference to font statistics (for external use).
@@ -550,6 +564,10 @@ impl<'a> LayoutAnalyzer<'a> {
         page_id: super::backend::PageId,
     ) -> Result<(Vec<TextSpan>, PageTextLayerSignals)> {
         let operations = self.backend.decode_content(content)?;
+        // 페이지 오퍼레이터 통계 리셋 — 같은 페이지를 재분석해도(fallback 경로)
+        // 마지막 호출의 집계가 그대로 유효하도록 진입 시점에 0으로 되돌린다.
+        self.text_op_count.set(0);
+        self.image_op_count.set(0);
         let page_area = {
             let (w, h) = self.backend.page_dimensions(page_id);
             w * h
@@ -572,6 +590,13 @@ impl<'a> LayoutAnalyzer<'a> {
         let mut ctm_stack: Vec<[f32; 6]> = Vec::new();
 
         for op in &operations {
+            // 페이지 판별용 오퍼레이터 통계 — 아래 본 match 의 가드 조건과
+            // 무관하게 항상 집계한다 (`Do` arm 은 page_area 가드가 있음).
+            match op.operator.as_str() {
+                "Tj" | "TJ" | "'" | "\"" => self.text_op_count.set(self.text_op_count.get() + 1),
+                "Do" => self.image_op_count.set(self.image_op_count.get() + 1),
+                _ => {}
+            }
             match op.operator.as_str() {
                 "q" => {
                     ctm_stack.push(ctm);

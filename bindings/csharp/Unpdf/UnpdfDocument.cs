@@ -211,8 +211,18 @@ public class UnpdfDocument : IDisposable
     }
 
     /// <summary>
-    /// Get the number of resources in the document.
+    /// Get the number of extracted resources (images) in the document.
     /// </summary>
+    /// <remarks>
+    /// Counts the document's resource inventory, which is populated only when
+    /// parsing runs with resource extraction enabled. The FFI parse entry points
+    /// use default options where resource extraction is <b>off</b> (since 0.4.0,
+    /// to bound peak memory), so this returns 0 for documents parsed through
+    /// <see cref="ParseFile"/> / <see cref="ParseBytes"/>. It is <b>not</b> a count
+    /// of images referenced by page content streams — to detect image-only
+    /// (scanned) pages use <see cref="GetPageStats"/> or
+    /// <see cref="GetExtractionQuality"/> instead.
+    /// </remarks>
     public int ResourceCount
     {
         get
@@ -312,6 +322,66 @@ public class UnpdfDocument : IDisposable
         try
         {
             return PtrToStringUtf8(ptr);
+        }
+        finally
+        {
+            NativeMethods.unpdf_free_string(ptr);
+        }
+    }
+
+    /// <summary>
+    /// Get extraction quality diagnostics for the document.
+    /// </summary>
+    /// <remarks>
+    /// Use this to tell why extraction produced little or no text:
+    /// <see cref="ExtractionQuality.IsScanPdf"/> identifies an image-only
+    /// (scanned) document that needs OCR. For page-level discrimination in
+    /// mixed documents use <see cref="GetPageStats"/>.
+    /// </remarks>
+    /// <returns>Quality diagnostics</returns>
+    /// <exception cref="UnpdfException">If retrieval fails</exception>
+    public ExtractionQuality GetExtractionQuality()
+    {
+        ThrowIfDisposed();
+        var ptr = NativeMethods.unpdf_get_extraction_quality(_handle);
+        if (ptr == IntPtr.Zero)
+            throw new UnpdfException($"Failed to get extraction quality: {GetLastError()}");
+
+        try
+        {
+            var json = PtrToStringUtf8(ptr);
+            return JsonSerializer.Deserialize<ExtractionQuality>(json)
+                ?? throw new UnpdfException("Failed to deserialize extraction quality");
+        }
+        finally
+        {
+            NativeMethods.unpdf_free_string(ptr);
+        }
+    }
+
+    /// <summary>
+    /// Get content-stream operator statistics for a single page.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="PageStats.TextOpCount"/> == 0 with
+    /// <see cref="PageStats.ImageOpCount"/> &gt; 0 identifies an image-only
+    /// (scanned) page; both 0 means a genuinely blank page.
+    /// </remarks>
+    /// <param name="pageNumber">Page number (1-indexed)</param>
+    /// <returns>Per-page operator statistics</returns>
+    /// <exception cref="UnpdfException">If the page number is out of range</exception>
+    public PageStats GetPageStats(int pageNumber)
+    {
+        ThrowIfDisposed();
+        var ptr = NativeMethods.unpdf_page_stats(_handle, pageNumber);
+        if (ptr == IntPtr.Zero)
+            throw new UnpdfException($"Failed to get stats for page {pageNumber}: {GetLastError()}");
+
+        try
+        {
+            var json = PtrToStringUtf8(ptr);
+            return JsonSerializer.Deserialize<PageStats>(json)
+                ?? throw new UnpdfException("Failed to deserialize page stats");
         }
         finally
         {

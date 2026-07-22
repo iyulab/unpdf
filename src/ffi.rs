@@ -366,7 +366,16 @@ pub unsafe extern "C" fn unpdf_section_count(doc: *const UnpdfDocument) -> c_int
     }
 }
 
-/// Get the number of resources in a document.
+/// Get the number of extracted resources (images) in a document.
+///
+/// Semantics: counts entries in the document's resource inventory, which is
+/// populated only when parsing runs with `extract_resources` enabled. The FFI
+/// parse entry points use default options where resource extraction is **off**
+/// (since 0.4.0, to bound peak memory), so this returns `0` for every document
+/// parsed through `unpdf_parse_file` / `unpdf_parse_bytes`. It is **not** a
+/// count of images referenced by page content streams — for detecting
+/// image-only (scanned) pages use `unpdf_page_stats` or
+/// `unpdf_get_extraction_quality` instead.
 ///
 /// # Safety
 ///
@@ -478,6 +487,120 @@ pub unsafe extern "C" fn unpdf_get_resource_ids(doc: *const UnpdfDocument) -> *m
         let document = &(*doc).inner;
         let ids: Vec<&String> = document.resources.keys().collect();
         serde_json::to_string(&ids).map_err(|e| e.to_string())
+    });
+
+    match result {
+        Ok(Ok(json)) => match CString::new(json) {
+            Ok(s) => s.into_raw(),
+            Err(_) => {
+                set_last_error("output contains null byte");
+                ptr::null_mut()
+            }
+        },
+        Ok(Err(e)) => {
+            set_last_error(&e);
+            ptr::null_mut()
+        }
+        Err(_) => {
+            set_last_error("panic occurred");
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Get extraction quality diagnostics as a JSON object.
+///
+/// Fields: `char_count`, `word_count`, `replacement_char_count`, `encrypted`,
+/// `is_scan_pdf`, `suppressed_ocr_pages`. `is_scan_pdf` is `true` when sampled
+/// pages draw images with no text-showing operators — the document-level
+/// "scanned document, OCR required" signal. For page-level discrimination
+/// (mixed documents) use `unpdf_page_stats`.
+///
+/// # Safety
+///
+/// - `doc` must be a valid document handle.
+/// - Returns null on error. Use `unpdf_last_error` to get the error message.
+/// - The returned string must be freed with `unpdf_free_string`.
+#[no_mangle]
+pub unsafe extern "C" fn unpdf_get_extraction_quality(doc: *const UnpdfDocument) -> *mut c_char {
+    clear_last_error();
+
+    if doc.is_null() {
+        set_last_error("document is null");
+        return ptr::null_mut();
+    }
+
+    let result = catch_unwind(|| {
+        serde_json::to_string(&(*doc).inner.extraction_quality).map_err(|e| e.to_string())
+    });
+
+    match result {
+        Ok(Ok(json)) => match CString::new(json) {
+            Ok(s) => s.into_raw(),
+            Err(_) => {
+                set_last_error("output contains null byte");
+                ptr::null_mut()
+            }
+        },
+        Ok(Err(e)) => {
+            set_last_error(&e);
+            ptr::null_mut()
+        }
+        Err(_) => {
+            set_last_error("panic occurred");
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Get per-page content-stream operator statistics as a JSON object.
+///
+/// Returns `{"page":N,"text_op_count":N,"image_op_count":N,"ocr_text_suppressed":bool}`.
+///
+/// - `text_op_count`: number of text-showing operators (`Tj`/`TJ`/`'`/`"`).
+/// - `image_op_count`: number of XObject `Do` invocations (mostly images;
+///   may include form XObjects).
+/// - Both `0` → genuinely blank page. `text_op_count == 0` with
+///   `image_op_count > 0` → image-only (scanned) page, OCR required.
+///
+/// # Safety
+///
+/// - `doc` must be a valid document handle.
+/// - `page_number` is 1-indexed.
+/// - Returns null if the page is out of range or on error.
+/// - The returned string must be freed with `unpdf_free_string`.
+#[no_mangle]
+pub unsafe extern "C" fn unpdf_page_stats(
+    doc: *const UnpdfDocument,
+    page_number: c_int,
+) -> *mut c_char {
+    clear_last_error();
+
+    if doc.is_null() {
+        set_last_error("document is null");
+        return ptr::null_mut();
+    }
+
+    let result = catch_unwind(|| {
+        let document = &(*doc).inner;
+        let page = document
+            .pages
+            .iter()
+            .find(|p| p.number == page_number as u32)
+            .ok_or_else(|| {
+                format!(
+                    "page {} out of range (document has {} pages)",
+                    page_number,
+                    document.pages.len()
+                )
+            })?;
+        serde_json::to_string(&serde_json::json!({
+            "page": page.number,
+            "text_op_count": page.text_op_count,
+            "image_op_count": page.image_op_count,
+            "ocr_text_suppressed": page.ocr_text_suppressed,
+        }))
+        .map_err(|e| e.to_string())
     });
 
     match result {

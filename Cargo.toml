@@ -66,6 +66,7 @@ crossbeam-channel = "0.5"
 criterion = { version = "0.5", features = ["html_reports"] }
 tempfile = "3.14"
 peak_alloc = "0.3"
+serde_json = "1.0"  # FFI introspection 테스트의 JSON 결과 검증용
 
 [[bench]]
 name = "parse_benchmark"

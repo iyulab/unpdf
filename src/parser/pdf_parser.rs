@@ -237,6 +237,9 @@ pub(crate) fn parse_single_page(
         }
 
         page.ocr_text_suppressed = analyzer.ocr_text_suppressed();
+        let (text_ops, image_ops) = analyzer.page_op_counts();
+        page.text_op_count = text_ops;
+        page.image_op_count = image_ops;
     }
 
     // 이미지(XObject) 수집 — extract_resources 가 활성화된 경우.

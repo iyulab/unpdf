@@ -31,6 +31,23 @@ pub struct Page {
     /// 스캔 이미지 위의 투명 텍스트가 아무 의미도 이루지 못할 때만 설정된다.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub ocr_text_suppressed: bool,
+
+    /// 콘텐츠 스트림의 텍스트 쇼잉 오퍼레이터(`Tj`/`TJ`/`'`/`"`) 수.
+    /// 0이면서 `image_op_count > 0` 이면 텍스트 레이어 없는 스캔 페이지,
+    /// 둘 다 0이면 진짜 빈 페이지 — 소비자가 이 둘을 구분하는 판별자.
+    /// JSON에서는 0일 때 생략된다(부재 = 0).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub text_op_count: u32,
+
+    /// 콘텐츠 스트림의 XObject `Do` 호출 수. 이미지가 대부분이지만 Form
+    /// XObject 도 포함될 수 있다(리소스 사전 조회 없이 집계하기 위함).
+    /// JSON에서는 0일 때 생략된다(부재 = 0).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub image_op_count: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 impl Page {
@@ -44,6 +61,8 @@ impl Page {
             rotation: 0,
             images: Vec::new(),
             ocr_text_suppressed: false,
+            text_op_count: 0,
+            image_op_count: 0,
         }
     }
 

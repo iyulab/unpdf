@@ -151,6 +151,18 @@ internal static class NativeMethods
     public static extern void unpdf_free_string(IntPtr str);
 
     /// <summary>
+    /// Get extraction quality diagnostics as JSON.
+    /// </summary>
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern IntPtr unpdf_get_extraction_quality(IntPtr doc);
+
+    /// <summary>
+    /// Get per-page content-stream operator statistics as JSON.
+    /// </summary>
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern IntPtr unpdf_page_stats(IntPtr doc, int pageNum);
+
+    /// <summary>
     /// Get all resource IDs as a JSON array.
     /// </summary>
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]

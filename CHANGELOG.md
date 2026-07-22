@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- Introspection surface for telling a scanned (image-only) page apart from a genuinely
+  blank page — the "why is my extraction empty?" question consumers could not answer:
+  - `Page::text_op_count` / `Page::image_op_count`: per-page counts of text-showing
+    operators (`Tj`/`TJ`/`'`/`"`) and XObject `Do` invocations, gathered during the
+    existing content-stream traversal at no extra cost. `text_op_count == 0` with
+    `image_op_count > 0` identifies an image-only page; both 0 means a blank page.
+    Serialized in JSON output (omitted when 0). Works per page, so mixed documents
+    (text + scanned pages) are classified page by page — the document-level
+    `is_scan_pdf` flag cannot do that.
+  - FFI: `unpdf_get_extraction_quality` (JSON of `ExtractionQuality`, including
+    `is_scan_pdf` and `suppressed_ocr_pages`) and `unpdf_page_stats` (per-page counts
+    plus `ocr_text_suppressed`).
+  - C#: `UnpdfDocument.GetExtractionQuality()` / `GetPageStats(int)` with typed
+    `ExtractionQuality` / `PageStats` DTOs.
+  - Python: `get_extraction_quality(path)` / `get_page_stats(path, page_number)`.
+
+### Documentation
+- `unpdf_resource_count` semantics: it counts the extracted-resource inventory, which
+  the FFI parse path leaves empty (resource extraction defaults to off since 0.4.0),
+  so it returns 0 there — it was never a count of images referenced by content
+  streams. C#/Python docs updated accordingly; use the new page stats for scan
+  detection instead.
+
 ## 0.8.0 — 2026-07-21
 
 ### Security

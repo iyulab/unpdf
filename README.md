@@ -659,6 +659,27 @@ if is_pdf("document.pdf"):
     markdown = to_markdown("document.pdf")
 ```
 
+### Detecting Scanned (Image-only) PDFs
+
+Empty extraction output can mean a scanned document (no text layer), a genuinely
+blank page, or a parse failure. The introspection surface tells them apart:
+
+```python
+from unpdf import get_extraction_quality, get_page_stats
+
+# Document level
+quality = get_extraction_quality("scan.pdf")
+if quality["is_scan_pdf"]:
+    print("Scanned document - OCR required")
+
+# Page level (works for mixed documents too)
+stats = get_page_stats("scan.pdf", 1)
+if stats["text_op_count"] == 0 and stats["image_op_count"] > 0:
+    print("Page 1 is image-only (scanned)")
+elif stats["text_op_count"] == 0:
+    print("Page 1 is genuinely blank")
+```
+
 ---
 
 ## C# / .NET Integration
@@ -727,6 +748,29 @@ foreach (var img in images)
 {
     Console.WriteLine($"{img.Filename}: {img.Width}x{img.Height}");
 }
+```
+
+### Detecting Scanned (Image-only) PDFs
+
+Empty extraction output can mean a scanned document (no text layer), a genuinely
+blank page, or a parse failure. The introspection surface tells them apart:
+
+```csharp
+using Unpdf;
+
+using var doc = UnpdfDocument.ParseFile("scan.pdf");
+
+// Document level
+var quality = doc.GetExtractionQuality();
+if (quality.IsScanPdf)
+    Console.WriteLine("Scanned document - OCR required");
+
+// Page level (works for mixed documents too)
+var stats = doc.GetPageStats(1);
+if (stats.TextOpCount == 0 && stats.ImageOpCount > 0)
+    Console.WriteLine("Page 1 is image-only (scanned)");
+else if (stats.TextOpCount == 0)
+    Console.WriteLine("Page 1 is genuinely blank");
 ```
 
 ### ASP.NET Core Example
