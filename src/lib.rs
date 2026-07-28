@@ -49,7 +49,7 @@ pub use convert::{
 pub use detect::{detect_format_from_bytes, PdfFormat};
 #[cfg(not(target_arch = "wasm32"))]
 pub use detect::{detect_format_from_path, is_pdf};
-pub use error::{Error, Result};
+pub use error::{Error, ErrorKind, Result};
 pub use model::{
     Alignment, Block, Document, ExtractionQuality, FieldType, FieldValue, FormField, InlineContent,
     ListInfo, Metadata, Outline, Page, Paragraph, ParagraphStyle, QualityAccumulator, Resource,

@@ -123,6 +123,9 @@ _lib.unpdf_version.restype = ctypes.c_char_p
 _lib.unpdf_last_error.argtypes = []
 _lib.unpdf_last_error.restype = ctypes.c_char_p
 
+_lib.unpdf_last_error_kind.argtypes = []
+_lib.unpdf_last_error_kind.restype = ctypes.c_int
+
 _lib.unpdf_parse_file.argtypes = [ctypes.c_char_p]
 _lib.unpdf_parse_file.restype = ctypes.c_void_p
 

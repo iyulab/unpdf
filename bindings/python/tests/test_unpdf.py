@@ -181,3 +181,64 @@ class TestGetInfo:
         """Non-existent file should raise RuntimeError."""
         with pytest.raises(RuntimeError):
             unpdf.get_info("non_existent_file.pdf")
+
+
+class TestErrorKind:
+    """Failure classification: ``UnpdfError.kind``."""
+
+    def test_missing_file_is_classified_as_io(self):
+        """A missing file is an I/O failure, distinguishable from a damaged PDF."""
+        with pytest.raises(unpdf.UnpdfError) as excinfo:
+            unpdf.to_text("definitely-not-a-real-file-9f3a.pdf")
+        assert excinfo.value.kind == unpdf.ErrorKind.IO
+
+    def test_non_pdf_input_is_classified(self, tmp_path):
+        """Any failure must carry a reason — a message with kind NONE is useless."""
+        junk = tmp_path / "not.pdf"
+        junk.write_text("this is plainly not a PDF at all")
+        with pytest.raises(unpdf.UnpdfError) as excinfo:
+            unpdf.to_text(str(junk))
+        assert excinfo.value.kind != unpdf.ErrorKind.NONE
+
+    def test_out_of_range_page_is_classified(self, tmp_path):
+        """Page range failures are distinguishable from parse failures."""
+        pdf_file = tmp_path / "text.pdf"
+        pdf_file.write_bytes(_text_pdf())
+        with pytest.raises(unpdf.UnpdfError) as excinfo:
+            unpdf.get_page_stats(str(pdf_file), 99)
+        assert excinfo.value.kind == unpdf.ErrorKind.PAGE_OUT_OF_RANGE
+
+    def test_unpdf_error_is_a_runtime_error(self):
+        """Callers written against the pre-classification API keep working."""
+        assert issubclass(unpdf.UnpdfError, RuntimeError)
+
+    def test_error_kind_values_match_the_native_abi(self):
+        """These numbers are duplicated from unpdf.h; pin them so drift fails loudly."""
+        assert {k.name: int(k) for k in unpdf.ErrorKind} == {
+            "NONE": 0,
+            "OTHER": 1,
+            "IO": 2,
+            "UNKNOWN_FORMAT": 3,
+            "UNSUPPORTED_VERSION": 4,
+            "PDF_PARSE": 5,
+            "ENCRYPTED": 6,
+            "INVALID_PASSWORD": 7,
+            "CORRUPTED": 8,
+            "MISSING_OBJECT": 9,
+            "FONT_DECODE": 10,
+            "IMAGE_EXTRACT": 11,
+            "RENDER": 12,
+            "TEXT_EXTRACT": 13,
+            "PAGE_OUT_OF_RANGE": 14,
+            "INVALID_PAGE_RANGE": 15,
+            "RESOURCE_NOT_FOUND": 16,
+            "ENCODING": 17,
+            "INVALID_ARGUMENT": 100,
+            "PANIC": 101,
+            "INVALID_OUTPUT": 102,
+        }
+
+    def test_unknown_kind_is_preserved_as_int(self):
+        """A future native build may report a reason this package predates."""
+        err = unpdf.UnpdfError("from the future", 9999)
+        assert err.kind == 9999

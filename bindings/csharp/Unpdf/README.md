@@ -10,110 +10,161 @@ dotnet add package Unpdf
 
 ## Quick Start
 
+The API is handle-based: parse once into an `UnpdfDocument`, query it, then dispose it.
+
 ```csharp
 using Unpdf;
 
-// Convert PDF to Markdown
-string markdown = Pdf.ToMarkdown("document.pdf");
-Console.WriteLine(markdown);
+using var doc = UnpdfDocument.ParseFile("document.pdf");
 
-// Convert PDF to plain text
-string text = Pdf.ToText("document.pdf");
-Console.WriteLine(text);
+// Markdown
+Console.WriteLine(doc.ToMarkdown());
 
-// Convert PDF to JSON
-string json = Pdf.ToJson("document.pdf", pretty: true);
-Console.WriteLine(json);
+// Plain text
+Console.WriteLine(doc.ToText());
 
-// Get document information
-var info = Pdf.GetInfo("document.pdf");
-Console.WriteLine($"Title: {info.Title}");
-Console.WriteLine($"Pages: {info.PageCount}");
+// JSON
+Console.WriteLine(doc.ToJson(compact: false));
 
-// Get page count
-int pages = Pdf.GetPageCount("document.pdf");
-Console.WriteLine($"Total pages: {pages}");
+// Metadata
+Console.WriteLine($"Title: {doc.Title}");
+Console.WriteLine($"Author: {doc.Author}");
+Console.WriteLine($"Pages: {doc.SectionCount}");
 
-// Check if file is a valid PDF
-bool isValid = Pdf.IsPdf("document.pdf");
-Console.WriteLine($"Is valid PDF: {isValid}");
+// Native library version
+Console.WriteLine(UnpdfDocument.Version);
 ```
+
+Parse from memory instead of a path with `UnpdfDocument.ParseBytes(byte[])`.
 
 ## Advanced Usage
 
-### Convert with Options
+### Markdown options
 
 ```csharp
-using Unpdf;
+using var doc = UnpdfDocument.ParseFile("document.pdf");
 
-// Convert with frontmatter and image extraction
-var options = new PdfOptions
+var markdown = doc.ToMarkdown(new MarkdownOptions
 {
     IncludeFrontmatter = true,
-    ExtractImages = true,
-    ImageOutputDir = "./images",
-    Lenient = true
-};
-
-string markdown = Pdf.ToMarkdown("document.pdf", options);
-Console.WriteLine(markdown);
+    EscapeSpecialChars = true,
+    ParagraphSpacing = true,
+});
 ```
 
-### Extract Images
+### Per-page extraction
 
 ```csharp
-using Unpdf;
+using var doc = UnpdfDocument.ParseFile("document.pdf");
 
-// Extract all images from PDF
-var images = Pdf.ExtractImages("document.pdf", "./output/images");
-
-foreach (var image in images)
+for (int page = 1; page <= doc.SectionCount; page++)
 {
-    Console.WriteLine($"Image: {image.Filename}");
-    Console.WriteLine($"  Path: {image.Path}");
-    Console.WriteLine($"  Type: {image.MimeType}");
-    Console.WriteLine($"  Size: {image.Width}x{image.Height}");
-    Console.WriteLine($"  Bytes: {image.SizeBytes}");
+    Console.WriteLine(doc.PageToText(page));
 }
 ```
 
+### Detecting scanned (image-only) PDFs
+
+Empty output can mean a scanned document, a genuinely blank page, or a parse
+failure. The introspection surface tells them apart:
+
+```csharp
+using var doc = UnpdfDocument.ParseFile("scan.pdf");
+
+// Document level
+if (doc.GetExtractionQuality().IsScanPdf)
+    Console.WriteLine("Scanned document - OCR required");
+
+// Page level (works for mixed documents too)
+var stats = doc.GetPageStats(1);
+if (stats.TextOpCount == 0 && stats.ImageOpCount > 0)
+    Console.WriteLine("Page 1 is image-only (scanned)");
+else if (stats.TextOpCount == 0)
+    Console.WriteLine("Page 1 is genuinely blank");
+```
+
+Note: a *searchable* scan (page image plus an invisible OCR text layer) reports
+`TextOpCount > 0` — combine the check with `OcrTextSuppressed`, which flags pages
+whose unreadable OCR layer was dropped.
+
+### Handling failures
+
+`UnpdfException.Kind` says why a call failed, so you can branch on the reason
+instead of matching on `Message`:
+
+```csharp
+try
+{
+    using var doc = UnpdfDocument.ParseFile("document.pdf");
+    Console.WriteLine(doc.ToMarkdown());
+}
+catch (UnpdfException e) when (e.Kind == UnpdfErrorKind.Encrypted)
+{
+    Console.WriteLine("Password required");
+}
+catch (UnpdfException e)
+{
+    Console.WriteLine($"Extraction failed ({e.Kind}): {e.Message}");
+}
+```
+
+`UnpdfErrorKind` values are part of the native ABI: new reasons take new numbers and
+existing ones are never renumbered, so treat an unrecognised value as a generic
+failure. A failure raised by the managed wrapper rather than the native library
+reports `UnpdfErrorKind.Other`.
+
+### Embedded resources
+
+Resource extraction is off by default in this binding's parse path (it bounds peak
+memory on large PDFs), so `ResourceCount` is 0 and `GetResourceIds()` is empty for
+documents parsed through `ParseFile` / `ParseBytes`. Use `GetPageStats` to detect
+image-only pages rather than `ResourceCount`.
+
 ## API Reference
 
-### `Pdf.ToMarkdown(string path)`
-Convert a PDF file to Markdown format.
+### `UnpdfDocument`
 
-### `Pdf.ToMarkdown(string path, PdfOptions options)`
-Convert a PDF file to Markdown format with options.
+| Member | Description |
+|--------|-------------|
+| `static UnpdfDocument ParseFile(string path)` | Parse a PDF from disk. |
+| `static UnpdfDocument ParseBytes(byte[] data)` | Parse a PDF from memory. |
+| `static string Version` | Native library version. |
+| `string ToMarkdown(MarkdownOptions? options = null)` | Render the whole document as Markdown. |
+| `string ToText()` | Render the whole document as plain text. |
+| `string ToJson(bool compact = false)` | Render the whole document as JSON. |
+| `string PlainText()` | Text without the render pipeline — faster, simpler output. |
+| `string PageToMarkdown(int pageNumber, MarkdownOptions? options = null)` | Render one page (1-indexed). |
+| `string PageToText(int pageNumber)` | Text of one page (1-indexed). |
+| `string? Title` / `string? Author` | Document metadata, or `null` when unset. |
+| `int SectionCount` | Number of pages. |
+| `int ResourceCount` | Size of the extracted-resource inventory — see above. |
+| `ExtractionQuality GetExtractionQuality()` | Document-level extraction diagnostics. |
+| `PageStats GetPageStats(int pageNumber)` | Per-page content-stream operator counts. |
+| `string[] GetResourceIds()` | Ids in the resource inventory. |
+| `JsonDocument? GetResourceInfo(string resourceId)` | Metadata for one resource. |
+| `byte[]? GetResourceData(string resourceId)` | Raw bytes of one resource. |
+| `void Dispose()` | Release the native handle. |
 
-### `Pdf.ToText(string path)`
-Convert a PDF file to plain text.
-
-### `Pdf.ToJson(string path, bool pretty = false)`
-Convert a PDF file to JSON format.
-
-### `Pdf.GetInfo(string path)`
-Get document metadata (title, author, page count, etc.)
-
-### `Pdf.GetPageCount(string path)`
-Get the number of pages in a PDF file.
-
-### `Pdf.IsPdf(string path)`
-Check if a file is a valid PDF.
-
-### `Pdf.ExtractImages(string path, string outputDir)`
-Extract all images from a PDF file to the specified directory.
-
-### `Pdf.Version`
-Get the version of the native library.
-
-## PdfOptions
+### `MarkdownOptions`
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
-| `ExtractImages` | `bool` | `false` | Enable image extraction during conversion |
-| `ImageOutputDir` | `string?` | `null` | Directory to save extracted images |
-| `IncludeFrontmatter` | `bool` | `false` | Include YAML frontmatter with metadata |
-| `Lenient` | `bool` | `true` | Continue parsing despite minor errors |
+| `IncludeFrontmatter` | `bool` | `false` | Emit YAML frontmatter with document metadata |
+| `EscapeSpecialChars` | `bool` | `false` | Escape Markdown special characters |
+| `ParagraphSpacing` | `bool` | `false` | Add extra spacing between paragraphs |
+
+### `ExtractionQuality`
+
+`CharCount`, `WordCount`, `ReplacementCharCount`, `Encrypted`, `IsScanPdf`,
+`SuppressedOcrPages`.
+
+### `PageStats`
+
+`Page`, `TextOpCount`, `ImageOpCount`, `OcrTextSuppressed`.
+
+### `UnpdfException`
+
+`Message` plus `Kind` (`UnpdfErrorKind`) — see "Handling failures".
 
 ## License
 

@@ -49,6 +49,11 @@ public sealed class ExtractionQuality
 /// <remarks>
 /// <see cref="TextOpCount"/> == 0 with <see cref="ImageOpCount"/> &gt; 0 identifies an
 /// image-only (scanned) page — OCR required. Both 0 means a genuinely blank page.
+/// <para>
+/// A <em>searchable</em> scan (page image plus an invisible OCR text layer) reports
+/// <see cref="TextOpCount"/> &gt; 0 — combine the check with <see cref="OcrTextSuppressed"/>,
+/// which flags pages whose unreadable OCR layer was dropped.
+/// </para>
 /// </remarks>
 public sealed class PageStats
 {

@@ -5,8 +5,10 @@ Python bindings for [unpdf](https://github.com/iyulab/unpdf) - High-performance 
 ## Installation
 
 ```bash
-pip install unpdf
+pip install unpdf-markdown
 ```
+
+The distribution is `unpdf-markdown`; the import name is `unpdf`.
 
 ## Quick Start
 
@@ -60,6 +62,65 @@ Check if a file is a valid PDF.
 
 ### `version() -> str`
 Get the version of the native library.
+
+### `get_extraction_quality(path: str) -> dict`
+Document-level extraction diagnostics: `char_count`, `word_count`,
+`replacement_char_count`, `encrypted`, `is_scan_pdf`, `suppressed_ocr_pages`.
+
+### `get_page_stats(path: str, page_number: int) -> dict`
+Per-page content-stream operator counts (1-indexed): `page`, `text_op_count`,
+`image_op_count`, `ocr_text_suppressed`.
+
+## Detecting scanned (image-only) PDFs
+
+Empty output can mean a scanned document, a genuinely blank page, or a parse
+failure. The introspection surface tells them apart:
+
+```python
+import unpdf
+
+if unpdf.get_extraction_quality("scan.pdf")["is_scan_pdf"]:
+    print("Scanned document - OCR required")
+
+stats = unpdf.get_page_stats("scan.pdf", 1)
+if stats["text_op_count"] == 0 and stats["image_op_count"] > 0:
+    print("Page 1 is image-only (scanned)")
+elif stats["text_op_count"] == 0:
+    print("Page 1 is genuinely blank")
+```
+
+Note: a *searchable* scan (page image plus an invisible OCR text layer) reports
+`text_op_count > 0` — combine the check with `ocr_text_suppressed`, which flags
+pages whose unreadable OCR layer was dropped.
+
+Also note that `get_info()["resource_count"]` counts the extracted-resource
+inventory, which this binding's parse path leaves empty (resource extraction is off
+by default to bound peak memory) — it is not a count of images on the page. Use
+`get_page_stats` for scan detection.
+
+## Handling failures
+
+`UnpdfError` carries a `kind` so you can branch on the reason a call failed instead
+of matching on message text:
+
+```python
+from unpdf import to_text, ErrorKind, UnpdfError
+
+try:
+    text = to_text("document.pdf")
+except UnpdfError as e:
+    if e.kind == ErrorKind.ENCRYPTED:
+        print("Password required")
+    elif e.kind in (ErrorKind.CORRUPTED, ErrorKind.PDF_PARSE):
+        print("The file is damaged")
+    else:
+        print(f"Extraction failed ({e.kind.name}): {e}")
+```
+
+`UnpdfError` subclasses `RuntimeError`, so existing `except RuntimeError` handlers
+keep working. `ErrorKind` values are part of the native ABI: new reasons take new
+numbers and existing ones are never renumbered, so treat an unrecognised value as a
+generic failure.
 
 ## License
 

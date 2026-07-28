@@ -39,6 +39,41 @@ typedef struct UnpdfDocument UnpdfDocument;
 #define UNPDF_JSON_COMPACT 1
 
 /**
+ * Classification returned by unpdf_last_error_kind(), so callers can branch on
+ * why a call failed without parsing the error message.
+ *
+ * Values 1..17 mirror the library's own failure reasons one-to-one; values 100+
+ * are raised at the FFI boundary and have no library-side counterpart. These
+ * numbers are part of the ABI: a new reason takes the next free number and
+ * existing ones are never renumbered, so treat an unrecognised value as a
+ * generic failure rather than an error.
+ */
+typedef enum UnpdfErrorKind {
+    UNPDF_ERROR_NONE                = 0,   /* last call succeeded */
+    UNPDF_ERROR_OTHER               = 1,   /* no more specific classification */
+    UNPDF_ERROR_IO                  = 2,
+    UNPDF_ERROR_UNKNOWN_FORMAT      = 3,   /* not a valid PDF */
+    UNPDF_ERROR_UNSUPPORTED_VERSION = 4,
+    UNPDF_ERROR_PDF_PARSE           = 5,
+    UNPDF_ERROR_ENCRYPTED           = 6,   /* password required */
+    UNPDF_ERROR_INVALID_PASSWORD    = 7,
+    UNPDF_ERROR_CORRUPTED           = 8,   /* malformed structure */
+    UNPDF_ERROR_MISSING_OBJECT      = 9,
+    UNPDF_ERROR_FONT_DECODE         = 10,
+    UNPDF_ERROR_IMAGE_EXTRACT       = 11,
+    UNPDF_ERROR_RENDER              = 12,
+    UNPDF_ERROR_TEXT_EXTRACT        = 13,
+    UNPDF_ERROR_PAGE_OUT_OF_RANGE   = 14,
+    UNPDF_ERROR_INVALID_PAGE_RANGE  = 15,
+    UNPDF_ERROR_RESOURCE_NOT_FOUND  = 16,
+    UNPDF_ERROR_ENCODING            = 17,
+
+    UNPDF_ERROR_INVALID_ARGUMENT    = 100, /* null argument, or not valid UTF-8 */
+    UNPDF_ERROR_PANIC               = 101, /* panic caught at the FFI boundary */
+    UNPDF_ERROR_INVALID_OUTPUT      = 102  /* output holds an interior NUL byte */
+} UnpdfErrorKind;
+
+/**
  * Get the library version.
  * @return Statically allocated version string — do not free.
  */
@@ -50,6 +85,19 @@ const char* unpdf_version(void);
  *         or NULL if no error is recorded. Do not free.
  */
 const char* unpdf_last_error(void);
+
+/**
+ * Classify the last error for the calling thread.
+ *
+ * Written in lockstep with unpdf_last_error(): every call that records a message
+ * records a kind, and a successful call clears both. Use this instead of matching
+ * on message text — for example to tell UNPDF_ERROR_ENCRYPTED (ask for a password)
+ * apart from UNPDF_ERROR_CORRUPTED (the file is damaged) when both surface to the
+ * user as "extraction failed".
+ *
+ * @return An UnpdfErrorKind value, or UNPDF_ERROR_NONE if the last call succeeded.
+ */
+int unpdf_last_error_kind(void);
 
 /**
  * Parse a document from a file path.

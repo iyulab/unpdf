@@ -11,32 +11,69 @@
 //! # Error Handling
 //!
 //! Functions that can fail return a null pointer on error. Use `unpdf_last_error`
-//! to retrieve the error message.
+//! to retrieve the error message and `unpdf_last_error_kind` to classify it without
+//! parsing that message.
 
 use std::cell::RefCell;
 use std::ffi::{c_char, c_int, CStr, CString};
 use std::panic::catch_unwind;
 use std::ptr;
 
+use crate::error::ErrorKind;
 use crate::model::Document;
 use crate::render::{JsonFormat, RenderOptions};
 
-// Thread-local storage for the last error message.
-thread_local! {
-    static LAST_ERROR: RefCell<Option<CString>> = const { RefCell::new(None) };
+/// `unpdf_last_error_kind` value when no error is recorded on this thread.
+pub const UNPDF_ERROR_NONE: c_int = 0;
+
+// Values 1..=17 are [`ErrorKind`] discriminants — core failure reasons.
+// Values 100+ are FFI-boundary reasons with no core `Error` counterpart.
+
+/// An argument was null or not valid UTF-8.
+pub const UNPDF_ERROR_INVALID_ARGUMENT: c_int = 100;
+/// A panic was caught at the FFI boundary.
+pub const UNPDF_ERROR_PANIC: c_int = 101;
+/// The produced output contains an interior NUL byte and cannot cross the C ABI.
+pub const UNPDF_ERROR_INVALID_OUTPUT: c_int = 102;
+
+/// A failure carried out of a `catch_unwind` closure: its classification plus message.
+type FfiError = (c_int, String);
+
+/// Classify a core error and render its message, for return from a closure.
+fn ffi_err(e: crate::Error) -> FfiError {
+    (e.kind() as c_int, e.to_string())
 }
 
-/// Set the last error message.
-fn set_last_error(msg: &str) {
+/// Classify a JSON serialization failure — producing output is rendering.
+fn json_err(e: serde_json::Error) -> FfiError {
+    (ErrorKind::Render as c_int, e.to_string())
+}
+
+// Thread-local storage for the last error message and its classification.
+// The two are always written together so a caller never sees a message paired
+// with a stale kind.
+thread_local! {
+    static LAST_ERROR: RefCell<Option<CString>> = const { RefCell::new(None) };
+    static LAST_ERROR_KIND: RefCell<c_int> = const { RefCell::new(UNPDF_ERROR_NONE) };
+}
+
+/// Set the last error message and its classification.
+fn set_last_error(kind: c_int, msg: &str) {
     LAST_ERROR.with(|e| {
         *e.borrow_mut() = CString::new(msg).ok();
     });
+    LAST_ERROR_KIND.with(|k| {
+        *k.borrow_mut() = kind;
+    });
 }
 
-/// Clear the last error message.
+/// Clear the last error message and its classification.
 fn clear_last_error() {
     LAST_ERROR.with(|e| {
         *e.borrow_mut() = None;
+    });
+    LAST_ERROR_KIND.with(|k| {
+        *k.borrow_mut() = UNPDF_ERROR_NONE;
     });
 }
 
@@ -81,6 +118,22 @@ pub extern "C" fn unpdf_last_error() -> *const c_char {
     })
 }
 
+/// Classify the last error without parsing its message.
+///
+/// Returns `UNPDF_ERROR_NONE` (0) when the last call on this thread succeeded.
+/// Values 1..=17 are core failure reasons (see `UnpdfErrorKind` in `unpdf.h`);
+/// values 100+ are FFI-boundary reasons. Treat an unrecognised value as a generic
+/// failure — new reasons take new numbers and never renumber existing ones.
+///
+/// # Safety
+///
+/// Reads thread-local state written by the immediately preceding unpdf call on the
+/// same thread, in lockstep with `unpdf_last_error`.
+#[no_mangle]
+pub extern "C" fn unpdf_last_error_kind() -> c_int {
+    LAST_ERROR_KIND.with(|k| *k.borrow())
+}
+
 /// Parse a document from a file path.
 ///
 /// # Safety
@@ -93,26 +146,28 @@ pub unsafe extern "C" fn unpdf_parse_file(path: *const c_char) -> *mut UnpdfDocu
     clear_last_error();
 
     if path.is_null() {
-        set_last_error("path is null");
+        set_last_error(UNPDF_ERROR_INVALID_ARGUMENT, "path is null");
         return ptr::null_mut();
     }
 
     let result = catch_unwind(|| {
-        let path_str = CStr::from_ptr(path).to_str().map_err(|e| e.to_string())?;
+        let path_str = CStr::from_ptr(path)
+            .to_str()
+            .map_err(|e| (UNPDF_ERROR_INVALID_ARGUMENT, e.to_string()))?;
 
         crate::parse_file(path_str)
             .map(|doc| Box::into_raw(Box::new(UnpdfDocument { inner: doc })))
-            .map_err(|e| e.to_string())
+            .map_err(ffi_err)
     });
 
     match result {
         Ok(Ok(doc)) => doc,
         Ok(Err(e)) => {
-            set_last_error(&e);
+            set_last_error(e.0, &e.1);
             ptr::null_mut()
         }
         Err(_) => {
-            set_last_error("panic occurred during parsing");
+            set_last_error(UNPDF_ERROR_PANIC, "panic occurred during parsing");
             ptr::null_mut()
         }
     }
@@ -130,7 +185,7 @@ pub unsafe extern "C" fn unpdf_parse_bytes(data: *const u8, len: usize) -> *mut 
     clear_last_error();
 
     if data.is_null() {
-        set_last_error("data is null");
+        set_last_error(UNPDF_ERROR_INVALID_ARGUMENT, "data is null");
         return ptr::null_mut();
     }
 
@@ -139,17 +194,17 @@ pub unsafe extern "C" fn unpdf_parse_bytes(data: *const u8, len: usize) -> *mut 
 
         crate::parse_bytes(bytes)
             .map(|doc| Box::into_raw(Box::new(UnpdfDocument { inner: doc })))
-            .map_err(|e| e.to_string())
+            .map_err(ffi_err)
     });
 
     match result {
         Ok(Ok(doc)) => doc,
         Ok(Err(e)) => {
-            set_last_error(&e);
+            set_last_error(e.0, &e.1);
             ptr::null_mut()
         }
         Err(_) => {
-            set_last_error("panic occurred during parsing");
+            set_last_error(UNPDF_ERROR_PANIC, "panic occurred during parsing");
             ptr::null_mut()
         }
     }
@@ -181,7 +236,7 @@ pub unsafe extern "C" fn unpdf_to_markdown(doc: *const UnpdfDocument, flags: u32
     clear_last_error();
 
     if doc.is_null() {
-        set_last_error("document is null");
+        set_last_error(UNPDF_ERROR_INVALID_ARGUMENT, "document is null");
         return ptr::null_mut();
     }
 
@@ -199,23 +254,23 @@ pub unsafe extern "C" fn unpdf_to_markdown(doc: *const UnpdfDocument, flags: u32
         // PARAGRAPH_SPACING: no direct field in unpdf's RenderOptions,
         // treat as no-op for now
 
-        crate::render::to_markdown(document, &options).map_err(|e| e.to_string())
+        crate::render::to_markdown(document, &options).map_err(ffi_err)
     });
 
     match result {
         Ok(Ok(md)) => match CString::new(md) {
             Ok(s) => s.into_raw(),
             Err(_) => {
-                set_last_error("output contains null byte");
+                set_last_error(UNPDF_ERROR_INVALID_OUTPUT, "output contains null byte");
                 ptr::null_mut()
             }
         },
         Ok(Err(e)) => {
-            set_last_error(&e);
+            set_last_error(e.0, &e.1);
             ptr::null_mut()
         }
         Err(_) => {
-            set_last_error("panic occurred during rendering");
+            set_last_error(UNPDF_ERROR_PANIC, "panic occurred during rendering");
             ptr::null_mut()
         }
     }
@@ -233,30 +288,30 @@ pub unsafe extern "C" fn unpdf_to_text(doc: *const UnpdfDocument) -> *mut c_char
     clear_last_error();
 
     if doc.is_null() {
-        set_last_error("document is null");
+        set_last_error(UNPDF_ERROR_INVALID_ARGUMENT, "document is null");
         return ptr::null_mut();
     }
 
     let result = catch_unwind(|| {
         let document = &(*doc).inner;
         let options = RenderOptions::default();
-        crate::render::to_text(document, &options).map_err(|e| e.to_string())
+        crate::render::to_text(document, &options).map_err(ffi_err)
     });
 
     match result {
         Ok(Ok(text)) => match CString::new(text) {
             Ok(s) => s.into_raw(),
             Err(_) => {
-                set_last_error("output contains null byte");
+                set_last_error(UNPDF_ERROR_INVALID_OUTPUT, "output contains null byte");
                 ptr::null_mut()
             }
         },
         Ok(Err(e)) => {
-            set_last_error(&e);
+            set_last_error(e.0, &e.1);
             ptr::null_mut()
         }
         Err(_) => {
-            set_last_error("panic occurred during rendering");
+            set_last_error(UNPDF_ERROR_PANIC, "panic occurred during rendering");
             ptr::null_mut()
         }
     }
@@ -275,7 +330,7 @@ pub unsafe extern "C" fn unpdf_to_json(doc: *const UnpdfDocument, format: c_int)
     clear_last_error();
 
     if doc.is_null() {
-        set_last_error("document is null");
+        set_last_error(UNPDF_ERROR_INVALID_ARGUMENT, "document is null");
         return ptr::null_mut();
     }
 
@@ -286,23 +341,23 @@ pub unsafe extern "C" fn unpdf_to_json(doc: *const UnpdfDocument, format: c_int)
         } else {
             JsonFormat::Pretty
         };
-        crate::render::to_json(document, json_format).map_err(|e| e.to_string())
+        crate::render::to_json(document, json_format).map_err(ffi_err)
     });
 
     match result {
         Ok(Ok(json)) => match CString::new(json) {
             Ok(s) => s.into_raw(),
             Err(_) => {
-                set_last_error("output contains null byte");
+                set_last_error(UNPDF_ERROR_INVALID_OUTPUT, "output contains null byte");
                 ptr::null_mut()
             }
         },
         Ok(Err(e)) => {
-            set_last_error(&e);
+            set_last_error(e.0, &e.1);
             ptr::null_mut()
         }
         Err(_) => {
-            set_last_error("panic occurred during rendering");
+            set_last_error(UNPDF_ERROR_PANIC, "panic occurred during rendering");
             ptr::null_mut()
         }
     }
@@ -320,7 +375,7 @@ pub unsafe extern "C" fn unpdf_plain_text(doc: *const UnpdfDocument) -> *mut c_c
     clear_last_error();
 
     if doc.is_null() {
-        set_last_error("document is null");
+        set_last_error(UNPDF_ERROR_INVALID_ARGUMENT, "document is null");
         return ptr::null_mut();
     }
 
@@ -333,12 +388,12 @@ pub unsafe extern "C" fn unpdf_plain_text(doc: *const UnpdfDocument) -> *mut c_c
         Ok(text) => match CString::new(text) {
             Ok(s) => s.into_raw(),
             Err(_) => {
-                set_last_error("output contains null byte");
+                set_last_error(UNPDF_ERROR_INVALID_OUTPUT, "output contains null byte");
                 ptr::null_mut()
             }
         },
         Err(_) => {
-            set_last_error("panic occurred");
+            set_last_error(UNPDF_ERROR_PANIC, "panic occurred");
             ptr::null_mut()
         }
     }
@@ -353,14 +408,14 @@ pub unsafe extern "C" fn unpdf_plain_text(doc: *const UnpdfDocument) -> *mut c_c
 #[no_mangle]
 pub unsafe extern "C" fn unpdf_section_count(doc: *const UnpdfDocument) -> c_int {
     if doc.is_null() {
-        set_last_error("document is null");
+        set_last_error(UNPDF_ERROR_INVALID_ARGUMENT, "document is null");
         return -1;
     }
 
     match catch_unwind(|| (*doc).inner.pages.len() as c_int) {
         Ok(count) => count,
         Err(_) => {
-            set_last_error("panic occurred");
+            set_last_error(UNPDF_ERROR_PANIC, "panic occurred");
             -1
         }
     }
@@ -384,14 +439,14 @@ pub unsafe extern "C" fn unpdf_section_count(doc: *const UnpdfDocument) -> c_int
 #[no_mangle]
 pub unsafe extern "C" fn unpdf_resource_count(doc: *const UnpdfDocument) -> c_int {
     if doc.is_null() {
-        set_last_error("document is null");
+        set_last_error(UNPDF_ERROR_INVALID_ARGUMENT, "document is null");
         return -1;
     }
 
     match catch_unwind(|| (*doc).inner.resources.len() as c_int) {
         Ok(count) => count,
         Err(_) => {
-            set_last_error("panic occurred");
+            set_last_error(UNPDF_ERROR_PANIC, "panic occurred");
             -1
         }
     }
@@ -409,7 +464,7 @@ pub unsafe extern "C" fn unpdf_get_title(doc: *const UnpdfDocument) -> *mut c_ch
     clear_last_error();
 
     if doc.is_null() {
-        set_last_error("document is null");
+        set_last_error(UNPDF_ERROR_INVALID_ARGUMENT, "document is null");
         return ptr::null_mut();
     }
 
@@ -426,7 +481,7 @@ pub unsafe extern "C" fn unpdf_get_title(doc: *const UnpdfDocument) -> *mut c_ch
         Ok(Some(s)) => s.into_raw(),
         Ok(None) => ptr::null_mut(),
         Err(_) => {
-            set_last_error("panic occurred");
+            set_last_error(UNPDF_ERROR_PANIC, "panic occurred");
             ptr::null_mut()
         }
     }
@@ -444,7 +499,7 @@ pub unsafe extern "C" fn unpdf_get_author(doc: *const UnpdfDocument) -> *mut c_c
     clear_last_error();
 
     if doc.is_null() {
-        set_last_error("document is null");
+        set_last_error(UNPDF_ERROR_INVALID_ARGUMENT, "document is null");
         return ptr::null_mut();
     }
 
@@ -461,7 +516,7 @@ pub unsafe extern "C" fn unpdf_get_author(doc: *const UnpdfDocument) -> *mut c_c
         Ok(Some(s)) => s.into_raw(),
         Ok(None) => ptr::null_mut(),
         Err(_) => {
-            set_last_error("panic occurred");
+            set_last_error(UNPDF_ERROR_PANIC, "panic occurred");
             ptr::null_mut()
         }
     }
@@ -479,30 +534,30 @@ pub unsafe extern "C" fn unpdf_get_resource_ids(doc: *const UnpdfDocument) -> *m
     clear_last_error();
 
     if doc.is_null() {
-        set_last_error("document is null");
+        set_last_error(UNPDF_ERROR_INVALID_ARGUMENT, "document is null");
         return ptr::null_mut();
     }
 
     let result = catch_unwind(|| {
         let document = &(*doc).inner;
         let ids: Vec<&String> = document.resources.keys().collect();
-        serde_json::to_string(&ids).map_err(|e| e.to_string())
+        serde_json::to_string(&ids).map_err(json_err)
     });
 
     match result {
         Ok(Ok(json)) => match CString::new(json) {
             Ok(s) => s.into_raw(),
             Err(_) => {
-                set_last_error("output contains null byte");
+                set_last_error(UNPDF_ERROR_INVALID_OUTPUT, "output contains null byte");
                 ptr::null_mut()
             }
         },
         Ok(Err(e)) => {
-            set_last_error(&e);
+            set_last_error(e.0, &e.1);
             ptr::null_mut()
         }
         Err(_) => {
-            set_last_error("panic occurred");
+            set_last_error(UNPDF_ERROR_PANIC, "panic occurred");
             ptr::null_mut()
         }
     }
@@ -526,28 +581,27 @@ pub unsafe extern "C" fn unpdf_get_extraction_quality(doc: *const UnpdfDocument)
     clear_last_error();
 
     if doc.is_null() {
-        set_last_error("document is null");
+        set_last_error(UNPDF_ERROR_INVALID_ARGUMENT, "document is null");
         return ptr::null_mut();
     }
 
-    let result = catch_unwind(|| {
-        serde_json::to_string(&(*doc).inner.extraction_quality).map_err(|e| e.to_string())
-    });
+    let result =
+        catch_unwind(|| serde_json::to_string(&(*doc).inner.extraction_quality).map_err(json_err));
 
     match result {
         Ok(Ok(json)) => match CString::new(json) {
             Ok(s) => s.into_raw(),
             Err(_) => {
-                set_last_error("output contains null byte");
+                set_last_error(UNPDF_ERROR_INVALID_OUTPUT, "output contains null byte");
                 ptr::null_mut()
             }
         },
         Ok(Err(e)) => {
-            set_last_error(&e);
+            set_last_error(e.0, &e.1);
             ptr::null_mut()
         }
         Err(_) => {
-            set_last_error("panic occurred");
+            set_last_error(UNPDF_ERROR_PANIC, "panic occurred");
             ptr::null_mut()
         }
     }
@@ -580,7 +634,7 @@ pub unsafe extern "C" fn unpdf_page_stats(
     clear_last_error();
 
     if doc.is_null() {
-        set_last_error("document is null");
+        set_last_error(UNPDF_ERROR_INVALID_ARGUMENT, "document is null");
         return ptr::null_mut();
     }
 
@@ -591,10 +645,13 @@ pub unsafe extern "C" fn unpdf_page_stats(
             .iter()
             .find(|p| p.number == page_number as u32)
             .ok_or_else(|| {
-                format!(
-                    "page {} out of range (document has {} pages)",
-                    page_number,
-                    document.pages.len()
+                (
+                    ErrorKind::PageOutOfRange as c_int,
+                    format!(
+                        "page {} out of range (document has {} pages)",
+                        page_number,
+                        document.pages.len()
+                    ),
                 )
             })?;
         serde_json::to_string(&serde_json::json!({
@@ -603,23 +660,23 @@ pub unsafe extern "C" fn unpdf_page_stats(
             "image_op_count": page.image_op_count,
             "ocr_text_suppressed": page.ocr_text_suppressed,
         }))
-        .map_err(|e| e.to_string())
+        .map_err(json_err)
     });
 
     match result {
         Ok(Ok(json)) => match CString::new(json) {
             Ok(s) => s.into_raw(),
             Err(_) => {
-                set_last_error("output contains null byte");
+                set_last_error(UNPDF_ERROR_INVALID_OUTPUT, "output contains null byte");
                 ptr::null_mut()
             }
         },
         Ok(Err(e)) => {
-            set_last_error(&e);
+            set_last_error(e.0, &e.1);
             ptr::null_mut()
         }
         Err(_) => {
-            set_last_error("panic occurred");
+            set_last_error(UNPDF_ERROR_PANIC, "panic occurred");
             ptr::null_mut()
         }
     }
@@ -641,19 +698,19 @@ pub unsafe extern "C" fn unpdf_get_resource_info(
     clear_last_error();
 
     if doc.is_null() {
-        set_last_error("document is null");
+        set_last_error(UNPDF_ERROR_INVALID_ARGUMENT, "document is null");
         return ptr::null_mut();
     }
 
     if resource_id.is_null() {
-        set_last_error("resource_id is null");
+        set_last_error(UNPDF_ERROR_INVALID_ARGUMENT, "resource_id is null");
         return ptr::null_mut();
     }
 
     let result = catch_unwind(|| {
         let id_str = CStr::from_ptr(resource_id)
             .to_str()
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| (UNPDF_ERROR_INVALID_ARGUMENT, e.to_string()))?;
 
         let document = &(*doc).inner;
 
@@ -668,9 +725,12 @@ pub unsafe extern "C" fn unpdf_get_resource_info(
                     "width": resource.width,
                     "height": resource.height,
                 });
-                serde_json::to_string(&info).map_err(|e| e.to_string())
+                serde_json::to_string(&info).map_err(json_err)
             }
-            None => Err(format!("resource not found: {}", id_str)),
+            None => Err((
+                ErrorKind::ResourceNotFound as c_int,
+                format!("resource not found: {}", id_str),
+            )),
         }
     });
 
@@ -678,16 +738,16 @@ pub unsafe extern "C" fn unpdf_get_resource_info(
         Ok(Ok(json)) => match CString::new(json) {
             Ok(s) => s.into_raw(),
             Err(_) => {
-                set_last_error("output contains null byte");
+                set_last_error(UNPDF_ERROR_INVALID_OUTPUT, "output contains null byte");
                 ptr::null_mut()
             }
         },
         Ok(Err(e)) => {
-            set_last_error(&e);
+            set_last_error(e.0, &e.1);
             ptr::null_mut()
         }
         Err(_) => {
-            set_last_error("panic occurred");
+            set_last_error(UNPDF_ERROR_PANIC, "panic occurred");
             ptr::null_mut()
         }
     }
@@ -711,24 +771,24 @@ pub unsafe extern "C" fn unpdf_get_resource_data(
     clear_last_error();
 
     if doc.is_null() {
-        set_last_error("document is null");
+        set_last_error(UNPDF_ERROR_INVALID_ARGUMENT, "document is null");
         return ptr::null_mut();
     }
 
     if resource_id.is_null() {
-        set_last_error("resource_id is null");
+        set_last_error(UNPDF_ERROR_INVALID_ARGUMENT, "resource_id is null");
         return ptr::null_mut();
     }
 
     if out_len.is_null() {
-        set_last_error("out_len is null");
+        set_last_error(UNPDF_ERROR_INVALID_ARGUMENT, "out_len is null");
         return ptr::null_mut();
     }
 
     let result = catch_unwind(|| {
         let id_str = CStr::from_ptr(resource_id)
             .to_str()
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| (UNPDF_ERROR_INVALID_ARGUMENT, e.to_string()))?;
 
         let document = &(*doc).inner;
 
@@ -740,7 +800,10 @@ pub unsafe extern "C" fn unpdf_get_resource_data(
                 let ptr = Box::into_raw(boxed) as *mut u8;
                 Ok((ptr, len))
             }
-            None => Err(format!("resource not found: {}", id_str)),
+            None => Err((
+                ErrorKind::ResourceNotFound as c_int,
+                format!("resource not found: {}", id_str),
+            )),
         }
     });
 
@@ -750,12 +813,12 @@ pub unsafe extern "C" fn unpdf_get_resource_data(
             ptr
         }
         Ok(Err(e)) => {
-            set_last_error(&e);
+            set_last_error(e.0, &e.1);
             *out_len = 0;
             ptr::null_mut()
         }
         Err(_) => {
-            set_last_error("panic occurred");
+            set_last_error(UNPDF_ERROR_PANIC, "panic occurred");
             *out_len = 0;
             ptr::null_mut()
         }
@@ -780,17 +843,20 @@ pub unsafe extern "C" fn unpdf_page_to_markdown(
     clear_last_error();
 
     if doc.is_null() {
-        set_last_error("document is null");
+        set_last_error(UNPDF_ERROR_INVALID_ARGUMENT, "document is null");
         return ptr::null_mut();
     }
 
     let result = catch_unwind(|| {
         let document = &(*doc).inner;
         let page = document.get_page(page_num as u32).ok_or_else(|| {
-            format!(
-                "page {} out of range (document has {} pages)",
-                page_num,
-                document.page_count()
+            (
+                ErrorKind::PageOutOfRange as c_int,
+                format!(
+                    "page {} out of range (document has {} pages)",
+                    page_num,
+                    document.page_count()
+                ),
             )
         })?;
 
@@ -806,23 +872,23 @@ pub unsafe extern "C" fn unpdf_page_to_markdown(
         let mut single_page_doc = Document::new();
         single_page_doc.add_page(page.clone());
 
-        crate::render::to_markdown(&single_page_doc, &options).map_err(|e| e.to_string())
+        crate::render::to_markdown(&single_page_doc, &options).map_err(ffi_err)
     });
 
     match result {
         Ok(Ok(md)) => match CString::new(md) {
             Ok(s) => s.into_raw(),
             Err(_) => {
-                set_last_error("output contains null byte");
+                set_last_error(UNPDF_ERROR_INVALID_OUTPUT, "output contains null byte");
                 ptr::null_mut()
             }
         },
         Ok(Err(e)) => {
-            set_last_error(&e);
+            set_last_error(e.0, &e.1);
             ptr::null_mut()
         }
         Err(_) => {
-            set_last_error("panic occurred during page rendering");
+            set_last_error(UNPDF_ERROR_PANIC, "panic occurred during page rendering");
             ptr::null_mut()
         }
     }
@@ -844,37 +910,40 @@ pub unsafe extern "C" fn unpdf_page_to_text(
     clear_last_error();
 
     if doc.is_null() {
-        set_last_error("document is null");
+        set_last_error(UNPDF_ERROR_INVALID_ARGUMENT, "document is null");
         return ptr::null_mut();
     }
 
     let result = catch_unwind(|| {
         let document = &(*doc).inner;
         let page = document.get_page(page_num as u32).ok_or_else(|| {
-            format!(
-                "page {} out of range (document has {} pages)",
-                page_num,
-                document.page_count()
+            (
+                ErrorKind::PageOutOfRange as c_int,
+                format!(
+                    "page {} out of range (document has {} pages)",
+                    page_num,
+                    document.page_count()
+                ),
             )
         })?;
 
-        Ok::<String, String>(page.plain_text())
+        Ok::<String, FfiError>(page.plain_text())
     });
 
     match result {
         Ok(Ok(text)) => match CString::new(text) {
             Ok(s) => s.into_raw(),
             Err(_) => {
-                set_last_error("output contains null byte");
+                set_last_error(UNPDF_ERROR_INVALID_OUTPUT, "output contains null byte");
                 ptr::null_mut()
             }
         },
         Ok(Err(e)) => {
-            set_last_error(&e);
+            set_last_error(e.0, &e.1);
             ptr::null_mut()
         }
         Err(_) => {
-            set_last_error("panic occurred");
+            set_last_error(UNPDF_ERROR_PANIC, "panic occurred");
             ptr::null_mut()
         }
     }

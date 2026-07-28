@@ -4,9 +4,66 @@ High-level Python API for unpdf.
 
 import ctypes
 import json
+from enum import IntEnum
 from typing import Any
 
 from ._native import get_library, UNPDF_JSON_PRETTY, UNPDF_JSON_COMPACT
+
+
+class ErrorKind(IntEnum):
+    """
+    Why an unpdf call failed, so callers can branch on the reason instead of
+    matching on message text.
+
+    Values 1–17 mirror the library's own failure reasons one-to-one; values 100+
+    are raised at the FFI boundary and have no library-side counterpart. The
+    numbers are part of the native ABI: a new reason takes the next free number
+    and existing ones are never renumbered, so an unrecognised value should be
+    treated as a generic failure rather than as an error.
+    """
+
+    NONE = 0
+    OTHER = 1
+    IO = 2
+    UNKNOWN_FORMAT = 3
+    UNSUPPORTED_VERSION = 4
+    PDF_PARSE = 5
+    ENCRYPTED = 6
+    INVALID_PASSWORD = 7
+    CORRUPTED = 8
+    MISSING_OBJECT = 9
+    FONT_DECODE = 10
+    IMAGE_EXTRACT = 11
+    RENDER = 12
+    TEXT_EXTRACT = 13
+    PAGE_OUT_OF_RANGE = 14
+    INVALID_PAGE_RANGE = 15
+    RESOURCE_NOT_FOUND = 16
+    ENCODING = 17
+
+    INVALID_ARGUMENT = 100
+    PANIC = 101
+    INVALID_OUTPUT = 102
+
+
+class UnpdfError(RuntimeError):
+    """
+    An unpdf call failed.
+
+    Subclasses :class:`RuntimeError`, which is what this package raised before
+    error classification existed, so ``except RuntimeError`` keeps working.
+
+    Attributes:
+        kind: An :class:`ErrorKind`, or the raw integer if the native library
+            reports a reason this build does not know about.
+    """
+
+    def __init__(self, message: str, kind: int = ErrorKind.OTHER) -> None:
+        super().__init__(message)
+        try:
+            self.kind: int = ErrorKind(kind)
+        except ValueError:
+            self.kind = kind
 
 
 def _encode_path(path: str) -> bytes:
@@ -22,11 +79,23 @@ def _check_last_error(lib: ctypes.CDLL) -> str:
     return "Unknown error"
 
 
+def _native_error(lib: ctypes.CDLL) -> "UnpdfError":
+    """
+    Build an :class:`UnpdfError` from the native error state.
+
+    Reads the message and its classification together, before any further native
+    call can overwrite the thread-local error slot.
+    """
+    message = _check_last_error(lib)
+    kind = lib.unpdf_last_error_kind()
+    return UnpdfError(f"unpdf error: {message}", kind)
+
+
 def _parse_file(lib: ctypes.CDLL, path: str) -> ctypes.c_void_p:
     """Parse a file and return the document handle. Raises on failure."""
     handle = lib.unpdf_parse_file(_encode_path(path))
     if not handle:
-        raise RuntimeError(f"unpdf error: {_check_last_error(lib)}")
+        raise _native_error(lib)
     return handle
 
 
@@ -42,14 +111,14 @@ def to_markdown(path: str, flags: int = 0) -> str:
         The extracted content as Markdown.
 
     Raises:
-        RuntimeError: If conversion fails.
+        UnpdfError: If conversion fails. Its ``kind`` says why.
     """
     lib = get_library()
     handle = _parse_file(lib, path)
     try:
         result = lib.unpdf_to_markdown(handle, flags)
         if not result:
-            raise RuntimeError(f"unpdf error: {_check_last_error(lib)}")
+            raise _native_error(lib)
         return result.decode("utf-8")
     finally:
         lib.unpdf_free_document(handle)
@@ -66,14 +135,14 @@ def to_text(path: str) -> str:
         The extracted content as plain text.
 
     Raises:
-        RuntimeError: If conversion fails.
+        UnpdfError: If conversion fails. Its ``kind`` says why.
     """
     lib = get_library()
     handle = _parse_file(lib, path)
     try:
         result = lib.unpdf_to_text(handle)
         if not result:
-            raise RuntimeError(f"unpdf error: {_check_last_error(lib)}")
+            raise _native_error(lib)
         return result.decode("utf-8")
     finally:
         lib.unpdf_free_document(handle)
@@ -91,7 +160,7 @@ def to_json(path: str, pretty: bool = False) -> str:
         The extracted content as JSON string.
 
     Raises:
-        RuntimeError: If conversion fails.
+        UnpdfError: If conversion fails. Its ``kind`` says why.
     """
     lib = get_library()
     handle = _parse_file(lib, path)
@@ -99,7 +168,7 @@ def to_json(path: str, pretty: bool = False) -> str:
         fmt = UNPDF_JSON_PRETTY if pretty else UNPDF_JSON_COMPACT
         result = lib.unpdf_to_json(handle, fmt)
         if not result:
-            raise RuntimeError(f"unpdf error: {_check_last_error(lib)}")
+            raise _native_error(lib)
         return result.decode("utf-8")
     finally:
         lib.unpdf_free_document(handle)
@@ -124,7 +193,7 @@ def get_info(path: str) -> dict[str, Any]:
         Dictionary containing document metadata (title, author, section_count, etc.)
 
     Raises:
-        RuntimeError: If extraction fails.
+        UnpdfError: If extraction fails. Its ``kind`` says why.
     """
     lib = get_library()
     handle = _parse_file(lib, path)
@@ -163,14 +232,14 @@ def get_extraction_quality(path: str) -> dict[str, Any]:
         ``encrypted``, ``is_scan_pdf``, ``suppressed_ocr_pages``.
 
     Raises:
-        RuntimeError: If parsing or retrieval fails.
+        UnpdfError: If parsing or retrieval fails. Its ``kind`` says why.
     """
     lib = get_library()
     handle = _parse_file(lib, path)
     try:
         result = lib.unpdf_get_extraction_quality(handle)
         if not result:
-            raise RuntimeError(f"unpdf error: {_check_last_error(lib)}")
+            raise _native_error(lib)
         return json.loads(result.decode("utf-8"))
     finally:
         lib.unpdf_free_document(handle)
@@ -183,6 +252,11 @@ def get_page_stats(path: str, page_number: int) -> dict[str, Any]:
     ``text_op_count == 0`` with ``image_op_count > 0`` identifies an image-only
     (scanned) page — OCR required. Both 0 means a genuinely blank page.
 
+    Note:
+        A *searchable* scan (page image plus an invisible OCR text layer) reports
+        ``text_op_count > 0`` — combine the check with ``ocr_text_suppressed``,
+        which flags pages whose unreadable OCR layer was dropped.
+
     Args:
         path: Path to the PDF file.
         page_number: Page number (1-indexed).
@@ -192,14 +266,15 @@ def get_page_stats(path: str, page_number: int) -> dict[str, Any]:
         ``ocr_text_suppressed``.
 
     Raises:
-        RuntimeError: If parsing fails or the page is out of range.
+        UnpdfError: If parsing fails or the page is out of range
+            (``kind == ErrorKind.PAGE_OUT_OF_RANGE``).
     """
     lib = get_library()
     handle = _parse_file(lib, path)
     try:
         result = lib.unpdf_page_stats(handle, page_number)
         if not result:
-            raise RuntimeError(f"unpdf error: {_check_last_error(lib)}")
+            raise _native_error(lib)
         return json.loads(result.decode("utf-8"))
     finally:
         lib.unpdf_free_document(handle)

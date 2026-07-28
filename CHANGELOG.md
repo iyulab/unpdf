@@ -1,5 +1,44 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- Structured error classification, so a caller can tell *why* extraction failed
+  without matching on message text:
+  - `Error::kind()` returning a stable `ErrorKind` — one variant per `Error`
+    variant, with explicit discriminants that are part of the public contract.
+  - FFI: `unpdf_last_error_kind()`, written in lockstep with `unpdf_last_error()`
+    (every call that records a message records a kind; a successful call clears
+    both). Values 1..17 mirror `ErrorKind`; 100+ are FFI-boundary reasons — a null
+    or non-UTF-8 argument, a caught panic, output holding an interior NUL byte.
+    `UnpdfErrorKind` is declared in `bindings/unpdf.h`.
+  - C#: `UnpdfException.Kind` (`UnpdfErrorKind` enum).
+  - Python: `UnpdfError` with a `kind` attribute and an `ErrorKind` enum. It
+    subclasses `RuntimeError`, which is what this package raised before, so existing
+    `except RuntimeError` handlers keep working.
+  - This completes the diagnostic surface 0.9.0 started: `extraction_quality` and
+    `page_stats` explain a *successful* parse that produced no text, while error
+    kinds explain a parse that failed at all — previously reachable only by string
+    matching.
+
+### Fixed
+- C#: error messages were decoded as ANSI while the native side emits UTF-8, so
+  messages embedding a non-ASCII file path came back mangled.
+- C#: the NuGet package README documented a `Pdf` static class that does not exist —
+  every sample in it failed to compile. Rewritten against the real `UnpdfDocument`
+  API.
+- Python: the README's install command named the import name (`unpdf`) rather than
+  the distribution (`unpdf-markdown`).
+
+### Documentation
+- README (both the repository and the per-binding ones) now covers failure handling
+  and, for Python, the `get_extraction_quality` / `get_page_stats` surface added in
+  0.9.0.
+- The searchable-scan caveat on `page_stats` (a page image with an invisible OCR
+  layer reports `text_op_count > 0`; combine with `ocr_text_suppressed`) now appears
+  in the C# and Python API docs as well, not only in `unpdf.h` and the README —
+  consumers reading IDE tooltips were being shown the naive two-term rule.
+
 ## 0.9.0 — 2026-07-23
 
 ### Added

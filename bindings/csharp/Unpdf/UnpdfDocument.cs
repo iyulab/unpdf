@@ -78,7 +78,7 @@ public class UnpdfDocument : IDisposable
 
         var handle = NativeMethods.unpdf_parse_file(path);
         if (handle == IntPtr.Zero)
-            throw new UnpdfException($"Failed to parse {path}: {GetLastError()}");
+            throw Failure($"Failed to parse {path}");
 
         return new UnpdfDocument(handle);
     }
@@ -97,7 +97,7 @@ public class UnpdfDocument : IDisposable
             Marshal.Copy(data, 0, dataPtr, data.Length);
             var handle = NativeMethods.unpdf_parse_bytes(dataPtr, (UIntPtr)data.Length);
             if (handle == IntPtr.Zero)
-                throw new UnpdfException($"Failed to parse bytes: {GetLastError()}");
+                throw Failure("Failed to parse bytes");
 
             return new UnpdfDocument(handle);
         }
@@ -118,7 +118,7 @@ public class UnpdfDocument : IDisposable
         int flags = options?.ToFlags() ?? 0;
         var ptr = NativeMethods.unpdf_to_markdown(_handle, flags);
         if (ptr == IntPtr.Zero)
-            throw new UnpdfException($"Failed to convert to markdown: {GetLastError()}");
+            throw Failure("Failed to convert to markdown");
 
         try
         {
@@ -139,7 +139,7 @@ public class UnpdfDocument : IDisposable
         ThrowIfDisposed();
         var ptr = NativeMethods.unpdf_to_text(_handle);
         if (ptr == IntPtr.Zero)
-            throw new UnpdfException($"Failed to convert to text: {GetLastError()}");
+            throw Failure("Failed to convert to text");
 
         try
         {
@@ -162,7 +162,7 @@ public class UnpdfDocument : IDisposable
         int format = compact ? NativeMethods.UNPDF_JSON_COMPACT : NativeMethods.UNPDF_JSON_PRETTY;
         var ptr = NativeMethods.unpdf_to_json(_handle, format);
         if (ptr == IntPtr.Zero)
-            throw new UnpdfException($"Failed to convert to JSON: {GetLastError()}");
+            throw Failure("Failed to convert to JSON");
 
         try
         {
@@ -183,7 +183,7 @@ public class UnpdfDocument : IDisposable
         ThrowIfDisposed();
         var ptr = NativeMethods.unpdf_plain_text(_handle);
         if (ptr == IntPtr.Zero)
-            throw new UnpdfException($"Failed to get plain text: {GetLastError()}");
+            throw Failure("Failed to get plain text");
 
         try
         {
@@ -205,7 +205,7 @@ public class UnpdfDocument : IDisposable
             ThrowIfDisposed();
             var count = NativeMethods.unpdf_section_count(_handle);
             if (count < 0)
-                throw new UnpdfException($"Failed to get section count: {GetLastError()}");
+                throw Failure("Failed to get section count");
             return count;
         }
     }
@@ -230,7 +230,7 @@ public class UnpdfDocument : IDisposable
             ThrowIfDisposed();
             var count = NativeMethods.unpdf_resource_count(_handle);
             if (count < 0)
-                throw new UnpdfException($"Failed to get resource count: {GetLastError()}");
+                throw Failure("Failed to get resource count");
             return count;
         }
     }
@@ -294,7 +294,7 @@ public class UnpdfDocument : IDisposable
         int flags = options?.ToFlags() ?? 0;
         var ptr = NativeMethods.unpdf_page_to_markdown(_handle, pageNumber, flags);
         if (ptr == IntPtr.Zero)
-            throw new UnpdfException($"Failed to convert page {pageNumber} to markdown: {GetLastError()}");
+            throw Failure($"Failed to convert page {pageNumber} to markdown");
 
         try
         {
@@ -317,7 +317,7 @@ public class UnpdfDocument : IDisposable
         ThrowIfDisposed();
         var ptr = NativeMethods.unpdf_page_to_text(_handle, pageNumber);
         if (ptr == IntPtr.Zero)
-            throw new UnpdfException($"Failed to get text for page {pageNumber}: {GetLastError()}");
+            throw Failure($"Failed to get text for page {pageNumber}");
 
         try
         {
@@ -345,7 +345,7 @@ public class UnpdfDocument : IDisposable
         ThrowIfDisposed();
         var ptr = NativeMethods.unpdf_get_extraction_quality(_handle);
         if (ptr == IntPtr.Zero)
-            throw new UnpdfException($"Failed to get extraction quality: {GetLastError()}");
+            throw Failure("Failed to get extraction quality");
 
         try
         {
@@ -366,6 +366,12 @@ public class UnpdfDocument : IDisposable
     /// <see cref="PageStats.TextOpCount"/> == 0 with
     /// <see cref="PageStats.ImageOpCount"/> &gt; 0 identifies an image-only
     /// (scanned) page; both 0 means a genuinely blank page.
+    /// <para>
+    /// A <em>searchable</em> scan (page image plus an invisible OCR text layer)
+    /// reports <see cref="PageStats.TextOpCount"/> &gt; 0 — combine the check with
+    /// <see cref="PageStats.OcrTextSuppressed"/>, which flags pages whose
+    /// unreadable OCR layer was dropped.
+    /// </para>
     /// </remarks>
     /// <param name="pageNumber">Page number (1-indexed)</param>
     /// <returns>Per-page operator statistics</returns>
@@ -375,7 +381,7 @@ public class UnpdfDocument : IDisposable
         ThrowIfDisposed();
         var ptr = NativeMethods.unpdf_page_stats(_handle, pageNumber);
         if (ptr == IntPtr.Zero)
-            throw new UnpdfException($"Failed to get stats for page {pageNumber}: {GetLastError()}");
+            throw Failure($"Failed to get stats for page {pageNumber}");
 
         try
         {
@@ -463,7 +469,24 @@ public class UnpdfDocument : IDisposable
         var ptr = NativeMethods.unpdf_last_error();
         if (ptr == IntPtr.Zero)
             return "Unknown error";
-        return Marshal.PtrToStringAnsi(ptr) ?? "Unknown error";
+        // The native side emits UTF-8; messages embed file paths, which are routinely
+        // non-ASCII. Decoding them as ANSI mangles those paths.
+        var message = PtrToStringUtf8(ptr);
+        return message.Length == 0 ? "Unknown error" : message;
+    }
+
+    /// <summary>
+    /// Build an exception from the native error state.
+    /// </summary>
+    /// <remarks>
+    /// Reads the message and its classification together, before any further native
+    /// call can overwrite the thread-local error slot.
+    /// </remarks>
+    private static UnpdfException Failure(string context)
+    {
+        var message = GetLastError();
+        var kind = (UnpdfErrorKind)NativeMethods.unpdf_last_error_kind();
+        return new UnpdfException($"{context}: {message}", kind);
     }
 
     private static string PtrToStringUtf8(IntPtr ptr)

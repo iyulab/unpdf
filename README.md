@@ -524,6 +524,30 @@ for field in &doc.form_fields {
 }
 ```
 
+### Classifying Failures
+
+`Error::kind()` returns a stable `ErrorKind` so you can branch on *why* a call failed
+without matching on the message — useful when several failures reach the user as the
+same "extraction failed":
+
+```rust
+use unpdf::{parse_file, ErrorKind};
+
+match parse_file("document.pdf") {
+    Ok(doc) => println!("{}", doc.page_count()),
+    Err(e) => match e.kind() {
+        ErrorKind::Encrypted | ErrorKind::InvalidPassword => eprintln!("Password required"),
+        ErrorKind::Corrupted | ErrorKind::PdfParse => eprintln!("The file is damaged"),
+        ErrorKind::UnknownFormat => eprintln!("Not a PDF"),
+        _ => eprintln!("Extraction failed: {e}"),
+    },
+}
+```
+
+There is one `ErrorKind` variant per `Error` variant. The discriminants are explicit
+and part of the public contract — they cross the C ABI as `unpdf_last_error_kind`
+return values, so existing values are never renumbered.
+
 ---
 
 ## WebAssembly / JavaScript
@@ -684,6 +708,32 @@ Note: a *searchable* scan (page image plus an invisible OCR text layer) reports
 `text_op_count > 0` — combine the check with `ocr_text_suppressed`, which flags
 pages whose unreadable OCR layer was dropped.
 
+### Handling Failures
+
+The checks above need a parsed document. When parsing itself fails, `UnpdfError`
+carries a `kind` so you can branch on the reason instead of matching on message text:
+
+```python
+from unpdf import to_text, ErrorKind, UnpdfError
+
+try:
+    text = to_text("document.pdf")
+except UnpdfError as e:
+    if e.kind == ErrorKind.ENCRYPTED:
+        print("Password required")
+    elif e.kind in (ErrorKind.CORRUPTED, ErrorKind.PDF_PARSE):
+        print("The file is damaged")
+    elif e.kind == ErrorKind.UNKNOWN_FORMAT:
+        print("Not a PDF")
+    else:
+        print(f"Extraction failed ({e.kind.name}): {e}")
+```
+
+`UnpdfError` subclasses `RuntimeError`, so existing `except RuntimeError` handlers
+keep working. `ErrorKind` values are part of the native ABI: new reasons take new
+numbers and existing ones are never renumbered, so treat an unrecognised value as a
+generic failure.
+
 ---
 
 ## C# / .NET Integration
@@ -780,6 +830,44 @@ else if (stats.TextOpCount == 0)
 Note: a *searchable* scan (page image plus an invisible OCR text layer) reports
 `TextOpCount > 0` — combine the check with `OcrTextSuppressed`, which flags
 pages whose unreadable OCR layer was dropped.
+
+### Handling Failures
+
+The checks above need a parsed document. When parsing itself fails,
+`UnpdfException.Kind` says why, so you can branch on the reason instead of matching
+on `Message`:
+
+```csharp
+try
+{
+    using var doc = UnpdfDocument.ParseFile("document.pdf");
+    Console.WriteLine(doc.ToMarkdown());
+}
+catch (UnpdfException e)
+{
+    switch (e.Kind)
+    {
+        case UnpdfErrorKind.Encrypted:
+            Console.WriteLine("Password required");
+            break;
+        case UnpdfErrorKind.Corrupted:
+        case UnpdfErrorKind.PdfParse:
+            Console.WriteLine("The file is damaged");
+            break;
+        case UnpdfErrorKind.UnknownFormat:
+            Console.WriteLine("Not a PDF");
+            break;
+        default:
+            Console.WriteLine($"Extraction failed ({e.Kind}): {e.Message}");
+            break;
+    }
+}
+```
+
+`UnpdfErrorKind` values are part of the native ABI: new reasons take new numbers and
+existing ones are never renumbered, so treat an unrecognised value as a generic
+failure. A failure raised by the managed wrapper rather than the native library
+reports `UnpdfErrorKind.Other`.
 
 ### ASP.NET Core Example
 

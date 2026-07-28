@@ -67,6 +67,12 @@ internal static class NativeMethods
     public static extern IntPtr unpdf_last_error();
 
     /// <summary>
+    /// Classify the last error. Written in lockstep with <see cref="unpdf_last_error"/>.
+    /// </summary>
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern int unpdf_last_error_kind();
+
+    /// <summary>
     /// Parse a document from a file path.
     /// </summary>
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
