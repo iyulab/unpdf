@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.10.0 — 2026-07-28
 
 ### Added
 - Structured error classification, so a caller can tell *why* extraction failed
