@@ -181,11 +181,16 @@ pub fn try_get_update_result(
     rx.recv_timeout(Duration::from_millis(500)).ok().flatten()
 }
 
-/// Print update notification if new version available
+/// Print update notification if new version available.
+///
+/// Writes to stderr, not stdout: `md`/`json`/`text` emit document data to
+/// stdout, and a notification line there corrupts piped/redirected output
+/// (e.g. invalid JSON). Diagnostics belong on stderr per Unix convention,
+/// where they still surface in an interactive terminal.
 pub fn print_update_notification(result: &UpdateCheckResult) {
     if result.has_update {
-        println!();
-        println!(
+        eprintln!();
+        eprintln!(
             "{} {} → {} available! Run '{}' to update.",
             "Update:".yellow().bold(),
             result.current_version,
