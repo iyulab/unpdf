@@ -54,12 +54,12 @@
 - Form field names and values were decoded one byte at a time, with no UTF-16 handling
   at all. A PDF text string is either PDFDocEncoded or UTF-16BE (PDF 1.7 §7.9.2.2), and
   AcroForm producers write these as UTF-16BE *with* the byte-order mark — which is not
-  valid UTF-8, so lossy decoding turned the mark itself into two `U+FFFD`. Every field
-  name of a real form came back as
-  `<?><?>topmostSubform[0].<?><?>Page1[0].<?><?>Step1a[0]…`, one pair per path segment;
-  the interleaved NULs were removed by the output-hygiene pass, which recovered the
-  ASCII by accident and hid the rest. Field strings now take the UTF-16BE reading, so
-  the name is the name.
+  valid UTF-8, so lossy decoding turned the mark itself into two `U+FFFD`. On a real
+  form the great majority of field strings are written that way, and their names came
+  back as `<?><?>topmostSubform[0].<?><?>Page1[0].<?><?>Step1a[0]…`, one pair per path
+  segment; the interleaved NULs were removed by the output-hygiene pass, which recovered
+  the ASCII by accident and hid the rest. Field strings now take the UTF-16BE reading,
+  so the name is the name.
   - The unmarked form is also handled, but only where it cannot be mistaken: every
     even-offset byte zero, which is an all-ASCII string. A looser rule accepts
     `CHAP\0TER` — plain text with one stray NUL, which is what damaged content looks

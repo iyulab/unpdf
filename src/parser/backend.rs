@@ -1447,9 +1447,10 @@ fn decode_pdf_text_string(bytes: &[u8]) -> String {
 /// Field strings used to be read one byte at a time with no UTF-16 handling at all,
 /// which is worse than it sounds: AcroForm producers write these as UTF-16BE *with* the
 /// byte-order mark, and `FE FF` is not valid UTF-8, so lossy decoding turned the mark
-/// itself into two U+FFFD. Measured on a real form, every path segment of every field
-/// name came back as `\u{FFFD}\u{FFFD}topmostSubform[0]…`. The interleaved NULs were
-/// removed by the sanitiser, which recovered the ASCII by accident and hid the rest.
+/// itself into two U+FFFD. Measured on a real form, 55 of 59 field strings carried the
+/// mark, and their names came back as `\u{FFFD}\u{FFFD}topmostSubform[0]…` — one pair
+/// per path segment. The interleaved NULs were removed by the sanitiser, which recovered
+/// the ASCII by accident and hid the rest.
 ///
 /// So the decode has to happen before the sanitiser sees the string, and it has to
 /// handle both the BOM-carrying and BOM-less forms — see [`decode_pdf_text_string`].
