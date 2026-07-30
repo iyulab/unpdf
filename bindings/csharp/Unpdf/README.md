@@ -156,7 +156,28 @@ image-only pages rather than `ResourceCount`.
 ### `ExtractionQuality`
 
 `CharCount`, `WordCount`, `ReplacementCharCount`, `Encrypted`, `IsScanPdf`,
-`SuppressedOcrPages`.
+`SuppressedOcrPages`, plus the structural-integrity signals below.
+
+| Property | Meaning |
+|----------|---------|
+| `PagesIncomplete` | Pages are known to be missing from the output. The one property to branch on. |
+| `DeclaredPageCount` | Page count the document declares, or `null` when that was unreadable too. |
+| `UnresolvedPageNodes` | Unreadable page-tree *nodes* — non-zero means incomplete, **not** a count of lost pages. |
+| `SkippedObjectCount` | Objects that could not be loaded. Most cost no page (fonts, annotations). |
+
+A damaged PDF does not always fail: when the cross-reference table survives but the
+objects it points at do not, parsing succeeds over a short page set. Check
+`PagesIncomplete` before indexing or archiving — a page that silently never arrived is
+indistinguishable from a page that never existed.
+
+```csharp
+using var doc = UnpdfDocument.ParseFile("document.pdf");
+var quality = doc.GetExtractionQuality();
+if (quality.PagesIncomplete)
+    Console.WriteLine(
+        $"incomplete: got {doc.SectionCount} page(s), " +
+        $"document declares {quality.DeclaredPageCount}");
+```
 
 ### `PageStats`
 

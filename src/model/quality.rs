@@ -30,6 +30,44 @@ pub struct ExtractionQuality {
     /// alone. Set `ParseOptions::suppress_low_confidence_ocr` to `false` to keep it.
     #[serde(default)]
     pub suppressed_ocr_pages: usize,
+
+    /// Whether pages are known to be missing from the output.
+    ///
+    /// `true` means the parser recovered what it could from a damaged document and some
+    /// pages never made it — extraction "succeeded" over an incomplete page set. Callers
+    /// that index or archive the result should surface this: a page that silently never
+    /// arrived is indistinguishable from a page that never existed.
+    ///
+    /// Always `false` for intact documents. Derived from [`Self::declared_page_count`]
+    /// and [`Self::unresolved_page_nodes`]; unaffected by page-range selection.
+    #[serde(default)]
+    pub pages_incomplete: bool,
+
+    /// Page count the document declares (root `Pages` `/Count`), when readable.
+    ///
+    /// Compare against the number of pages actually extracted: a lower extracted count
+    /// means pages were lost. `None` means the declaration itself was unreadable, which
+    /// is itself a damage signal — the page tree is then reported via
+    /// [`Self::unresolved_page_nodes`].
+    #[serde(default)]
+    pub declared_page_count: Option<u32>,
+
+    /// Page-tree nodes that could not be read, so their pages never reached the output.
+    ///
+    /// Any non-zero value means **the page set is incomplete**. It is deliberately not a
+    /// count of lost pages: one unusable intermediate node drops its whole subtree, so a
+    /// single unresolved node can cost one page or a hundred. Do not report it as "N
+    /// pages lost".
+    #[serde(default)]
+    pub unresolved_page_nodes: usize,
+
+    /// Objects the cross-reference table pointed at that could not be loaded.
+    ///
+    /// Damage indicator only — most skipped objects (fonts, annotations, metadata) cost
+    /// no page at all, so this does not imply missing text. [`Self::unresolved_page_nodes`]
+    /// is the signal for lost content.
+    #[serde(default)]
+    pub skipped_object_count: usize,
 }
 
 impl ExtractionQuality {
@@ -39,9 +77,7 @@ impl ExtractionQuality {
             char_count: text.chars().count(),
             word_count: text.split_whitespace().count(),
             replacement_char_count: text.chars().filter(|&c| c == '\u{FFFD}').count(),
-            encrypted: false,
-            is_scan_pdf: false,
-            suppressed_ocr_pages: 0,
+            ..Default::default()
         }
     }
 
@@ -67,6 +103,21 @@ impl ExtractionQuality {
     ///
     /// The returned string does NOT include a "Warning:" prefix — callers add their own label.
     pub fn warning_message(&self) -> Option<String> {
+        // Reported first, ahead of encryption and empty-text: every other warning here
+        // describes text that came out wrong, while this one means text never came out
+        // at all — and a caller who only ever sees "PDF is encrypted" on a damaged file
+        // has no way to learn that pages went missing.
+        if self.pages_incomplete {
+            let of_declared = match self.declared_page_count {
+                Some(n) => format!(" The document declares {} page(s).", n),
+                None => String::new(),
+            };
+            return Some(format!(
+                "Some pages could not be read and are missing from the output: the PDF's \
+                 page structure is damaged.{} Extracted content is incomplete.",
+                of_declared
+            ));
+        }
         if self.encrypted {
             return Some(
                 "PDF is encrypted. Text extraction may be incomplete or unavailable.".to_string(),
@@ -149,9 +200,8 @@ impl QualityAccumulator {
             char_count: self.char_count,
             word_count: self.word_count,
             replacement_char_count: self.replacement_char_count,
-            encrypted: false,
-            is_scan_pdf: false,
             suppressed_ocr_pages: self.suppressed_ocr_pages,
+            ..Default::default()
         }
     }
 }

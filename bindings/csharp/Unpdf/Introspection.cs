@@ -41,6 +41,48 @@ public sealed class ExtractionQuality
     /// <summary>Number of pages whose unreadable OCR text layer was dropped.</summary>
     [JsonPropertyName("suppressed_ocr_pages")]
     public long SuppressedOcrPages { get; init; }
+
+    /// <summary>
+    /// Whether pages are known to be missing from the output.
+    /// <para>
+    /// <c>true</c> means the parser recovered what it could from a damaged document and
+    /// some pages never made it — extraction "succeeded" over an incomplete page set.
+    /// Check this before indexing or archiving: a page that silently never arrived is
+    /// indistinguishable from a page that never existed.
+    /// </para>
+    /// Always <c>false</c> for intact documents, and unaffected by page-range selection.
+    /// </summary>
+    [JsonPropertyName("pages_incomplete")]
+    public bool PagesIncomplete { get; init; }
+
+    /// <summary>
+    /// Page count the document declares (root <c>Pages</c> <c>/Count</c>), or <c>null</c>
+    /// when that declaration was itself unreadable — which is a damage signal in its own
+    /// right, reported via <see cref="UnresolvedPageNodes"/>.
+    /// </summary>
+    [JsonPropertyName("declared_page_count")]
+    public long? DeclaredPageCount { get; init; }
+
+    /// <summary>
+    /// Page-tree nodes that could not be read, so their pages never reached the output.
+    /// <para>
+    /// Any non-zero value means the page set is incomplete. It is deliberately not a
+    /// count of lost pages: one unusable intermediate node drops its whole subtree, so a
+    /// single unresolved node can cost one page or a hundred. Do not surface it to users
+    /// as "N pages lost".
+    /// </para>
+    /// </summary>
+    [JsonPropertyName("unresolved_page_nodes")]
+    public long UnresolvedPageNodes { get; init; }
+
+    /// <summary>
+    /// Objects the cross-reference table pointed at that could not be loaded. A damage
+    /// indicator only — most skipped objects (fonts, annotations, metadata) cost no page,
+    /// so this does not imply missing text. <see cref="PagesIncomplete"/> is the signal
+    /// for lost content.
+    /// </summary>
+    [JsonPropertyName("skipped_object_count")]
+    public long SkippedObjectCount { get; init; }
 }
 
 /// <summary>

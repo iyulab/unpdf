@@ -112,6 +112,83 @@ def _image_only_pdf() -> bytes:
     ])
 
 
+def _lost_page_pdf() -> bytes:
+    """Declares two pages, but its second kid points at an object that is not there.
+
+    The shape a damaged page tree takes: one page survives, one is lost, and the
+    parse still succeeds — which is exactly why it has to be reported.
+    """
+    content = b"BT /F1 12 Tf 72 720 Td (Page one) Tj ET\n"
+    return _assemble([
+        b"<</Type/Catalog/Pages 2 0 R>>",
+        b"<</Type/Pages/Kids[3 0 R 99 0 R]/Count 2>>",
+        b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]"
+        b"/Resources<</Font<</F1 5 0 R>>>>/Contents 4 0 R>>",
+        _stream_object(b"<</Length %d>>" % len(content), content),
+        b"<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>",
+    ])
+
+
+class TestInputForms:
+    """A PDF may be given as a path, a path-like object, or its own bytes.
+
+    All three must reach the same result: the native library has both a file and a
+    bytes entry point, so requiring callers to write PDFs to disk first — or to pass
+    ``str(Path(...))`` — would be an artificial limit of this binding alone.
+    """
+
+    def test_str_path_pathlike_and_bytes_agree(self, tmp_path):
+        pdf_file = tmp_path / "text.pdf"
+        data = _text_pdf()
+        pdf_file.write_bytes(data)
+
+        expected = unpdf.to_markdown(str(pdf_file))
+        assert unpdf.to_markdown(pdf_file) == expected  # pathlib.Path
+        assert unpdf.to_markdown(data) == expected  # bytes
+        assert unpdf.to_markdown(bytearray(data)) == expected  # bytearray
+
+    def test_bytes_reach_every_entry_point(self):
+        data = _text_pdf()
+        assert unpdf.get_page_count(data) == 1
+        assert unpdf.is_pdf(data) is True
+        assert unpdf.get_info(data)["section_count"] == 1
+        assert unpdf.get_extraction_quality(data)["char_count"] > 0
+        assert unpdf.get_page_stats(data, 1)["page"] == 1
+        assert unpdf.to_text(data)
+        assert unpdf.to_json(data)
+
+    def test_empty_bytes_is_classified_not_a_crash(self):
+        with pytest.raises(unpdf.UnpdfError) as excinfo:
+            unpdf.to_markdown(b"")
+        assert excinfo.value.kind == unpdf.ErrorKind.INVALID_ARGUMENT
+
+    def test_garbage_bytes_are_classified(self):
+        with pytest.raises(unpdf.UnpdfError) as excinfo:
+            unpdf.to_markdown(b"not a pdf")
+        assert excinfo.value.kind == unpdf.ErrorKind.UNKNOWN_FORMAT
+
+    def test_soft_failure_paths_still_soft_for_bytes(self):
+        # These two report failure by return value rather than by raising; bytes input
+        # must not turn that into an exception.
+        assert unpdf.is_pdf(b"not a pdf") is False
+        assert unpdf.get_page_count(b"not a pdf") == -1
+        assert unpdf.is_pdf(b"") is False
+        assert unpdf.get_page_count(b"") == -1
+        assert unpdf.is_pdf("does-not-exist.pdf") is False
+        assert unpdf.get_page_count("does-not-exist.pdf") == -1
+
+    @pytest.mark.parametrize("bad", [None, 123, 4.5, ["x.pdf"]])
+    def test_wrong_type_raises_rather_than_reporting_a_bad_pdf(self, bad):
+        # A wrong-typed argument is a caller bug, not an unparsable PDF. Folding it into
+        # the False/-1 return would hide the mistake at the call site.
+        with pytest.raises(TypeError):
+            unpdf.is_pdf(bad)
+        with pytest.raises(TypeError):
+            unpdf.get_page_count(bad)
+        with pytest.raises(TypeError):
+            unpdf.to_markdown(bad)
+
+
 class TestGetExtractionQuality:
     """Tests for get_extraction_quality function."""
 
@@ -130,6 +207,29 @@ class TestGetExtractionQuality:
         quality = unpdf.get_extraction_quality(str(pdf_file))
         assert quality["is_scan_pdf"] is False
         assert quality["char_count"] > 0
+
+    def test_intact_pdf_reports_complete(self, tmp_path):
+        """An intact document must not claim damage."""
+        pdf_file = tmp_path / "text.pdf"
+        pdf_file.write_bytes(_text_pdf())
+        quality = unpdf.get_extraction_quality(str(pdf_file))
+        assert quality["pages_incomplete"] is False
+        assert quality["declared_page_count"] == 1
+        assert quality["unresolved_page_nodes"] == 0
+        assert quality["skipped_object_count"] == 0
+
+    def test_damaged_page_tree_reports_incomplete(self, tmp_path):
+        """Silently dropped pages must be observable.
+
+        Parsing succeeds and reports one page, so without these fields the caller
+        cannot tell this apart from a genuine one-page document.
+        """
+        pdf_file = tmp_path / "damaged.pdf"
+        pdf_file.write_bytes(_lost_page_pdf())
+        quality = unpdf.get_extraction_quality(str(pdf_file))
+        assert quality["pages_incomplete"] is True
+        assert quality["declared_page_count"] == 2
+        assert quality["unresolved_page_nodes"] >= 1
 
     def test_non_existent_file_raises(self):
         """Non-existent file should raise RuntimeError."""

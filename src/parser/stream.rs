@@ -470,6 +470,16 @@ where
     let mut final_q = quality.finalize();
     final_q.encrypted = metadata.encrypted;
     final_q.is_scan_pdf = is_scan_pdf;
+
+    // Structural integrity is a document-level fact, so it is attached here rather than
+    // accumulated per page: the pages this reports on are precisely the ones that never
+    // arrived to be accumulated.
+    let integrity = backend.integrity();
+    final_q.pages_incomplete = integrity.pages_incomplete();
+    final_q.declared_page_count = integrity.declared_page_count;
+    final_q.unresolved_page_nodes = integrity.unresolved_page_nodes;
+    final_q.skipped_object_count = integrity.skipped_object_count;
+
     let _ = on_event(ParseEvent::DocumentEnd {
         quality: final_q.clone(),
     });

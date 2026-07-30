@@ -1,6 +1,6 @@
 //! PDF document structure.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::error::{Error, Result};
 
@@ -17,6 +17,24 @@ pub struct RawDocument {
     trailer: PdfDict,
     /// PDF version string (e.g., "1.4", "1.7").
     pub version: String,
+    /// Objects the xref table pointed at that could not be loaded.
+    skipped_objects: usize,
+}
+
+/// Result of walking the page tree: the pages found, and what the walk had to drop.
+#[derive(Debug, Default, Clone)]
+pub struct PageTreeScan {
+    /// 1-based page number → object id.
+    pub pages: BTreeMap<u32, (u32, u16)>,
+
+    /// Page-tree nodes the walk could not use: an unresolvable reference, a kid that
+    /// is not a reference, a node that is neither `/Page` nor `/Pages`, or a missing
+    /// catalog / root `Pages` entry.
+    ///
+    /// This is **not** a count of lost pages — an unusable intermediate `Pages` node
+    /// drops its entire subtree, so one unresolved node can cost many pages. Treat any
+    /// non-zero value as "the page set is incomplete" and nothing more.
+    pub unresolved_nodes: usize,
 }
 
 impl RawDocument {
@@ -30,6 +48,7 @@ impl RawDocument {
 
         // 3. Load all objects from xref entries
         let mut objects = HashMap::new();
+        let mut skipped_objects = 0usize;
 
         // First pass: load all uncompressed objects
         for (&(obj_num, gen_num), &entry) in &xref_table.entries {
@@ -39,7 +58,9 @@ impl RawDocument {
                         objects.insert((obj_num, gen_num), obj);
                     }
                     Err(_) => {
-                        // Skip objects that fail to parse (e.g., corrupted)
+                        // Skip objects that fail to parse (e.g., corrupted), but count
+                        // them: a caller has no other way to learn the file was lossy.
+                        skipped_objects += 1;
                     }
                 }
             }
@@ -60,6 +81,7 @@ impl RawDocument {
             objects,
             trailer,
             version,
+            skipped_objects,
         };
 
         // Decrypt before ObjStm extraction: ObjStm streams are encrypted and must
@@ -68,17 +90,27 @@ impl RawDocument {
             doc.try_decrypt()?;
         }
 
-        // Second pass: extract compressed objects from ObjStm streams (now decrypted)
+        // Second pass: extract compressed objects from ObjStm streams (now decrypted).
+        // An unusable ObjStm loses every object it carried, so count the whole group —
+        // that is the difference between "one object skipped" and "a chapter missing".
         for (stream_obj_num, entries) in &compressed_groups {
-            if let Some(stream_obj) = doc.objects.get(&(*stream_obj_num, 0)) {
-                if let Some(pdf_stream) = stream_obj.as_stream() {
-                    if let Ok(extracted) = extract_objstm_objects(pdf_stream) {
-                        for &(obj_num, gen_num, index) in entries {
-                            if let Some(obj) = extracted.get(&(index as usize)) {
-                                doc.objects.insert((obj_num, gen_num), obj.clone());
-                            }
-                        }
+            let extracted = doc
+                .objects
+                .get(&(*stream_obj_num, 0))
+                .and_then(|obj| obj.as_stream())
+                .and_then(|pdf_stream| extract_objstm_objects(pdf_stream).ok());
+
+            let Some(extracted) = extracted else {
+                doc.skipped_objects += entries.len();
+                continue;
+            };
+
+            for &(obj_num, gen_num, index) in entries {
+                match extracted.get(&(index as usize)) {
+                    Some(obj) => {
+                        doc.objects.insert((obj_num, gen_num), obj.clone());
                     }
+                    None => doc.skipped_objects += 1,
                 }
             }
         }
@@ -249,33 +281,94 @@ impl RawDocument {
     }
 
     /// Get all pages as (1-based page_number -> (obj_num, gen_num)).
-    /// Traverses the page tree: Catalog -> Pages -> recursive Kids.
+    /// Traverses the page tree: Catalog -> Pages -> Kids.
     pub fn pages(&self) -> BTreeMap<u32, (u32, u16)> {
-        let mut result = BTreeMap::new();
-        let mut page_num = 1u32;
-
-        let catalog = match self.catalog() {
-            Ok(c) => c,
-            Err(_) => return result,
-        };
-
-        let pages_ref = match dict_get(catalog, b"Pages") {
-            Some(r) => r,
-            None => return result,
-        };
-
-        let pages_id = match pages_ref.as_reference() {
-            Some(id) => id,
-            None => return result,
-        };
-
-        self.collect_pages(pages_id, &mut result, &mut page_num);
-        result
+        self.scan_page_tree().pages
     }
 
     /// Get the number of pages.
     pub fn page_count(&self) -> u32 {
         self.pages().len() as u32
+    }
+
+    /// Page count as declared by the root `Pages` node (`/Count`), when it is readable.
+    ///
+    /// Independent of [`Self::pages`], which reports what the walk could actually reach.
+    /// The two disagreeing means the file is damaged — see [`PageTreeScan`].
+    pub fn declared_page_count(&self) -> Option<u32> {
+        let root = self
+            .catalog()
+            .ok()
+            .and_then(|c| dict_get(c, b"Pages"))
+            .and_then(|r| r.as_reference())?;
+        let count = dict_get(self.get_dict(root).ok()?, b"Count").and_then(|o| o.as_i64())?;
+        u32::try_from(count).ok()
+    }
+
+    /// Number of objects the xref table pointed at that could not be loaded.
+    pub fn skipped_object_count(&self) -> usize {
+        self.skipped_objects
+    }
+
+    /// Walk the page tree, reporting both the pages reached and what had to be dropped.
+    ///
+    /// Depth-first over an explicit stack rather than by recursion: the page tree of a
+    /// damaged (or hostile) file can nest arbitrarily deep or point back at itself, and
+    /// neither may cost the caller its stack. A `visited` set makes cycles terminate.
+    pub fn scan_page_tree(&self) -> PageTreeScan {
+        let mut scan = PageTreeScan::default();
+
+        // No usable catalog or root `Pages` loses every page at once. Report it as one
+        // unusable node so callers see "incomplete", not "this document has no pages".
+        let Some(root) = self
+            .catalog()
+            .ok()
+            .and_then(|c| dict_get(c, b"Pages"))
+            .and_then(|r| r.as_reference())
+        else {
+            scan.unresolved_nodes += 1;
+            return scan;
+        };
+
+        let mut page_num = 1u32;
+        let mut visited: HashSet<(u32, u16)> = HashSet::new();
+        let mut stack = vec![root];
+
+        while let Some(node_id) = stack.pop() {
+            // Already walked: a cyclic or diamond page tree. Not a loss — just done.
+            if !visited.insert(node_id) {
+                continue;
+            }
+
+            let Ok(dict) = self.get_dict(node_id) else {
+                scan.unresolved_nodes += 1;
+                continue;
+            };
+
+            match dict_get(dict, b"Type").and_then(|o| o.as_name()) {
+                Some(b"Page") => {
+                    scan.pages.insert(page_num, node_id);
+                    page_num += 1;
+                }
+                // `/Type` is optional on intermediate nodes in practice — treat absent
+                // as a `Pages` node and recurse into Kids.
+                Some(b"Pages") | None => {
+                    if let Some(kids) = dict_get(dict, b"Kids").and_then(|o| o.as_array()) {
+                        // Push in reverse so the leftmost kid pops first (document order).
+                        for kid in kids.iter().rev() {
+                            match kid.as_reference() {
+                                Some(kid_id) => stack.push(kid_id),
+                                None => scan.unresolved_nodes += 1,
+                            }
+                        }
+                    }
+                }
+                // Neither a page nor a page-tree node: the subtree below it is unreachable.
+                Some(_) => scan.unresolved_nodes += 1,
+            }
+        }
+
+        scan
     }
 
     /// Get a dictionary by object ID, resolving references.
@@ -297,43 +390,6 @@ impl RawDocument {
     /// Check if the document is encrypted.
     pub fn is_encrypted(&self) -> bool {
         dict_get(&self.trailer, b"Encrypt").is_some()
-    }
-
-    // -----------------------------------------------------------------------
-    // Private helpers
-    // -----------------------------------------------------------------------
-
-    /// Recursively collect pages from the page tree.
-    fn collect_pages(
-        &self,
-        node_id: (u32, u16),
-        result: &mut BTreeMap<u32, (u32, u16)>,
-        page_num: &mut u32,
-    ) {
-        let dict = match self.get_dict(node_id) {
-            Ok(d) => d,
-            Err(_) => return,
-        };
-
-        let type_name = dict_get(dict, b"Type").and_then(|o| o.as_name());
-
-        match type_name {
-            Some(b"Page") => {
-                result.insert(*page_num, node_id);
-                *page_num += 1;
-            }
-            Some(b"Pages") | None => {
-                // Pages node — recurse into Kids
-                if let Some(kids) = dict_get(dict, b"Kids").and_then(|o| o.as_array()) {
-                    for kid in kids {
-                        if let Some(kid_id) = kid.as_reference() {
-                            self.collect_pages(kid_id, result, page_num);
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
     }
 }
 

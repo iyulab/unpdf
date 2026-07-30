@@ -43,6 +43,17 @@ impl PdfDocument {
     pub fn metadata(&self) -> Result<String, JsValue> {
         serde_json::to_string(&self.inner.metadata).map_err(|e| JsValue::from_str(&e.to_string()))
     }
+
+    /// Extraction diagnostics as a JSON string, mirroring the other bindings.
+    ///
+    /// `pagesIncomplete` is the field to check before indexing the result: a damaged
+    /// PDF parses successfully over a short page set, and a page that never arrived
+    /// is otherwise indistinguishable from a page that never existed.
+    #[wasm_bindgen(js_name = extractionQuality)]
+    pub fn extraction_quality(&self) -> Result<String, JsValue> {
+        serde_json::to_string(&self.inner.extraction_quality)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
 }
 
 #[cfg(test)]
@@ -94,6 +105,18 @@ startxref\n\
         let json = doc.to_json().unwrap();
         let trimmed = json.trim();
         assert!(trimmed.starts_with('{') || trimmed.starts_with('['));
+    }
+
+    #[wasm_bindgen_test]
+    fn test_extraction_quality_reports_intact_document() {
+        let doc = PdfDocument::from_bytes(MINIMAL_PDF).unwrap();
+        let json = doc.extraction_quality().unwrap();
+        // An intact document must not claim damage — the field has to be present and
+        // false, not merely absent.
+        assert!(
+            json.contains("\"pages_incomplete\":false"),
+            "quality JSON should report an intact page set: {json}"
+        );
     }
 
     #[wasm_bindgen_test]

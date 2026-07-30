@@ -4,10 +4,17 @@ High-level Python API for unpdf.
 
 import ctypes
 import json
+import os
 from enum import IntEnum
-from typing import Any
+from typing import Any, Union
 
 from ._native import get_library, UNPDF_JSON_PRETTY, UNPDF_JSON_COMPACT
+
+#: What every function in this module accepts as its PDF: a filesystem path
+#: (``str``, or anything implementing ``os.PathLike`` such as ``pathlib.Path``)
+#: or the PDF's own bytes. The two are told apart by type, so there is no
+#: ambiguity — ``str`` is always a path, ``bytes`` is always content.
+PdfSource = Union[str, "os.PathLike[str]", bytes, bytearray]
 
 
 class ErrorKind(IntEnum):
@@ -66,9 +73,13 @@ class UnpdfError(RuntimeError):
             self.kind = kind
 
 
-def _encode_path(path: str) -> bytes:
-    """Encode a path string to bytes for FFI."""
-    return path.encode("utf-8")
+def _encode_path(path: "str | os.PathLike[str]") -> bytes:
+    """Encode a filesystem path for the FFI boundary.
+
+    Goes through :func:`os.fspath`, so ``pathlib.Path`` and any other path-like
+    object works, not only ``str``.
+    """
+    return os.fspath(path).encode("utf-8")
 
 
 def _check_last_error(lib: ctypes.CDLL) -> str:
@@ -91,20 +102,32 @@ def _native_error(lib: ctypes.CDLL) -> "UnpdfError":
     return UnpdfError(f"unpdf error: {message}", kind)
 
 
-def _parse_file(lib: ctypes.CDLL, path: str) -> ctypes.c_void_p:
-    """Parse a file and return the document handle. Raises on failure."""
-    handle = lib.unpdf_parse_file(_encode_path(path))
+def _parse_file(lib: ctypes.CDLL, source: PdfSource) -> ctypes.c_void_p:
+    """Parse a PDF and return the document handle. Raises on failure.
+
+    Dispatches on the type of ``source``: bytes are parsed in memory, anything
+    else is treated as a filesystem path.
+    """
+    if isinstance(source, (bytes, bytearray)):
+        if not source:
+            raise UnpdfError("unpdf error: empty PDF data", ErrorKind.INVALID_ARGUMENT)
+        buf = (ctypes.c_uint8 * len(source)).from_buffer_copy(source)
+        handle = lib.unpdf_parse_bytes(buf, len(source))
+    else:
+        handle = lib.unpdf_parse_file(_encode_path(source))
+
     if not handle:
         raise _native_error(lib)
     return handle
 
 
-def to_markdown(path: str, flags: int = 0) -> str:
+def to_markdown(source: PdfSource, flags: int = 0) -> str:
     """
     Convert a PDF file to Markdown format.
 
     Args:
-        path: Path to the PDF file.
+        source: Path to the PDF file (``str`` or ``os.PathLike``), or the
+            PDF's own bytes.
         flags: Bitwise OR of UNPDF_FLAG_* constants (optional).
 
     Returns:
@@ -114,7 +137,7 @@ def to_markdown(path: str, flags: int = 0) -> str:
         UnpdfError: If conversion fails. Its ``kind`` says why.
     """
     lib = get_library()
-    handle = _parse_file(lib, path)
+    handle = _parse_file(lib, source)
     try:
         result = lib.unpdf_to_markdown(handle, flags)
         if not result:
@@ -124,12 +147,13 @@ def to_markdown(path: str, flags: int = 0) -> str:
         lib.unpdf_free_document(handle)
 
 
-def to_text(path: str) -> str:
+def to_text(source: PdfSource) -> str:
     """
     Convert a PDF file to plain text.
 
     Args:
-        path: Path to the PDF file.
+        source: Path to the PDF file (``str`` or ``os.PathLike``), or the
+            PDF's own bytes.
 
     Returns:
         The extracted content as plain text.
@@ -138,7 +162,7 @@ def to_text(path: str) -> str:
         UnpdfError: If conversion fails. Its ``kind`` says why.
     """
     lib = get_library()
-    handle = _parse_file(lib, path)
+    handle = _parse_file(lib, source)
     try:
         result = lib.unpdf_to_text(handle)
         if not result:
@@ -148,12 +172,13 @@ def to_text(path: str) -> str:
         lib.unpdf_free_document(handle)
 
 
-def to_json(path: str, pretty: bool = False) -> str:
+def to_json(source: PdfSource, pretty: bool = False) -> str:
     """
     Convert a PDF file to JSON format.
 
     Args:
-        path: Path to the PDF file.
+        source: Path to the PDF file (``str`` or ``os.PathLike``), or the
+            PDF's own bytes.
         pretty: If True, format JSON with indentation.
 
     Returns:
@@ -163,7 +188,7 @@ def to_json(path: str, pretty: bool = False) -> str:
         UnpdfError: If conversion fails. Its ``kind`` says why.
     """
     lib = get_library()
-    handle = _parse_file(lib, path)
+    handle = _parse_file(lib, source)
     try:
         fmt = UNPDF_JSON_PRETTY if pretty else UNPDF_JSON_COMPACT
         result = lib.unpdf_to_json(handle, fmt)
@@ -174,7 +199,7 @@ def to_json(path: str, pretty: bool = False) -> str:
         lib.unpdf_free_document(handle)
 
 
-def get_info(path: str) -> dict[str, Any]:
+def get_info(source: PdfSource) -> dict[str, Any]:
     """
     Get document metadata from a PDF file.
 
@@ -187,7 +212,8 @@ def get_info(path: str) -> dict[str, Any]:
         :func:`get_extraction_quality` instead.
 
     Args:
-        path: Path to the PDF file.
+        source: Path to the PDF file (``str`` or ``os.PathLike``), or the
+            PDF's own bytes.
 
     Returns:
         Dictionary containing document metadata (title, author, section_count, etc.)
@@ -196,7 +222,7 @@ def get_info(path: str) -> dict[str, Any]:
         UnpdfError: If extraction fails. Its ``kind`` says why.
     """
     lib = get_library()
-    handle = _parse_file(lib, path)
+    handle = _parse_file(lib, source)
     try:
         info: dict[str, Any] = {}
 
@@ -216,7 +242,7 @@ def get_info(path: str) -> dict[str, Any]:
         lib.unpdf_free_document(handle)
 
 
-def get_extraction_quality(path: str) -> dict[str, Any]:
+def get_extraction_quality(source: PdfSource) -> dict[str, Any]:
     """
     Get extraction quality diagnostics for a PDF file.
 
@@ -224,18 +250,30 @@ def get_extraction_quality(path: str) -> dict[str, Any]:
     ``is_scan_pdf`` identifies an image-only (scanned) document that needs OCR.
     For page-level discrimination in mixed documents use :func:`get_page_stats`.
 
+    ``pages_incomplete`` is the one to check before indexing or archiving: it is
+    ``True`` when the document was damaged and some pages never reached the output,
+    even though extraction "succeeded". A page that silently never arrived is
+    otherwise indistinguishable from a page that never existed.
+
     Args:
-        path: Path to the PDF file.
+        source: Path to the PDF file (``str`` or ``os.PathLike``), or the
+            PDF's own bytes.
 
     Returns:
         Dictionary with ``char_count``, ``word_count``, ``replacement_char_count``,
-        ``encrypted``, ``is_scan_pdf``, ``suppressed_ocr_pages``.
+        ``encrypted``, ``is_scan_pdf``, ``suppressed_ocr_pages``,
+        ``pages_incomplete``, ``declared_page_count``, ``unresolved_page_nodes``,
+        ``skipped_object_count``.
+
+        ``unresolved_page_nodes`` counts unreadable page-tree *nodes*, not lost
+        pages — one unreadable node can cost a whole subtree. Treat any non-zero
+        value as "incomplete" and do not report it as a page count.
 
     Raises:
         UnpdfError: If parsing or retrieval fails. Its ``kind`` says why.
     """
     lib = get_library()
-    handle = _parse_file(lib, path)
+    handle = _parse_file(lib, source)
     try:
         result = lib.unpdf_get_extraction_quality(handle)
         if not result:
@@ -245,7 +283,7 @@ def get_extraction_quality(path: str) -> dict[str, Any]:
         lib.unpdf_free_document(handle)
 
 
-def get_page_stats(path: str, page_number: int) -> dict[str, Any]:
+def get_page_stats(source: PdfSource, page_number: int) -> dict[str, Any]:
     """
     Get content-stream operator statistics for a single page.
 
@@ -258,7 +296,8 @@ def get_page_stats(path: str, page_number: int) -> dict[str, Any]:
         which flags pages whose unreadable OCR layer was dropped.
 
     Args:
-        path: Path to the PDF file.
+        source: Path to the PDF file (``str`` or ``os.PathLike``), or the
+            PDF's own bytes.
         page_number: Page number (1-indexed).
 
     Returns:
@@ -270,7 +309,7 @@ def get_page_stats(path: str, page_number: int) -> dict[str, Any]:
             (``kind == ErrorKind.PAGE_OUT_OF_RANGE``).
     """
     lib = get_library()
-    handle = _parse_file(lib, path)
+    handle = _parse_file(lib, source)
     try:
         result = lib.unpdf_page_stats(handle, page_number)
         if not result:
@@ -280,19 +319,26 @@ def get_page_stats(path: str, page_number: int) -> dict[str, Any]:
         lib.unpdf_free_document(handle)
 
 
-def get_page_count(path: str) -> int:
+def get_page_count(source: PdfSource) -> int:
     """
     Get the number of pages (sections) in a PDF file.
 
     Args:
-        path: Path to the PDF file.
+        source: Path to the PDF file (``str`` or ``os.PathLike``), or the
+            PDF's own bytes.
 
     Returns:
-        The number of pages, or -1 on error.
+        The number of pages, or -1 if it could not be parsed.
+
+    Raises:
+        TypeError: If ``source`` is neither a path-like object nor bytes. A
+            wrong-typed argument is a caller bug, not an unparsable PDF, so it is
+            not folded into the ``-1`` return.
     """
     lib = get_library()
-    handle = lib.unpdf_parse_file(_encode_path(path))
-    if not handle:
+    try:
+        handle = _parse_file(lib, source)
+    except UnpdfError:
         return -1
     try:
         return lib.unpdf_section_count(handle)
@@ -300,19 +346,30 @@ def get_page_count(path: str) -> int:
         lib.unpdf_free_document(handle)
 
 
-def is_pdf(path: str) -> bool:
+def is_pdf(source: PdfSource) -> bool:
     """
-    Check if a file is a valid PDF by attempting to parse it.
+    Check whether a PDF can be parsed, by attempting to parse it.
+
+    For a path this answers "is the file at this path a parsable PDF"; for bytes it
+    answers the same question about the bytes themselves, without touching the
+    filesystem.
 
     Args:
-        path: Path to the file.
+        source: Path to the file (``str`` or ``os.PathLike``), or PDF bytes.
 
     Returns:
-        True if the file can be parsed as a PDF, False otherwise.
+        True if it can be parsed as a PDF, False otherwise — including when the
+        path does not exist or the data is not a PDF.
+
+    Raises:
+        TypeError: If ``source`` is neither a path-like object nor bytes. A
+            wrong-typed argument is a caller bug, not an unparsable PDF, so it is
+            not folded into the ``False`` return.
     """
     lib = get_library()
-    handle = lib.unpdf_parse_file(_encode_path(path))
-    if not handle:
+    try:
+        handle = _parse_file(lib, source)
+    except UnpdfError:
         return False
     lib.unpdf_free_document(handle)
     return True

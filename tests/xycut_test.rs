@@ -149,12 +149,8 @@ fn test_scan_pdf_detection() {
 #[test]
 fn test_extraction_quality_serializes_is_scan_pdf() {
     let q = unpdf::ExtractionQuality {
-        char_count: 0,
-        word_count: 0,
-        replacement_char_count: 0,
-        encrypted: false,
-        suppressed_ocr_pages: 0,
         is_scan_pdf: true,
+        ..Default::default()
     };
     let json = serde_json::to_string(&q).unwrap();
     assert!(

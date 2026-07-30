@@ -7,5 +7,5 @@ pub mod stream;
 pub mod tokenizer;
 pub mod xref;
 
-pub use document::RawDocument;
+pub use document::{PageTreeScan, RawDocument};
 pub use tokenizer::{PdfDict, PdfObject, PdfStream};

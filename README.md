@@ -232,6 +232,7 @@ unpdf convert document.pdf --window 4
 | `--image-dir` | Custom image output directory | `<out>/images` |
 | `--min-image-size` | Min pixel dimension; smaller images skipped | 64 |
 | `--window` | Streaming window size (pages in-flight) | auto |
+| `--keep-ocr-text` | Keep a scan's OCR text layer even when it recognised nothing readable | false |
 | `--cleanup` | Text cleanup: `minimal`, `standard`, `aggressive` | none |
 | `--page-markers` | Insert `<!-- page N -->` markers | false |
 | `-q, --quiet` | Suppress progress and warnings | false |
@@ -548,6 +549,38 @@ There is one `ErrorKind` variant per `Error` variant. The discriminants are expl
 and part of the public contract — they cross the C ABI as `unpdf_last_error_kind`
 return values, so existing values are never renumbered.
 
+### Detecting Incomplete Extraction
+
+A damaged PDF does not always fail. When the cross-reference table survives but the
+objects it points at do not, the parser recovers the pages it can read and returns
+them — a success over an incomplete page set. `extraction_quality` reports that:
+
+```rust
+let doc = unpdf::parse_file("document.pdf")?;
+let q = &doc.extraction_quality;
+
+if q.pages_incomplete {
+    // Extraction succeeded, but pages are missing from the output.
+    eprintln!(
+        "incomplete: extracted {} page(s), document declares {:?}",
+        doc.page_count(),
+        q.declared_page_count
+    );
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `pages_incomplete` | Pages are known to be missing. The one bit to branch on. |
+| `declared_page_count` | Page count the document declares (`/Count`), or `None` if that was unreadable too. |
+| `unresolved_page_nodes` | Unreadable page-tree *nodes*. Non-zero means incomplete — **not** a count of lost pages. |
+| `skipped_object_count` | Objects that could not be loaded. Most cost no page (fonts, annotations), so this alone does not imply missing text. |
+
+Worth surfacing wherever extraction feeds an index or archive: a page that silently
+never arrived is indistinguishable from a page that never existed, so the omission
+shows up later as a search result that isn't there rather than as an error.
+`warning_message()` already includes this case, ahead of the other warnings.
+
 ---
 
 ## WebAssembly / JavaScript
@@ -614,11 +647,13 @@ console.log(doc.toMarkdown());
 
 | Method | Returns | Description |
 |--------|---------|-------------|
+| `PdfDocument.fromBytes(data)` | `PdfDocument` | Parse PDF bytes (static; same as `parse`) |
 | `toMarkdown()` | `string` | Convert to Markdown |
 | `toText()` | `string` | Convert to plain text |
 | `toJson()` | `string` | Convert to JSON |
 | `pageCount()` | `number` | Total page count |
 | `metadata()` | `string` | Metadata as JSON string |
+| `extractionQuality()` | `string` | Extraction diagnostics as JSON string — check `pages_incomplete` before indexing the result |
 
 **ParseOptions**
 
@@ -657,21 +692,28 @@ json_data = to_json("document.pdf")
 # Get document information
 info = get_info("document.pdf")
 print(f"Title: {info.get('title')}")
-print(f"Pages: {info.get('page_count')}")
+print(f"Pages: {info.get('section_count')}")
 ```
 
-### Working with Bytes
+`get_info` returns only the keys it found: `title` and `author` are absent when the
+document does not set them, and the page count is `section_count`.
+
+### Working with Paths and Bytes
+
+Every function accepts a path (`str` or any `os.PathLike`, so `pathlib.Path` works) or
+the PDF's own bytes. The two are told apart by type, so there is no ambiguity:
 
 ```python
+from pathlib import Path
 from unpdf import to_markdown
 
-# Read PDF from file
-with open("document.pdf", "rb") as f:
-    pdf_bytes = f.read()
-
-# Convert from bytes
-markdown = to_markdown(pdf_bytes)
+to_markdown("document.pdf")           # str path
+to_markdown(Path("document.pdf"))     # pathlib.Path
+to_markdown(pdf_bytes)                # bytes — parsed in memory, no temp file
 ```
+
+Bytes input goes through the native in-memory parser, so uploads and blobs need no
+detour through the filesystem.
 
 ### Check PDF Validity
 
@@ -707,6 +749,19 @@ elif stats["text_op_count"] == 0:
 Note: a *searchable* scan (page image plus an invisible OCR text layer) reports
 `text_op_count > 0` — combine the check with `ocr_text_suppressed`, which flags
 pages whose unreadable OCR layer was dropped.
+
+The same call reports whether the document was damaged badly enough to lose pages —
+extraction can succeed over an incomplete page set:
+
+```python
+quality = get_extraction_quality("document.pdf")
+if quality["pages_incomplete"]:
+    print(f"incomplete - document declares {quality['declared_page_count']} page(s)")
+```
+
+`unresolved_page_nodes` counts unreadable page-tree *nodes*, not lost pages — one
+unreadable node can cost a whole subtree, so treat any non-zero value as "incomplete"
+and nothing more.
 
 ### Handling Failures
 
@@ -770,39 +825,47 @@ cargo build --release --features ffi
 
 ### C# Wrapper Usage
 
+The API is handle-based: parse once into an `UnpdfDocument`, then read from it. The
+handle owns native memory, so dispose it (`using`).
+
 ```csharp
 using Unpdf;
 
-// Convert PDF to Markdown
-string markdown = Pdf.ToMarkdown("document.pdf");
+using var doc = UnpdfDocument.ParseFile("document.pdf");
 
-// Convert PDF to plain text
-string text = Pdf.ToText("document.pdf");
+string markdown = doc.ToMarkdown();
+string text = doc.ToText();
+string json = doc.ToJson(compact: false);
+string plain = doc.PlainText();
 
-// Convert PDF to JSON
-string json = Pdf.ToJson("document.pdf", pretty: true);
+// Document facts
+Console.WriteLine($"Title: {doc.Title}, Pages: {doc.SectionCount}");
 
-// Get document information
-var info = Pdf.GetInfo("document.pdf");
-Console.WriteLine($"Title: {info.Title}, Pages: {info.PageCount}");
-
-// Convert with options
-var options = new PdfOptions
+// Markdown options
+string withFrontmatter = doc.ToMarkdown(new MarkdownOptions
 {
     IncludeFrontmatter = true,
-    ExtractImages = true,
-    ImageOutputDir = "./images",
-    Lenient = true
-};
-string markdownWithImages = Pdf.ToMarkdown("document.pdf", options);
+    EscapeSpecialChars = true,
+    ParagraphSpacing = true,
+});
 
-// Extract images only
-var images = Pdf.ExtractImages("document.pdf", "./output/images");
-foreach (var img in images)
+// A single page (1-indexed)
+string page1 = doc.PageToMarkdown(1);
+
+// Embedded resources (images and the like), by id
+foreach (var id in doc.GetResourceIds())
 {
-    Console.WriteLine($"{img.Filename}: {img.Width}x{img.Height}");
+    byte[]? bytes = doc.GetResourceData(id);
+    if (bytes is not null)
+        File.WriteAllBytes(Path.Combine("./images", id), bytes);
 }
 ```
+
+Parsing from memory works the same way: `UnpdfDocument.ParseBytes(byte[])`.
+
+Note: `SectionCount` is the page count. `ResourceCount` counts embedded resources,
+which is not the same as the number of images — filter with `GetResourceInfo(id)` if
+you need images specifically.
 
 ### Detecting Scanned (Image-only) PDFs
 
@@ -830,6 +893,21 @@ else if (stats.TextOpCount == 0)
 Note: a *searchable* scan (page image plus an invisible OCR text layer) reports
 `TextOpCount > 0` — combine the check with `OcrTextSuppressed`, which flags
 pages whose unreadable OCR layer was dropped.
+
+The same object reports whether the document was damaged badly enough to lose pages.
+Extraction can succeed over an incomplete page set, and a page that silently never
+arrived looks exactly like a page that never existed:
+
+```csharp
+var quality = doc.GetExtractionQuality();
+if (quality.PagesIncomplete)
+    Console.WriteLine(
+        $"incomplete: got {doc.SectionCount} page(s), " +
+        $"document declares {quality.DeclaredPageCount}");
+```
+
+`UnresolvedPageNodes` counts unreadable page-tree *nodes*, not lost pages — one
+unreadable node can cost a whole subtree. Treat any non-zero value as "incomplete".
 
 ### Handling Failures
 
@@ -881,27 +959,29 @@ public class PdfController : ControllerBase
     {
         if (file == null) return BadRequest("No file");
 
-        // Save to temp file for processing
-        var tempPath = Path.GetTempFileName();
+        // Parse straight from the uploaded bytes — no temp file needed.
+        using var buffer = new MemoryStream();
+        await file.CopyToAsync(buffer);
+
         try
         {
-            using (var stream = System.IO.File.Create(tempPath))
-            {
-                await file.CopyToAsync(stream);
-            }
+            using var doc = UnpdfDocument.ParseBytes(buffer.ToArray());
+            var markdown = doc.ToMarkdown(new MarkdownOptions { IncludeFrontmatter = true });
 
-            var options = new PdfOptions { IncludeFrontmatter = true };
-            var markdown = Pdf.ToMarkdown(tempPath, options);
-            return Ok(new { markdown });
+            // Success is not the same as complete: report a damaged page set instead of
+            // returning a short document as if it were whole.
+            var quality = doc.GetExtractionQuality();
+            return Ok(new
+            {
+                markdown,
+                pages = doc.SectionCount,
+                incomplete = quality.PagesIncomplete,
+                declaredPages = quality.DeclaredPageCount,
+            });
         }
         catch (UnpdfException ex)
         {
-            return BadRequest(new { error = ex.Message });
-        }
-        finally
-        {
-            if (System.IO.File.Exists(tempPath))
-                System.IO.File.Delete(tempPath);
+            return BadRequest(new { error = ex.Message, kind = ex.Kind.ToString() });
         }
     }
 
@@ -910,26 +990,18 @@ public class PdfController : ControllerBase
     {
         if (file == null) return BadRequest("No file");
 
-        var tempPath = Path.GetTempFileName();
-        var outputDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
+        using var buffer = new MemoryStream();
+        await file.CopyToAsync(buffer);
+
         try
         {
-            using (var stream = System.IO.File.Create(tempPath))
-            {
-                await file.CopyToAsync(stream);
-            }
-
-            var images = Pdf.ExtractImages(tempPath, outputDir);
-            return Ok(new { count = images.Count, images });
+            using var doc = UnpdfDocument.ParseBytes(buffer.ToArray());
+            var ids = doc.GetResourceIds();
+            return Ok(new { count = ids.Length, ids });
         }
         catch (UnpdfException ex)
         {
-            return BadRequest(new { error = ex.Message });
-        }
-        finally
-        {
-            if (System.IO.File.Exists(tempPath))
-                System.IO.File.Delete(tempPath);
+            return BadRequest(new { error = ex.Message, kind = ex.Kind.ToString() });
         }
     }
 }

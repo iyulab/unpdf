@@ -81,6 +81,40 @@ pub struct RawXObject {
     pub color_space: Option<String>,
 }
 
+/// What a backend had to drop while reading the document structure.
+///
+/// Reported alongside the extracted text so a caller can tell "this document says
+/// what it says" from "this is what survived a damaged file". The default is the
+/// intact case: nothing dropped, nothing to warn about.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DocumentIntegrity {
+    /// Page count the document declares (root `Pages` `/Count`), when readable.
+    pub declared_page_count: Option<u32>,
+    /// Pages the document structure actually yielded, before any page selection.
+    pub found_page_count: u32,
+    /// Page-tree nodes that could not be used. Non-zero means the page set is
+    /// incomplete; it is not a count of lost pages.
+    pub unresolved_page_nodes: usize,
+    /// Objects the xref table pointed at that could not be loaded.
+    pub skipped_object_count: usize,
+}
+
+impl DocumentIntegrity {
+    /// Whether pages are known to be missing from the output.
+    ///
+    /// Two independent signals, because neither covers the other: an unusable page-tree
+    /// node is a loss the parser observed directly, while a declared count above the
+    /// pages found catches losses that left the tree structurally walkable (a truncated
+    /// `Kids` array, say). A declared count *below* what was found is not a loss — some
+    /// writers simply understate `/Count`.
+    pub fn pages_incomplete(&self) -> bool {
+        self.unresolved_page_nodes > 0
+            || self
+                .declared_page_count
+                .is_some_and(|declared| declared > self.found_page_count)
+    }
+}
+
 /// Abstract interface for PDF document access.
 ///
 /// Implementations provide page enumeration, font info, content stream
@@ -119,6 +153,14 @@ pub trait PdfBackend: Send + Sync {
     /// Extract AcroForm fields from the document.
     fn acroform_fields(&self) -> Vec<FormField> {
         vec![]
+    }
+
+    /// Report what reading the document structure had to drop.
+    ///
+    /// Defaults to "nothing dropped" so a backend that cannot distinguish partial
+    /// recovery does not claim damage it did not observe.
+    fn integrity(&self) -> DocumentIntegrity {
+        DocumentIntegrity::default()
     }
 }
 
@@ -183,6 +225,16 @@ impl RawBackend {
 impl PdfBackend for RawBackend {
     fn pages(&self) -> BTreeMap<u32, PageId> {
         self.doc.pages()
+    }
+
+    fn integrity(&self) -> DocumentIntegrity {
+        let scan = self.doc.scan_page_tree();
+        DocumentIntegrity {
+            declared_page_count: self.doc.declared_page_count(),
+            found_page_count: scan.pages.len() as u32,
+            unresolved_page_nodes: scan.unresolved_nodes,
+            skipped_object_count: self.doc.skipped_object_count(),
+        }
     }
 
     fn page_fonts(&self, page: PageId) -> Result<Vec<BackendFontInfo>> {

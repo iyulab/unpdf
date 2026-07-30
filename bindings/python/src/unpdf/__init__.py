@@ -4,6 +4,7 @@ unpdf - Python bindings for unpdf PDF extraction library.
 
 from .unpdf import (
     ErrorKind,
+    PdfSource,
     UnpdfError,
     to_markdown,
     to_text,
@@ -18,6 +19,7 @@ from .unpdf import (
 
 __all__ = [
     "ErrorKind",
+    "PdfSource",
     "UnpdfError",
     "to_markdown",
     "to_text",

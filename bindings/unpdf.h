@@ -163,10 +163,23 @@ char* unpdf_get_author(const UnpdfDocument* doc);
  * Extraction quality diagnostics as a JSON object.
  *
  * Fields: char_count, word_count, replacement_char_count, encrypted,
- * is_scan_pdf, suppressed_ocr_pages. `is_scan_pdf` is true when sampled
- * pages draw images with no text-showing operators — the document-level
+ * is_scan_pdf, suppressed_ocr_pages, pages_incomplete, declared_page_count,
+ * unresolved_page_nodes, skipped_object_count. `is_scan_pdf` is true when
+ * sampled pages draw images with no text-showing operators — the document-level
  * "scanned document, OCR required" signal. For page-level discrimination
  * (mixed documents) use unpdf_page_stats.
+ *
+ * pages_incomplete is true when the document was damaged and pages are missing
+ * from the output — parsing "succeeded" over a short page set, which is
+ * otherwise indistinguishable from a genuinely shorter document. Compare
+ * declared_page_count (the document's own /Count, null when unreadable) with
+ * unpdf_section_count. unresolved_page_nodes counts unreadable page-tree
+ * *nodes*, not lost pages: one unusable node drops its whole subtree, so treat
+ * any non-zero value as "incomplete" and nothing more. skipped_object_count is
+ * a damage indicator only — most skipped objects cost no page.
+ *
+ * Fields are only ever added here, never removed or renamed; a consumer that
+ * parses this JSON should ignore unknown fields.
  *
  * @return JSON string (must be freed with unpdf_free_string), or NULL.
  */

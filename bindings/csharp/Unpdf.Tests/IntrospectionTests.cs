@@ -53,6 +53,34 @@ public class IntrospectionTests
         using var doc = UnpdfDocument.ParseBytes(PdfFixtures.TextPdf());
         Assert.Throws<UnpdfException>(() => doc.GetPageStats(99));
     }
+
+    [Fact]
+    public void GetExtractionQuality_IntactPdf_ReportsComplete()
+    {
+        using var doc = UnpdfDocument.ParseBytes(PdfFixtures.TextPdf());
+        var quality = doc.GetExtractionQuality();
+        Assert.False(quality.PagesIncomplete);
+        Assert.Equal(1, quality.DeclaredPageCount);
+        Assert.Equal(0, quality.UnresolvedPageNodes);
+        Assert.Equal(0, quality.SkippedObjectCount);
+    }
+
+    /// <summary>
+    /// 손상 문서가 페이지를 조용히 버리는 것을 소비자가 관측할 수 있어야 한다.
+    /// 파싱은 성공하고 SectionCount 는 1을 반환하므로, 이 신호가 없으면
+    /// "1페이지 문서를 온전히 추출한 것"과 구별되지 않는다.
+    /// </summary>
+    [Fact]
+    public void GetExtractionQuality_DamagedPageTree_ReportsIncomplete()
+    {
+        using var doc = UnpdfDocument.ParseBytes(PdfFixtures.LostPagePdf());
+        var quality = doc.GetExtractionQuality();
+
+        Assert.Equal(1, doc.SectionCount);
+        Assert.True(quality.PagesIncomplete);
+        Assert.Equal(2, quality.DeclaredPageCount);
+        Assert.True(quality.UnresolvedPageNodes >= 1);
+    }
 }
 
 /// <summary>
@@ -91,6 +119,25 @@ internal static class PdfFixtures
                 "<</Type/XObject/Subtype/Image/Width 1/Height 1/ColorSpace/DeviceGray" +
                 "/BitsPerComponent 8/Length 1>>",
                 "\u0080"),
+        });
+    }
+
+    /// <summary>
+    /// Declares two pages but its second kid points at an object that is not there —
+    /// the shape a damaged page tree takes: one page survives, one is lost, and the
+    /// parse still succeeds.
+    /// </summary>
+    public static byte[] LostPagePdf()
+    {
+        var content = "BT /F1 12 Tf 72 720 Td (Page one) Tj ET\n";
+        return Assemble(new[]
+        {
+            "<</Type/Catalog/Pages 2 0 R>>",
+            "<</Type/Pages/Kids[3 0 R 99 0 R]/Count 2>>",
+            "<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]" +
+                "/Resources<</Font<</F1 5 0 R>>>>/Contents 4 0 R>>",
+            StreamObject($"<</Length {content.Length}>>", content),
+            "<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>",
         });
     }
 

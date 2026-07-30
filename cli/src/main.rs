@@ -682,7 +682,25 @@ fn cmd_info(input: &Path, quiet: bool) -> Result<bool, Box<dyn std::error::Error
 
     println!("{}: {}", "File".bold(), input.display());
     println!("{}: PDF {}", "Format".bold(), doc.metadata.pdf_version);
-    println!("{}: {}", "Pages".bold(), doc.metadata.page_count);
+    // Report page loss on the Pages line itself, not only through the quality warning:
+    // `--quiet` silences warnings, and a diagnostic command must not hide a short page
+    // set just because the caller asked for less noise.
+    let q = &doc.extraction_quality;
+    match (q.pages_incomplete, q.declared_page_count) {
+        (true, Some(declared)) => println!(
+            "{}: {} {}",
+            "Pages".bold(),
+            doc.metadata.page_count,
+            format!("(incomplete — document declares {})", declared).yellow()
+        ),
+        (true, None) => println!(
+            "{}: {} {}",
+            "Pages".bold(),
+            doc.metadata.page_count,
+            "(incomplete — page structure damaged)".yellow()
+        ),
+        _ => println!("{}: {}", "Pages".bold(), doc.metadata.page_count),
+    }
     println!(
         "{}: {}",
         "Encrypted".bold(),

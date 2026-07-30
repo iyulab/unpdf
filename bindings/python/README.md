@@ -40,34 +40,53 @@ is_valid = unpdf.is_pdf("document.pdf")
 print(f"Is valid PDF: {is_valid}")
 ```
 
+## Input: path or bytes
+
+Every function takes its PDF as `PdfSource` — a path (`str`, or any `os.PathLike`
+such as `pathlib.Path`) or the PDF's own bytes. Types are unambiguous: `str` is
+always a path, `bytes` is always content, and bytes go through the native
+in-memory parser rather than a temporary file.
+
+```python
+from pathlib import Path
+import unpdf
+
+unpdf.to_markdown("document.pdf")
+unpdf.to_markdown(Path("document.pdf"))
+unpdf.to_markdown(pdf_bytes)
+```
+
 ## API Reference
 
-### `to_markdown(path: str) -> str`
+### `to_markdown(source: PdfSource, flags: int = 0) -> str`
 Convert a PDF file to Markdown format.
 
-### `to_text(path: str) -> str`
+### `to_text(source: PdfSource) -> str`
 Convert a PDF file to plain text.
 
-### `to_json(path: str, pretty: bool = False) -> str`
+### `to_json(source: PdfSource, pretty: bool = False) -> str`
 Convert a PDF file to JSON format.
 
-### `get_info(path: str) -> dict`
-Get document metadata (title, author, page count, etc.)
+### `get_info(source: PdfSource) -> dict`
+Get document metadata. Keys: `section_count` (the page count), `resource_count`,
+plus `title` / `author` only when the document sets them.
 
-### `get_page_count(path: str) -> int`
+### `get_page_count(source: PdfSource) -> int`
 Get the number of pages in a PDF file.
 
-### `is_pdf(path: str) -> bool`
+### `is_pdf(source: PdfSource) -> bool`
 Check if a file is a valid PDF.
 
 ### `version() -> str`
 Get the version of the native library.
 
-### `get_extraction_quality(path: str) -> dict`
+### `get_extraction_quality(source: PdfSource) -> dict`
 Document-level extraction diagnostics: `char_count`, `word_count`,
-`replacement_char_count`, `encrypted`, `is_scan_pdf`, `suppressed_ocr_pages`.
+`replacement_char_count`, `encrypted`, `is_scan_pdf`, `suppressed_ocr_pages`,
+`pages_incomplete`, `declared_page_count`, `unresolved_page_nodes`,
+`skipped_object_count`. See "Incomplete extraction" below.
 
-### `get_page_stats(path: str, page_number: int) -> dict`
+### `get_page_stats(source: PdfSource, page_number: int) -> dict`
 Per-page content-stream operator counts (1-indexed): `page`, `text_op_count`,
 `image_op_count`, `ocr_text_suppressed`.
 
@@ -92,6 +111,26 @@ elif stats["text_op_count"] == 0:
 Note: a *searchable* scan (page image plus an invisible OCR text layer) reports
 `text_op_count > 0` — combine the check with `ocr_text_suppressed`, which flags
 pages whose unreadable OCR layer was dropped.
+
+## Incomplete extraction
+
+A damaged PDF does not always fail. When the cross-reference table survives but the
+objects it points at do not, the parser returns the pages it could read — a success
+over an incomplete page set. Check before indexing or archiving, because a page that
+silently never arrived is indistinguishable from a page that never existed:
+
+```python
+quality = unpdf.get_extraction_quality("document.pdf")
+if quality["pages_incomplete"]:
+    print(f"incomplete - document declares {quality['declared_page_count']} page(s)")
+```
+
+| Field | Meaning |
+|-------|---------|
+| `pages_incomplete` | Pages are known to be missing. The one field to branch on. |
+| `declared_page_count` | Page count the document declares, or `None` if unreadable. |
+| `unresolved_page_nodes` | Unreadable page-tree *nodes* — non-zero means incomplete, **not** a page count. |
+| `skipped_object_count` | Objects that could not be loaded. Most cost no page. |
 
 Also note that `get_info()["resource_count"]` counts the extracted-resource
 inventory, which this binding's parse path leaves empty (resource extraction is off

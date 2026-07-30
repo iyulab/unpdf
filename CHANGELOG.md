@@ -1,5 +1,60 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- Structural-integrity reporting on `ExtractionQuality`, so a caller can tell a
+  document that says what it says from what survived a damaged file. A PDF whose
+  cross-reference table outlives the objects it points at parses *successfully* over
+  a short page set — previously indistinguishable from a genuinely shorter document:
+  - `pages_incomplete` — the one field to branch on: pages are known to be missing.
+  - `declared_page_count` — the page count the document declares (root `Pages`
+    `/Count`), or absent when that declaration was unreadable too.
+  - `unresolved_page_nodes` — unreadable page-tree *nodes*. Non-zero means
+    incomplete; it is not a count of lost pages, because one unusable intermediate
+    node drops its whole subtree.
+  - `skipped_object_count` — objects the xref table named that could not be loaded.
+    A damage indicator only: most (fonts, annotations, metadata) cost no page.
+  - Surfaced everywhere the quality struct already reaches: `warning_message()` (and
+    so the CLI), the JSON output, FFI `unpdf_get_extraction_quality`, and the C# and
+    Python bindings. All fields are additive and default to the intact case.
+  - `unpdf info` now marks a short page set on the `Pages` line, so `--quiet` cannot
+    hide it.
+- WASM: `PdfDocument.extractionQuality()`, matching what the other bindings expose.
+- Python: every function now accepts a path *or* the PDF's own bytes. Paths go through
+  `os.fspath`, so `pathlib.Path` works; bytes are parsed in memory through the native
+  bytes entry point, with no temporary file. The types are unambiguous (`str` is always
+  a path, `bytes` always content), and the accepted union is exported as `PdfSource`.
+  The first parameter is named `source` rather than `path` — a positional call is
+  unaffected; a caller passing it by keyword (`to_markdown(path=...)`) must rename.
+  `is_pdf` and `get_page_count` keep reporting an unparsable PDF by return value
+  (`False` / `-1`), while a wrong-*typed* argument now raises `TypeError` — a caller
+  bug is not an unparsable PDF, and it previously surfaced as an `AttributeError`
+  from the internals.
+
+### Fixed
+- Page-tree traversal recursed without cycle detection or a depth bound, so a
+  damaged or hostile PDF whose `Pages` node reached back to an ancestor could exhaust
+  the stack and abort the process. Replaced with an iterative walk over a visited
+  set. (`PdfBackend::outline` already required implementations to guard cycles; only
+  the page tree was exempt.)
+- An unreadable object stream (`ObjStm`) silently discarded every object it carried;
+  those objects are now counted, so "one object skipped" and "a chapter missing" are
+  no longer reported identically.
+- The repository README's C# section documented a `Pdf` static class and `PdfOptions`
+  that do not exist — the same defect fixed in the NuGet README in 0.10.0, still
+  present here. Rewritten against the real handle-based `UnpdfDocument` API.
+- Python: passing a `pathlib.Path` raised a bare `AttributeError` instead of working.
+- README: the Python section showed `to_markdown(pdf_bytes)`, which raised (the
+  binding was path-only at the time; bytes are now supported), and read the page count
+  from a `page_count` key that `get_info` never returns (it is `section_count`).
+- README: `convert --keep-ocr-text` was missing from the options table — the flag the
+  low-confidence-OCR warning tells the user to reach for.
+
+### Removed
+- `docs/superpowers/` — plan and design notes for a feature shipped in 0.5.0, kept in
+  the published docs tree with nothing referencing them.
+
 ## 0.10.0 — 2026-07-28
 
 ### Added
