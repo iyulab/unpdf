@@ -13,6 +13,7 @@ use super::encoding::{build_encoding_map, decode_with_encoding_map, BaseEncoding
 use super::font::{
     is_likely_binary, parse_to_unicode_cmap, parse_truetype_cmap_table, ToUnicodeMap,
 };
+use super::sanitize::sanitize_extracted_text;
 
 /// Page identifier: (object number, generation number).
 pub type PageId = (u32, u16);
@@ -134,6 +135,13 @@ pub trait PdfBackend: Send + Sync {
 
     /// Decode a text byte sequence using the font's encoding on the given page.
     /// Falls back to simple decoding if the font or encoding is unavailable.
+    ///
+    /// Implementations must return text: no C0/C1 control characters other than
+    /// `\n`, `\r` and `\t`. PDF string literals may legally contain control bytes,
+    /// and reporting one back as text corrupts every output format and cannot cross
+    /// the C ABI at all. Pass results through
+    /// [`sanitize_extracted_text`](super::sanitize::sanitize_extracted_text) —
+    /// on the way out, so any decode-quality judgement still sees the raw density.
     fn decode_text(&self, page: PageId, font_name: &[u8], bytes: &[u8]) -> String;
 
     /// Return raw metadata (version, info dict fields, encryption status).
@@ -300,8 +308,13 @@ impl PdfBackend for RawBackend {
     }
 
     fn decode_text(&self, page: PageId, font_name: &[u8], bytes: &[u8]) -> String {
-        self.font_resolver
-            .decode_text(&self.doc, page, font_name, bytes)
+        // Sanitising here — at the outermost return, not inside the decode paths —
+        // is deliberate: the inner resolver judges suspect decodes by control-character
+        // density, and that evidence must survive until after it has decided.
+        sanitize_extracted_text(
+            self.font_resolver
+                .decode_text(&self.doc, page, font_name, bytes),
+        )
     }
 
     fn metadata(&self) -> PdfMetadataRaw {
@@ -533,7 +546,7 @@ impl RawBackend {
         // Build qualified name
         let partial_name = raw_dict_get(dict, b"T")
             .and_then(|o| o.as_str_bytes())
-            .map(|s| String::from_utf8_lossy(s).to_string());
+            .map(|s| sanitize_extracted_text(String::from_utf8_lossy(s).to_string()));
 
         let qualified_name = match &partial_name {
             Some(name) if parent_name.is_empty() => name.clone(),
@@ -623,18 +636,18 @@ impl RawBackend {
         match field_type {
             FieldType::Text => obj
                 .as_str_bytes()
-                .map(|s| FieldValue::Text(String::from_utf8_lossy(s).to_string())),
+                .map(|s| FieldValue::Text(sanitize_field_string(s))),
             FieldType::Checkbox | FieldType::RadioButton => {
                 obj.as_name().map(|n| FieldValue::Boolean(n != b"Off"))
             }
             FieldType::Dropdown | FieldType::ListBox => {
                 if let Some(s) = obj.as_str_bytes() {
-                    Some(FieldValue::Choice(String::from_utf8_lossy(s).to_string()))
+                    Some(FieldValue::Choice(sanitize_field_string(s)))
                 } else if let Some(arr) = obj.as_array() {
                     let choices: Vec<String> = arr
                         .iter()
                         .filter_map(|o| o.as_str_bytes())
-                        .map(|s| String::from_utf8_lossy(s).to_string())
+                        .map(sanitize_field_string)
                         .collect();
                     Some(FieldValue::Choices(choices))
                 } else {
@@ -1368,11 +1381,26 @@ fn raw_resolve_dict<'a>(doc: &'a RawDocument, obj: &'a RawPdfObject) -> Option<&
     }
 }
 
+/// Decode a form field string (name or value) and enforce the text invariant.
+///
+/// Note the decoding itself is lossy-UTF-8 only: a BOM-less UTF-16BE field name —
+/// which AcroForm producers do emit — arrives here as ASCII interleaved with NUL,
+/// and sanitising recovers the ASCII but not any non-ASCII character. Giving these
+/// strings the same BOM-aware decoding as [`raw_get_string`] is the real repair.
+fn sanitize_field_string(bytes: &[u8]) -> String {
+    sanitize_extracted_text(String::from_utf8_lossy(bytes).to_string())
+}
+
 /// Extract a string value from a raw PDF dictionary.
+///
+/// The result is sanitised ([`sanitize_extracted_text`]) because these strings are
+/// reported as text — document metadata and outline titles. A NUL here is worse than
+/// on a page: [`unpdf_get_title`](crate::ffi) can only answer "no title" for a string
+/// it cannot transport, so the value would vanish without even an error.
 fn raw_get_string(doc: &RawDocument, dict: &RawPdfDict, key: &[u8]) -> Option<String> {
     let obj = raw_dict_get(dict, key)?;
     let obj = doc.resolve(obj);
-    match obj {
+    let decoded = match obj {
         RawPdfObject::Str(bytes) => {
             if bytes.len() >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF {
                 // UTF-16BE with BOM
@@ -1395,7 +1423,8 @@ fn raw_get_string(doc: &RawDocument, dict: &RawPdfDict, key: &[u8]) -> Option<St
         }
         RawPdfObject::Name(bytes) => String::from_utf8(bytes.clone()).ok(),
         _ => None,
-    }
+    };
+    decoded.map(sanitize_extracted_text)
 }
 
 /// Extract (width, height) from a MediaBox array.

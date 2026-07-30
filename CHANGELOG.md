@@ -33,6 +33,24 @@
   from the internals.
 
 ### Fixed
+- Extracted text carried C0/C1 control characters straight into the output. PDF string
+  literals may legally contain control bytes (`\000` is a valid octal escape) and some
+  producers leave NUL padding in the text layer, so such a file is not damaged — but
+  reporting the byte back as text wrote a raw NUL into Markdown and text output, and at
+  the C ABI the string could not be transported at all: the caller lost the whole page,
+  or, for document metadata and outline titles, received "absent" with no error at all.
+  Text now passes through a single sanitizing step (page content, metadata, outline
+  titles, form field names and values) that removes control characters other than
+  `\n`, `\r` and `\t`.
+  - Removal rather than `U+FFFD` substitution, because `replacement_char_count` means
+    *font decoding failed* and feeds `is_good()`; substituting for transport reasons
+    would report clean documents as badly decoded.
+  - Sanitizing happens on the way out, after any decode-quality judgement: control
+    character *density* is how a mis-decoded run (a CID font read as Latin-1) is
+    recognised, and cleaning first would erase that evidence and turn "emit nothing"
+    into "emit garbage-derived letters". Such runs stay suppressed.
+  - The `InvalidOutput` guard at the ABI boundary is kept as a backstop; it should now
+    be unreachable, and reaching it again means the invariant was broken upstream.
 - Page-tree traversal recursed without cycle detection or a depth bound, so a
   damaged or hostile PDF whose `Pages` node reached back to an ancestor could exhaust
   the stack and abort the process. Replaced with an iterative walk over a visited

@@ -11,6 +11,7 @@ mod options;
 mod pdf_parser;
 pub(crate) mod predefined_cmap;
 pub mod raw;
+pub(crate) mod sanitize;
 pub mod stream;
 mod table_detector;
 pub mod xycut;
