@@ -1383,7 +1383,7 @@ fn raw_resolve_dict<'a>(doc: &'a RawDocument, obj: &'a RawPdfObject) -> Option<&
 
 /// Decode UTF-16BE code units, rejecting an odd length or unpaired surrogates.
 fn decode_utf16be_payload(payload: &[u8]) -> Option<String> {
-    if payload.len() % 2 != 0 {
+    if !payload.len().is_multiple_of(2) {
         return None;
     }
     let units: Vec<u16> = payload
@@ -1420,7 +1420,7 @@ fn decode_utf16be_payload(payload: &[u8]) -> Option<String> {
 ///
 /// Both are resolved by the byte-order mark the specification already requires.
 fn looks_like_bomless_utf16be(bytes: &[u8]) -> bool {
-    bytes.len() >= 2 && bytes.len() % 2 == 0 && bytes.iter().step_by(2).all(|&b| b == 0)
+    bytes.len() >= 2 && bytes.len().is_multiple_of(2) && bytes.iter().step_by(2).all(|&b| b == 0)
 }
 
 /// Decode a PDF text string, taking the UTF-16BE reading when the bytes are one.

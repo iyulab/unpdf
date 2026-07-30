@@ -129,7 +129,7 @@ fn sanitize_unicode(s: String) -> Option<String> {
 /// Noncharacter sentinels (U+FFFF etc.) commonly used by PDF producers to indicate
 /// "no Unicode mapping" are stripped; returns None if nothing usable remains.
 fn hex_to_unicode(hex: &str) -> Option<String> {
-    if hex.len() % 4 != 0 && hex.len() == 2 {
+    if !hex.len().is_multiple_of(4) && hex.len() == 2 {
         // Single-byte mapping: treat as direct code point
         let cp = u32::from_str_radix(hex, 16).ok()?;
         let s = char::from_u32(cp).map(|c| c.to_string())?;

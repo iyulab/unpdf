@@ -222,12 +222,12 @@ fn apply_png_predictor(
     // each input row = 1 filter byte + row_bytes data bytes
     let input_row_len = 1 + row_bytes;
 
-    if input_row_len == 0 || data.len() % input_row_len != 0 {
+    if input_row_len == 0 || !data.len().is_multiple_of(input_row_len) {
         // If data doesn't divide evenly, try using columns directly as row_bytes
         // (common when Columns already accounts for all bytes per row)
         let alt_row_bytes = columns;
         let alt_input_row_len = 1 + alt_row_bytes;
-        if alt_input_row_len > 0 && data.len() % alt_input_row_len == 0 {
+        if alt_input_row_len > 0 && data.len().is_multiple_of(alt_input_row_len) {
             return apply_png_predictor_raw(data, alt_row_bytes, bpp);
         }
         // Fall back: return data as-is rather than fail

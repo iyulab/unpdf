@@ -150,7 +150,7 @@ pub fn decrypt_aes128(key: &[u8], data: &[u8]) -> Option<Vec<u8>> {
     use aes::Aes128;
     use cbc::cipher::{block_padding, BlockDecryptMut, KeyIvInit};
 
-    if data.len() < 16 || data.len() % 16 != 0 {
+    if data.len() < 16 || !data.len().is_multiple_of(16) {
         return None;
     }
 

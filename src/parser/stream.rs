@@ -117,7 +117,7 @@ impl ProgressCounter {
 
     pub fn tick(&mut self) -> Option<(u32, u32)> {
         self.done += 1;
-        if self.done % self.every == 0 || self.done == self.total {
+        if self.done.is_multiple_of(self.every) || self.done == self.total {
             Some((self.done, self.total))
         } else {
             None
