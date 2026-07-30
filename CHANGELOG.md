@@ -51,6 +51,25 @@
     into "emit garbage-derived letters". Such runs stay suppressed.
   - The `InvalidOutput` guard at the ABI boundary is kept as a backstop; it should now
     be unreachable, and reaching it again means the invariant was broken upstream.
+- Form field names and values were decoded one byte at a time, with no UTF-16 handling
+  at all. A PDF text string is either PDFDocEncoded or UTF-16BE (PDF 1.7 §7.9.2.2), and
+  AcroForm producers write these as UTF-16BE *with* the byte-order mark — which is not
+  valid UTF-8, so lossy decoding turned the mark itself into two `U+FFFD`. Every field
+  name of a real form came back as
+  `<?><?>topmostSubform[0].<?><?>Page1[0].<?><?>Step1a[0]…`, one pair per path segment;
+  the interleaved NULs were removed by the output-hygiene pass, which recovered the
+  ASCII by accident and hid the rest. Field strings now take the UTF-16BE reading, so
+  the name is the name.
+  - The unmarked form is also handled, but only where it cannot be mistaken: every
+    even-offset byte zero, which is an all-ASCII string. A looser rule accepts
+    `CHAP\0TER` — plain text with one stray NUL, which is what damaged content looks
+    like — and rewrites it as `䍈䅐T䕒`.
+  - Consequently an unmarked UTF-16BE string mixing ASCII with anything above `U+00FF`
+    keeps the single-byte reading, as does one with no character below `U+0100` (those
+    carry no NUL at all, and `Café` reads as valid UTF-16BE too). The mark the
+    specification already requires resolves both.
+  - Document metadata and outline titles already decoded the marked form; they gain the
+    unmarked all-ASCII one.
 - Page-tree traversal recursed without cycle detection or a depth bound, so a
   damaged or hostile PDF whose `Pages` node reached back to an ancestor could exhaust
   the stack and abort the process. Replaced with an iterative walk over a visited

@@ -546,7 +546,7 @@ impl RawBackend {
         // Build qualified name
         let partial_name = raw_dict_get(dict, b"T")
             .and_then(|o| o.as_str_bytes())
-            .map(|s| sanitize_extracted_text(String::from_utf8_lossy(s).to_string()));
+            .map(sanitize_field_string);
 
         let qualified_name = match &partial_name {
             Some(name) if parent_name.is_empty() => name.clone(),
@@ -1381,14 +1381,80 @@ fn raw_resolve_dict<'a>(doc: &'a RawDocument, obj: &'a RawPdfObject) -> Option<&
     }
 }
 
+/// Decode UTF-16BE code units, rejecting an odd length or unpaired surrogates.
+fn decode_utf16be_payload(payload: &[u8]) -> Option<String> {
+    if payload.len() % 2 != 0 {
+        return None;
+    }
+    let units: Vec<u16> = payload
+        .chunks_exact(2)
+        .map(|c| u16::from_be_bytes([c[0], c[1]]))
+        .collect();
+    String::from_utf16(&units).ok()
+}
+
+/// Whether `bytes` is UTF-16BE written without the leading byte-order mark, decided by
+/// the one test that cannot be wrong: **every even-offset byte is zero.**
+///
+/// PDF 1.7 §7.9.2.2 says a text string is either PDFDocEncoded bytes or UTF-16BE
+/// preceded by `FE FF`. Producers do omit the mark, and then an all-ASCII string
+/// arrives as its characters interleaved with zero high bytes. That pattern — NUL at
+/// position 0, 2, 4 … without exception — has no single-byte reading that is text, so
+/// taking it as UTF-16BE cannot corrupt a legitimate string.
+///
+/// Anything looser does corrupt one. Requiring merely *some* even-offset NUL, even
+/// combined with "the UTF-16BE reading contains no control characters", accepts
+/// `CHAP\0TER` (`43 48 41 50 00 54 45 52`) and rewrites it as `䍈䅐T䕒`. A stray NUL in
+/// otherwise fine text is exactly what damaged page content looks like, so that
+/// mis-reading is not hypothetical: that exact input is an outline title in this
+/// repository's own test suite, and the looser rule broke it. Density thresholds fail
+/// the same way, only less predictably.
+///
+/// Consequences of staying narrow, both accepted deliberately:
+///
+/// - UTF-16BE with no mark that mixes ASCII with anything above U+00FF (`이름(name)`)
+///   is not detected — its even bytes are not all zero.
+/// - UTF-16BE with no mark and nothing below U+0100 (`성명` is `C1 31 CA 85`) carries no
+///   NUL at all and is indistinguishable from PDFDocEncoded text; `Café`
+///   (`43 61 66 E9`) reads as valid UTF-16BE too, so guessing would break real Latin-1.
+///
+/// Both are resolved by the byte-order mark the specification already requires.
+fn looks_like_bomless_utf16be(bytes: &[u8]) -> bool {
+    bytes.len() >= 2 && bytes.len() % 2 == 0 && bytes.iter().step_by(2).all(|&b| b == 0)
+}
+
+/// Decode a PDF text string, taking the UTF-16BE reading when the bytes are one.
+///
+/// Falls back to lossy single-byte decoding, which is what a PDFDocEncoded string
+/// wants. Callers that must distinguish "could not decode" from "decoded to something"
+/// should not use this — see [`raw_get_string`], which keeps `None` for a BOM-carrying
+/// string it cannot decode.
+fn decode_pdf_text_string(bytes: &[u8]) -> String {
+    if bytes.len() >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF {
+        if let Some(s) = decode_utf16be_payload(&bytes[2..]) {
+            return s;
+        }
+    } else if looks_like_bomless_utf16be(bytes) {
+        if let Some(s) = decode_utf16be_payload(bytes) {
+            return s;
+        }
+    }
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
 /// Decode a form field string (name or value) and enforce the text invariant.
 ///
-/// Note the decoding itself is lossy-UTF-8 only: a BOM-less UTF-16BE field name —
-/// which AcroForm producers do emit — arrives here as ASCII interleaved with NUL,
-/// and sanitising recovers the ASCII but not any non-ASCII character. Giving these
-/// strings the same BOM-aware decoding as [`raw_get_string`] is the real repair.
+/// Field strings used to be read one byte at a time with no UTF-16 handling at all,
+/// which is worse than it sounds: AcroForm producers write these as UTF-16BE *with* the
+/// byte-order mark, and `FE FF` is not valid UTF-8, so lossy decoding turned the mark
+/// itself into two U+FFFD. Measured on a real form, every path segment of every field
+/// name came back as `\u{FFFD}\u{FFFD}topmostSubform[0]…`. The interleaved NULs were
+/// removed by the sanitiser, which recovered the ASCII by accident and hid the rest.
+///
+/// So the decode has to happen before the sanitiser sees the string, and it has to
+/// handle both the BOM-carrying and BOM-less forms — see [`decode_pdf_text_string`].
 fn sanitize_field_string(bytes: &[u8]) -> String {
-    sanitize_extracted_text(String::from_utf8_lossy(bytes).to_string())
+    sanitize_extracted_text(decode_pdf_text_string(bytes))
 }
 
 /// Extract a string value from a raw PDF dictionary.
@@ -1403,18 +1469,16 @@ fn raw_get_string(doc: &RawDocument, dict: &RawPdfDict, key: &[u8]) -> Option<St
     let decoded = match obj {
         RawPdfObject::Str(bytes) => {
             if bytes.len() >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF {
-                // UTF-16BE with BOM
-                let utf16: Vec<u16> = bytes[2..]
-                    .chunks(2)
-                    .filter_map(|c| {
-                        if c.len() == 2 {
-                            Some(u16::from_be_bytes([c[0], c[1]]))
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                String::from_utf16(&utf16).ok()
+                // UTF-16BE with BOM. A string that announces its encoding and then
+                // fails to decode stays `None` rather than becoming mojibake: the
+                // caller reports "no title", which is honest about the loss.
+                decode_utf16be_payload(&bytes[2..])
+            } else if looks_like_bomless_utf16be(bytes) {
+                // UTF-16BE written without the BOM. Falls through to the single-byte
+                // reading when the units do not decode, because the BOM-less case is a
+                // guess and must not turn a decodable single-byte string into `None`.
+                decode_utf16be_payload(bytes)
+                    .or_else(|| Some(bytes.iter().map(|&b| b as char).collect::<String>()))
             } else {
                 String::from_utf8(bytes.clone())
                     .ok()
@@ -1451,6 +1515,121 @@ mod tests {
             Some(std::f32::consts::PI)
         );
         assert_eq!(get_number_from_value(&PdfValue::Other), None);
+    }
+}
+
+/// A PDF text string may be PDFDocEncoded or UTF-16BE, with or without the mark. Which
+/// reading applies is a decision the parser makes on every field name and title, and one
+/// of its failure modes shipped, so the discrimination is tested directly here rather
+/// than only through a parsed document.
+#[cfg(test)]
+mod text_string_decoding_tests {
+    use super::*;
+
+    /// Encode `s` as UTF-16BE, optionally with the byte-order mark.
+    fn utf16be(s: &str, bom: bool) -> Vec<u8> {
+        let mut out = Vec::new();
+        if bom {
+            out.extend_from_slice(&[0xFE, 0xFF]);
+        }
+        for unit in s.encode_utf16() {
+            out.extend_from_slice(&unit.to_be_bytes());
+        }
+        out
+    }
+
+    #[test]
+    fn bomless_utf16be_ascii_decodes_instead_of_leaving_nuls() {
+        let bytes = utf16be("topmostSubform", false);
+        assert!(looks_like_bomless_utf16be(&bytes));
+        assert_eq!(decode_pdf_text_string(&bytes), "topmostSubform");
+    }
+
+    /// The counterexample that decided the rule. A looser test — "some even-offset NUL
+    /// and the UTF-16BE reading has no control characters" — accepts this and rewrites a
+    /// perfectly recoverable outline title as CJK. A stray NUL in otherwise fine text is
+    /// what damaged page content looks like, so this is not a hypothetical input.
+    #[test]
+    fn ascii_with_one_interior_nul_is_not_read_as_utf16() {
+        let bytes = b"CHAP\0TER".to_vec();
+        // A NUL does sit at an even offset (4), and the UTF-16BE reading does decode
+        // without control characters — it decodes to U+4348 U+4150 U+0054 U+4552.
+        assert!(bytes.iter().step_by(2).any(|&b| b == 0));
+        assert_eq!(decode_utf16be_payload(&bytes).as_deref(), Some("䍈䅐T䕒"));
+
+        assert!(!looks_like_bomless_utf16be(&bytes));
+        assert_eq!(decode_pdf_text_string(&bytes), "CHAP\0TER");
+        assert_eq!(sanitize_field_string(&bytes), "CHAPTER");
+    }
+
+    /// Limits of the narrow rule, asserted so they are decisions rather than surprises.
+    /// Anything the rule declines keeps the single-byte reading, which is what these
+    /// strings got before — nothing regresses, the case simply stays unfixed.
+    #[test]
+    fn bomless_utf16be_is_only_detected_when_every_even_byte_is_zero() {
+        // Mixed ASCII and non-ASCII: `이름(name)` has non-zero high bytes for the Korean.
+        let mixed = utf16be("이름(name)", false);
+        assert!(!looks_like_bomless_utf16be(&mixed));
+
+        // Nothing below U+0100 at all: `성명` is `C1 31 CA 85`, no NUL anywhere.
+        let no_nul = utf16be("성명", false);
+        assert!(!no_nul.contains(&0));
+        assert!(!looks_like_bomless_utf16be(&no_nul));
+
+        // The mark the spec requires resolves both.
+        assert_eq!(
+            decode_pdf_text_string(&utf16be("이름(name)", true)),
+            "이름(name)"
+        );
+        assert_eq!(decode_pdf_text_string(&utf16be("성명", true)), "성명");
+    }
+
+    #[test]
+    fn bom_carrying_utf16be_still_decodes() {
+        let bytes = utf16be("Title 제목", true);
+        assert_eq!(decode_pdf_text_string(&bytes), "Title 제목");
+    }
+
+    /// Damaged page text looks like a single-byte string with a stray NUL. Treating it
+    /// as UTF-16BE would replace a recoverable string with garbage.
+    #[test]
+    fn single_byte_string_with_a_stray_nul_is_not_read_as_utf16() {
+        let bytes = b"HELLO\0WORLD\0".to_vec();
+        assert!(!looks_like_bomless_utf16be(&bytes));
+        // The NULs remain for `sanitize_extracted_text` to remove — the text is intact.
+        assert_eq!(decode_pdf_text_string(&bytes), "HELLO\0WORLD\0");
+        assert_eq!(sanitize_field_string(&bytes), "HELLOWORLD");
+    }
+
+    #[test]
+    fn ordinary_single_byte_strings_are_untouched() {
+        for s in ["FirstName", "", "Agree", "a"] {
+            assert_eq!(decode_pdf_text_string(s.as_bytes()), s);
+        }
+    }
+
+    #[test]
+    fn odd_length_is_never_utf16() {
+        let bytes = b"\0a\0".to_vec();
+        assert!(!looks_like_bomless_utf16be(&bytes));
+        assert!(decode_utf16be_payload(&bytes).is_none());
+    }
+
+    #[test]
+    fn utf16le_bom_is_left_to_the_single_byte_path() {
+        // Not a PDF text string. Reading it as UTF-16BE would yield a byte-swapped
+        // result, which is worse than the honest single-byte reading.
+        let mut bytes = vec![0xFF, 0xFE];
+        bytes.extend_from_slice(&[0x41, 0x00, 0x42, 0x00]);
+        assert!(!looks_like_bomless_utf16be(&bytes));
+    }
+
+    #[test]
+    fn unpaired_surrogates_are_rejected_rather_than_replaced() {
+        // A lone high surrogate: `String::from_utf16` refuses it, and the caller falls
+        // back rather than emitting U+FFFD, which would pollute the font-decode metric.
+        let bytes = vec![0xD8, 0x00, 0x00, 0x41];
+        assert!(decode_utf16be_payload(&bytes).is_none());
     }
 }
 
