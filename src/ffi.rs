@@ -975,6 +975,73 @@ mod tests {
         assert!(text.is_null());
     }
 
+    /// A null return does not always mean failure: an absent title is not an error.
+    /// The kind channel is what lets a caller tell the two apart.
+    #[test]
+    fn test_absent_metadata_is_not_reported_as_a_failure() {
+        let doc = Box::into_raw(Box::new(UnpdfDocument {
+            inner: Document::new(),
+        }));
+
+        assert!(unsafe { unpdf_get_title(doc) }.is_null());
+        assert_eq!(unpdf_last_error_kind(), UNPDF_ERROR_NONE);
+
+        assert!(unsafe { unpdf_get_author(doc) }.is_null());
+        assert_eq!(unpdf_last_error_kind(), UNPDF_ERROR_NONE);
+
+        unsafe { unpdf_free_document(doc) };
+    }
+
+    /// The counterpart: metadata that *exists* but cannot cross the ABI must not be
+    /// reported as absent. Both cases return null, so the kind is the only thing that
+    /// separates "there is nothing" from "we could not give it to you".
+    #[test]
+    fn test_unrepresentable_metadata_is_not_reported_as_absent() {
+        let mut document = Document::new();
+        document.metadata.title = Some("has\0interior nul".to_string());
+        document.metadata.author = Some("also\0bad".to_string());
+        let doc = Box::into_raw(Box::new(UnpdfDocument { inner: document }));
+
+        assert!(unsafe { unpdf_get_title(doc) }.is_null());
+        assert_eq!(unpdf_last_error_kind(), UNPDF_ERROR_INVALID_OUTPUT);
+
+        assert!(unsafe { unpdf_get_author(doc) }.is_null());
+        assert_eq!(unpdf_last_error_kind(), UNPDF_ERROR_INVALID_OUTPUT);
+
+        unsafe { unpdf_free_document(doc) };
+    }
+
+    /// `out_len` is written only once the call has reached the point of producing a
+    /// buffer. A rejected argument leaves the caller's variable alone, so a caller that
+    /// seeded it can tell "not attempted" from "attempted and produced nothing".
+    #[test]
+    fn test_rejected_arguments_leave_out_len_untouched() {
+        let doc = Box::into_raw(Box::new(UnpdfDocument {
+            inner: Document::new(),
+        }));
+        let id = CString::new("image1").unwrap();
+        const SEEDED: usize = 0xDEAD;
+
+        let mut out_len: usize = SEEDED;
+        assert!(
+            unsafe { unpdf_get_resource_data(ptr::null(), id.as_ptr(), &mut out_len) }.is_null()
+        );
+        assert_eq!(out_len, SEEDED, "a null document must not write out_len");
+
+        assert!(unsafe { unpdf_get_resource_data(doc, ptr::null(), &mut out_len) }.is_null());
+        assert_eq!(out_len, SEEDED, "a null resource_id must not write out_len");
+
+        // A resource that is merely absent *is* looked up, so the length is zeroed.
+        assert!(unsafe { unpdf_get_resource_data(doc, id.as_ptr(), &mut out_len) }.is_null());
+        assert_eq!(out_len, 0, "a lookup that failed reports zero length");
+        assert_eq!(
+            unpdf_last_error_kind(),
+            ErrorKind::ResourceNotFound as c_int
+        );
+
+        unsafe { unpdf_free_document(doc) };
+    }
+
     #[test]
     fn test_free_null() {
         // Should not crash
