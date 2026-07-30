@@ -1,6 +1,19 @@
 # Changelog
 
-## Unreleased
+## 0.11.0 — 2026-07-31
+
+### Upgrade notes
+
+Two things to check before upgrading. Neither is a bug fix, and both are easy to miss
+in the lists below.
+
+- **Minimum supported Rust version is now 1.87** (was 1.75). This follows the shared
+  `uncore` crate the FFI plumbing moved onto.
+- **Python: the first parameter of every function is now named `source`, not `path`.**
+  A positional call is unaffected — `to_markdown("a.pdf")` keeps working. A call that
+  passes it by keyword (`to_markdown(path="a.pdf")`) must be renamed. The parameter now
+  accepts the PDF's own bytes as well as a path, which is why it is no longer called
+  `path`.
 
 ### Added
 - Structural-integrity reporting on `ExtractionQuality`, so a caller can tell a
@@ -93,6 +106,10 @@
 - `unpdf_section_count`/`unpdf_resource_count`: did not clear the last-error slot on
   entry, so a stale error `kind` from an earlier failed call could still be read
   after a later, successful call to these two functions.
+- **The CLI update notification went to stdout, corrupting piped output.** `md`, `json`
+  and `text` emit document data on stdout, so the notification line landed in the middle
+  of it — `unpdf json … | jq .` failed to parse. It now goes to stderr, where it still
+  appears in an interactive terminal.
 
 ### Changed
 - Internal: the FFI last-error/panic-guard plumbing now runs on the shared `uncore`
@@ -101,6 +118,10 @@
   `ErrorKind` discriminant and every exported C symbol's name and signature stay
   exactly as they were; see Fixed above for the two behavior changes this swap
   surfaced. `rust-version` raised to 1.87 to match `uncore`'s MSRV.
+- Internal: each C ABI entry point is now assembled from `uncore`'s scaffold macros
+  rather than a hand-written preamble repeated at every one of them. No observable
+  change — the exported symbol list is byte-identical and every existing test passes
+  unmodified.
 
 ### Removed
 - `docs/superpowers/` — plan and design notes for a feature shipped in 0.5.0, kept in
