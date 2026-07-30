@@ -15,7 +15,7 @@ documentation = "https://docs.rs/unpdf"
 readme = "README.md"
 keywords = ["pdf", "markdown", "text-extraction", "document", "parser"]
 categories = ["parser-implementations", "text-processing"]
-rust-version = "1.75"
+rust-version = "1.87"
 
 [lib]
 name = "unpdf"
@@ -34,6 +34,9 @@ serde_json = "1.0"
 
 # Error handling
 thiserror = "2.0"
+
+# Shared error-kind numbering + C-ABI plumbing for the un* family
+uncore = "0.1"
 
 # Compression
 flate2 = "1.1"

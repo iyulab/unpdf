@@ -87,6 +87,20 @@
   from a `page_count` key that `get_info` never returns (it is `section_count`).
 - README: `convert --keep-ocr-text` was missing from the options table — the flag the
   low-confidence-OCR warning tells the user to reach for.
+- `unpdf_get_title`/`unpdf_get_author`: a value containing a NUL byte silently
+  returned `null` with no error at all. Now reports `InvalidOutput` at the ABI
+  boundary, matching every other string-returning entry point.
+- `unpdf_section_count`/`unpdf_resource_count`: did not clear the last-error slot on
+  entry, so a stale error `kind` from an earlier failed call could still be read
+  after a later, successful call to these two functions.
+
+### Changed
+- Internal: the FFI last-error/panic-guard plumbing now runs on the shared `uncore`
+  crate (thread-local slot, panic guard, boundary-reason helpers) instead of a
+  hand-rolled implementation duplicated across the `un*` extraction family. Every
+  `ErrorKind` discriminant and every exported C symbol's name and signature stay
+  exactly as they were; see Fixed above for the two behavior changes this swap
+  surfaced. `rust-version` raised to 1.87 to match `uncore`'s MSRV.
 
 ### Removed
 - `docs/superpowers/` — plan and design notes for a feature shipped in 0.5.0, kept in
