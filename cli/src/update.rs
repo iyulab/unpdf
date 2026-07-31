@@ -355,3 +355,104 @@ pub fn run_update(check_only: bool, force: bool) -> Result<(), Box<dyn std::erro
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn windows_x86_64() -> PlatformInfo {
+        PlatformInfo {
+            os_name: "windows",
+            arch_name: "x86_64",
+            target_triple: "x86_64-pc-windows-msvc",
+            archive_ext: "zip",
+        }
+    }
+
+    /// A release carries two archives whose names differ only by a `lib` prefix: the CLI
+    /// executable and the shared library for the language bindings. Substring matching would
+    /// let `libunpdf-…` satisfy a search for `unpdf-…`, and the updater would replace the
+    /// executable with a library — silently, since both are valid archives. Asset names are
+    /// therefore compared for equality, and this test is what keeps that true.
+    #[test]
+    fn cli_archive_is_chosen_over_the_library_archive() {
+        let patterns = get_asset_patterns(&windows_x86_64(), "0.9.0");
+        // Listed library-first, so a match that scans the release in order fails here too.
+        let release = vec![
+            "libunpdf-windows-x86_64-v0.9.0.zip".to_string(),
+            "unpdf-windows-x86_64-v0.9.0.zip".to_string(),
+        ];
+
+        assert_eq!(
+            find_matching_asset(&release, &patterns).as_deref(),
+            Some("unpdf-windows-x86_64-v0.9.0.zip")
+        );
+    }
+
+    /// A release that ships only the library has nothing this updater can install. Answering
+    /// "none" sends the caller down the "no matching asset" path; answering with the library
+    /// would install the wrong file.
+    #[test]
+    fn a_library_only_release_matches_nothing() {
+        let patterns = get_asset_patterns(&windows_x86_64(), "0.9.0");
+        let release = vec!["libunpdf-windows-x86_64-v0.9.0.zip".to_string()];
+
+        assert_eq!(find_matching_asset(&release, &patterns), None);
+    }
+
+    /// The patterns are fallbacks in preference order, so a release using an older naming
+    /// scheme still resolves — and a release offering several is answered with the preferred
+    /// one rather than whichever happens to be listed first.
+    #[test]
+    fn naming_variants_resolve_in_preference_order() {
+        let patterns = get_asset_patterns(&windows_x86_64(), "0.9.0");
+
+        let triple_only = vec!["unpdf-x86_64-pc-windows-msvc-0.9.0.zip".to_string()];
+        assert_eq!(
+            find_matching_asset(&triple_only, &patterns).as_deref(),
+            Some("unpdf-x86_64-pc-windows-msvc-0.9.0.zip")
+        );
+
+        let several = vec![
+            "unpdf-x86_64-pc-windows-msvc-v0.9.0.zip".to_string(),
+            "unpdf-windows-x86_64-v0.9.0.zip".to_string(),
+        ];
+        assert_eq!(
+            find_matching_asset(&several, &patterns).as_deref(),
+            Some("unpdf-windows-x86_64-v0.9.0.zip"),
+            "the human-friendly name is the preferred one"
+        );
+    }
+
+    /// The tag carries a leading `v` and the asset names do not repeat it in the same place,
+    /// so the prefix is stripped before the patterns are built.
+    #[test]
+    fn a_v_prefixed_tag_produces_the_same_patterns_as_a_bare_version() {
+        let platform = windows_x86_64();
+        assert_eq!(
+            get_asset_patterns(&platform, "v0.9.0"),
+            get_asset_patterns(&platform, "0.9.0")
+        );
+    }
+
+    /// A release for a different platform must not be installed on this one.
+    #[test]
+    fn another_platforms_archive_is_not_matched() {
+        let patterns = get_asset_patterns(&windows_x86_64(), "0.9.0");
+        let release = vec![
+            "unpdf-linux-x86_64-v0.9.0.tar.gz".to_string(),
+            "unpdf-macos-aarch64-v0.9.0.tar.gz".to_string(),
+        ];
+
+        assert_eq!(find_matching_asset(&release, &patterns), None);
+    }
+
+    /// An asset from a different release is not a substitute for the one being installed.
+    #[test]
+    fn a_different_version_is_not_matched() {
+        let patterns = get_asset_patterns(&windows_x86_64(), "0.9.0");
+        let release = vec!["unpdf-windows-x86_64-v0.8.0.zip".to_string()];
+
+        assert_eq!(find_matching_asset(&release, &patterns), None);
+    }
+}
