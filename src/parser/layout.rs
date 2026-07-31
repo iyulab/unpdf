@@ -337,6 +337,29 @@ impl PageTextLayerSignals {
     }
 }
 
+/// Whether a character marks the line it opens as a list item rather than a heading.
+///
+/// Such a line is an enumeration inside body content no matter how large its font is, and a
+/// document that renders its lists in a display face would otherwise fill the output with
+/// headings. Enclosed enumerations (①, ⒈, ㈀, ❶ …) count: Korean documents use them for
+/// choices and clause lists, which are the least heading-like things on the page.
+fn starts_a_list_item(c: char) -> bool {
+    const BULLETS: &[char] = &[
+        '-', '–', '—', '*', '·', '∙', 'ㆍ', 'ㅇ', '•', '◦', '○', '●', '◎', '■', '□', '▪', '▫', '◼',
+        '◾', '◆', '◇', '★', '☆', '※', '→', '▶', '►', '▷', '▹', '◁', '◀', '◃', '◂', '☞',
+    ];
+
+    BULLETS.contains(&c)
+        || matches!(c,
+            // Enclosed Alphanumerics: ①-⑳, ⑴-⒇, ⒈-⒛, ⓐ-ⓩ, Ⓐ-Ⓩ, ⓪, ⓫-⓾
+            '\u{2460}'..='\u{24FF}'
+            // Dingbats: negative and sans-serif circled digits ❶-➓
+            | '\u{2776}'..='\u{2793}'
+            // Enclosed CJK: parenthesized hangul ㈀-㈜, circled hangul ㉠-㉻
+            | '\u{3200}'..='\u{32FF}'
+        )
+}
+
 /// Font statistics for heading detection.
 #[derive(Debug, Clone, Default)]
 pub struct FontStatistics {
@@ -460,7 +483,7 @@ impl<'a> LayoutAnalyzer<'a> {
 
     /// Public wrapper for detect_headings.
     pub fn detect_headings_pub(&self, lines: Vec<TextLine>) -> Vec<TextLine> {
-        self.detect_headings(lines)
+        Self::detect_headings(&self.font_stats, lines)
     }
 
     /// Public wrapper for group_lines_into_blocks.
@@ -545,7 +568,7 @@ impl<'a> LayoutAnalyzer<'a> {
         let lines = self.group_spans_into_lines(spans);
 
         // Detect headings
-        let lines = self.detect_headings(lines);
+        let lines = Self::detect_headings(&self.font_stats, lines);
 
         // Group lines into blocks (paragraphs)
         let blocks = self.group_lines_into_blocks(lines);
@@ -1182,11 +1205,14 @@ impl<'a> LayoutAnalyzer<'a> {
     }
 
     /// Detect headings based on font size hierarchy.
-    fn detect_headings(&self, mut lines: Vec<TextLine>) -> Vec<TextLine> {
+    /// Takes the font statistics explicitly rather than reading `self`: everything this
+    /// decision depends on is in there, and a heading rule that can be exercised without a
+    /// backend is a heading rule that can be tested.
+    fn detect_headings(font_stats: &FontStatistics, mut lines: Vec<TextLine>) -> Vec<TextLine> {
         // Snapshot each line's font size so neighbour lookups aren't polluted
         // by mutations inside the loop.
         let sizes: Vec<f32> = lines.iter().map(|l| l.font_size).collect();
-        let body_size = self.font_stats.body_size;
+        let body_size = font_stats.body_size;
 
         for (i, line) in lines.iter_mut().enumerate() {
             let visible_chars: usize = line
@@ -1203,25 +1229,23 @@ impl<'a> LayoutAnalyzer<'a> {
             // enumerations inside body content, regardless of font size.
             let trimmed = line.text();
             let trimmed = trimmed.trim_start();
-            if let Some(first) = trimmed.chars().next() {
-                const BULLETS: &[char] = &['-', '*', '·', '•', '◦', '▶', '▷', '◎', '☞', '※'];
-                if BULLETS.contains(&first) {
-                    continue;
-                }
+            if trimmed.chars().next().is_some_and(starts_a_list_item) {
+                continue;
             }
 
-            let level = self
-                .font_stats
-                .get_heading_level(line.font_size, line.is_bold() || line.is_uppercase());
+            // Uppercase stands in for bold: a run of capitals is how many PDFs mark a heading
+            // whose font carries no bold variant.
+            let level =
+                font_stats.get_heading_level(line.font_size, line.is_bold() || line.is_uppercase());
             if level == 0 {
                 continue;
             }
 
-            // Neighbour-context suppression — if both prev and next lines
-            // share the same font size (within 0.5pt), this line is part of
-            // a body run, not a standalone heading. Prevents mid-paragraph
-            // or table-cell promotion on Hancom docs where body font varies
-            // by a few pts across cells.
+            // Neighbour-context suppression — if EITHER adjacent line shares this line's font
+            // size (±0.5pt), the line is probably one of a run of siblings: a table column, a
+            // list, a paragraph whose body font drifts by a point or two between cells. A
+            // heading normally sits alone within its size cohort. The `body_size + 6.0` escape
+            // keeps genuinely large headings that happen to be adjacent to another.
             let prev_size = if i > 0 { Some(sizes[i - 1]) } else { None };
             let next_size = if i + 1 < sizes.len() {
                 Some(sizes[i + 1])
@@ -1229,10 +1253,6 @@ impl<'a> LayoutAnalyzer<'a> {
                 None
             };
             let same = |a: f32, b: f32| (a - b).abs() < 0.5;
-            // Neighbour-context suppression — if EITHER adjacent line
-            // shares the same font size (±0.5pt), this line is likely part
-            // of a sibling run (table column, list). Only promote when
-            // the line sits alone within its font-size cohort.
             let matches_prev = prev_size.is_some_and(|p| same(p, line.font_size));
             let matches_next = next_size.is_some_and(|n| same(n, line.font_size));
             if (matches_prev || matches_next) && line.font_size < body_size + 6.0 {
@@ -1756,6 +1776,162 @@ fn merge_fragmented_spans(spans: Vec<TextSpan>) -> Vec<TextSpan> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Font statistics for a document whose body text is 12pt.
+    fn body_12pt_stats(heading_sizes: &[f32]) -> FontStatistics {
+        let mut stats = FontStatistics::default();
+        for _ in 0..100 {
+            stats.add_size(12.0);
+        }
+        for size in heading_sizes {
+            for _ in 0..3 {
+                stats.add_size(*size);
+            }
+        }
+        stats.analyze();
+        stats
+    }
+
+    fn line_at(text: &str, y: f32, font_size: f32, font: &str) -> TextLine {
+        TextLine::from_spans(vec![TextSpan::new(
+            text.to_string(),
+            0.0,
+            y,
+            font_size,
+            font.to_string(),
+        )])
+    }
+
+    #[test]
+    fn test_detect_headings_promotes_a_lone_larger_line() {
+        let stats = body_12pt_stats(&[20.0]);
+        let lines = vec![
+            line_at("Body text before the heading.", 100.0, 12.0, "Helvetica"),
+            line_at("Chapter One", 80.0, 20.0, "Helvetica"),
+            line_at("Body text after the heading.", 60.0, 12.0, "Helvetica"),
+        ];
+
+        let result = LayoutAnalyzer::detect_headings(&stats, lines);
+
+        assert!(!result[0].is_heading);
+        assert!(
+            result[1].is_heading,
+            "a lone 20pt line among 12pt body text"
+        );
+        assert!(result[1].heading_level > 0);
+        assert!(!result[2].is_heading);
+    }
+
+    /// A line that opens with a list marker is an enumeration inside body content, whatever
+    /// its font size. Enclosed enumerations count: Korean documents use them for choices and
+    /// clause lists, and a document that sets them in a display face would otherwise turn
+    /// every one of them into a heading.
+    #[test]
+    fn test_detect_headings_skips_list_markers_regardless_of_size() {
+        let stats = body_12pt_stats(&[20.0]);
+        for marker in ["- ", "• ", "① ", "❶ ", "㉠ ", "※ ", "◦ "] {
+            let lines = vec![
+                line_at("Body text.", 100.0, 12.0, "Helvetica"),
+                line_at(
+                    &format!("{marker}An enumerated item"),
+                    80.0,
+                    20.0,
+                    "Helvetica",
+                ),
+                line_at("Body text.", 60.0, 12.0, "Helvetica"),
+            ];
+
+            let result = LayoutAnalyzer::detect_headings(&stats, lines);
+            assert!(
+                !result[1].is_heading,
+                "{marker:?} opens a list item, not a heading"
+            );
+        }
+    }
+
+    /// Sibling lines of the same size are a run — a table column, a list, a paragraph whose
+    /// body font drifts between cells — and a heading normally sits alone in its size cohort.
+    #[test]
+    fn test_detect_headings_suppresses_a_line_with_a_same_size_neighbour() {
+        let stats = body_12pt_stats(&[16.0]);
+        let lines = vec![
+            line_at("Body text.", 100.0, 12.0, "Helvetica"),
+            line_at("Cell one of a row", 80.0, 16.0, "Helvetica"),
+            line_at("Cell two of a row", 60.0, 16.0, "Helvetica"),
+        ];
+
+        let result = LayoutAnalyzer::detect_headings(&stats, lines);
+
+        assert!(
+            !result[1].is_heading && !result[2].is_heading,
+            "16pt is under body + 6.0, so a same-size neighbour suppresses both"
+        );
+    }
+
+    /// The suppression above has an escape hatch: a line far enough above body size is a
+    /// heading even next to another of its size, or a document with two adjacent headings
+    /// would lose both.
+    #[test]
+    fn test_detect_headings_keeps_large_lines_despite_a_same_size_neighbour() {
+        let stats = body_12pt_stats(&[24.0]);
+        let lines = vec![
+            line_at("Part I", 100.0, 24.0, "Helvetica"),
+            line_at("Chapter One", 80.0, 24.0, "Helvetica"),
+            line_at("Body text.", 60.0, 12.0, "Helvetica"),
+        ];
+
+        let result = LayoutAnalyzer::detect_headings(&stats, lines);
+
+        assert!(result[0].is_heading && result[1].is_heading);
+    }
+
+    /// Uppercase stands in for bold. A PDF whose heading font has no bold variant marks the
+    /// heading by setting it in capitals, and that is the only signal available.
+    #[test]
+    fn test_detect_headings_treats_uppercase_as_bold() {
+        // 14pt is body + 2.0: short of the plain threshold (+2.5), past the bold one (+1.5).
+        let stats = body_12pt_stats(&[14.0]);
+        let mixed = LayoutAnalyzer::detect_headings(
+            &stats,
+            vec![
+                line_at("Body text.", 100.0, 12.0, "Helvetica"),
+                line_at("Introduction here", 80.0, 14.0, "Helvetica"),
+                line_at("Body text.", 60.0, 12.0, "Helvetica"),
+            ],
+        );
+        assert!(
+            !mixed[1].is_heading,
+            "14pt alone does not reach the plain threshold"
+        );
+
+        let upper = LayoutAnalyzer::detect_headings(
+            &stats,
+            vec![
+                line_at("Body text.", 100.0, 12.0, "Helvetica"),
+                line_at("INTRODUCTION HERE", 80.0, 14.0, "Helvetica"),
+                line_at("Body text.", 60.0, 12.0, "Helvetica"),
+            ],
+        );
+        assert!(
+            upper[1].is_heading,
+            "the same size in capitals qualifies through the bold threshold"
+        );
+    }
+
+    /// Too few visible characters to be a heading — page furniture, a stray glyph, a rule.
+    #[test]
+    fn test_detect_headings_skips_lines_with_almost_no_text() {
+        let stats = body_12pt_stats(&[20.0]);
+        let lines = vec![
+            line_at("Body text.", 100.0, 12.0, "Helvetica"),
+            line_at("A.", 80.0, 20.0, "Helvetica"),
+            line_at("Body text.", 60.0, 12.0, "Helvetica"),
+        ];
+
+        let result = LayoutAnalyzer::detect_headings(&stats, lines);
+
+        assert!(!result[1].is_heading);
+    }
 
     #[test]
     fn test_font_statistics() {
