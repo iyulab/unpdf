@@ -108,7 +108,9 @@ jobs:
         run: cargo build --release --all-features
 
       - name: Run tests
-        run: cargo test --all-features
+        # --workspace: without it only the root package is tested, so the cli and
+        # wasm crates' own tests never run.
+        run: cargo test --workspace --all-features
 
       - name: Check formatting
         run: cargo fmt --all -- --check
