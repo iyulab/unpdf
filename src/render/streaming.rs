@@ -32,6 +32,7 @@
 
 use crate::model::{Block, Document, Metadata};
 
+use super::syntax::{escape_markdown, to_roman};
 use super::{PageMarkerStyle, RenderOptions};
 
 /// Events emitted during streaming rendering.
@@ -492,49 +493,6 @@ impl<'a> Iterator for StreamingRenderer<'a> {
             }
         }
     }
-}
-
-/// Escape special Markdown characters.
-fn escape_markdown(text: &str) -> String {
-    let mut result = String::with_capacity(text.len());
-    for c in text.chars() {
-        match c {
-            '\\' | '`' | '*' | '_' | '[' | ']' | '|' => {
-                result.push('\\');
-                result.push(c);
-            }
-            _ => result.push(c),
-        }
-    }
-    result
-}
-
-/// Convert number to Roman numerals.
-fn to_roman(mut num: u32) -> String {
-    let numerals = [
-        (1000, "M"),
-        (900, "CM"),
-        (500, "D"),
-        (400, "CD"),
-        (100, "C"),
-        (90, "XC"),
-        (50, "L"),
-        (40, "XL"),
-        (10, "X"),
-        (9, "IX"),
-        (5, "V"),
-        (4, "IV"),
-        (1, "I"),
-    ];
-
-    let mut result = String::new();
-    for (value, symbol) in numerals {
-        while num >= value {
-            result.push_str(symbol);
-            num -= value;
-        }
-    }
-    result
 }
 
 /// Collect all content from a streaming renderer into a single string.

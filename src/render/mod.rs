@@ -6,6 +6,7 @@ mod markdown;
 mod options;
 mod result;
 pub mod streaming;
+mod syntax;
 mod text;
 pub mod visitor;
 

@@ -6,6 +6,7 @@ use crate::model::{
     Table, TextRun, TextStyle,
 };
 
+use super::syntax::{escape_markdown, to_roman};
 use super::{
     CleanupPipeline, ExtractionStats, PageMarkerStyle, RenderOptions, RenderResult, TableFallback,
 };
@@ -378,56 +379,6 @@ impl MarkdownRenderer {
         let alt = alt_text.unwrap_or("Image");
         output.push_str(&format!("\n<!-- [{}] -->\n\n", alt));
     }
-}
-
-/// Escape special Markdown characters.
-/// Only escape characters that could be misinterpreted as Markdown syntax.
-/// We minimize escaping to improve readability of extracted text.
-fn escape_markdown(text: &str) -> String {
-    let mut result = String::with_capacity(text.len());
-    for c in text.chars() {
-        match c {
-            // Core formatting that must be escaped
-            '\\' | '`' | '*' | '_' |
-            // Brackets for links/images, pipe for tables
-            '[' | ']' | '|' => {
-                result.push('\\');
-                result.push(c);
-            }
-            // NOT escaped (only special at line start or in specific contexts):
-            // '.' '-' '!' '#' '+' '>' '(' ')' '{' '}'
-            _ => result.push(c),
-        }
-    }
-    result
-}
-
-/// Convert number to Roman numerals.
-fn to_roman(mut num: u32) -> String {
-    let numerals = [
-        (1000, "M"),
-        (900, "CM"),
-        (500, "D"),
-        (400, "CD"),
-        (100, "C"),
-        (90, "XC"),
-        (50, "L"),
-        (40, "XL"),
-        (10, "X"),
-        (9, "IX"),
-        (5, "V"),
-        (4, "IV"),
-        (1, "I"),
-    ];
-
-    let mut result = String::new();
-    for (value, symbol) in numerals {
-        while num >= value {
-            result.push_str(symbol);
-            num -= value;
-        }
-    }
-    result
 }
 
 #[cfg(test)]
