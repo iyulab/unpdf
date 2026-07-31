@@ -37,9 +37,6 @@ pub struct RenderOptions {
     /// Page selection
     pub page_selection: PageSelection,
 
-    /// Heading detection configuration
-    pub heading_config: Option<HeadingConfig>,
-
     /// Width for wrapping long lines (0 = no wrap)
     pub line_width: u32,
 
@@ -154,18 +151,6 @@ impl RenderOptions {
         self
     }
 
-    /// Set heading configuration.
-    pub fn with_heading_config(mut self, config: HeadingConfig) -> Self {
-        self.heading_config = Some(config);
-        self
-    }
-
-    /// Enable heading analysis with default config.
-    pub fn with_heading_analysis(mut self) -> Self {
-        self.heading_config = Some(HeadingConfig::default());
-        self
-    }
-
     /// Set line width for wrapping.
     pub fn with_line_width(mut self, width: u32) -> Self {
         self.line_width = width;
@@ -186,7 +171,6 @@ impl Default for RenderOptions {
             escape_special_chars: true,
             cleanup: Some(CleanupOptions::standard()), // Enable standard cleanup by default
             page_selection: PageSelection::All,
-            heading_config: None,
             line_width: 0,
             collect_stats: false,
             page_markers: PageMarkerStyle::None,
@@ -291,37 +275,6 @@ impl PageSelection {
 
         pages.sort();
         Ok(PageSelection::Pages(pages))
-    }
-}
-
-/// Configuration for heading detection.
-#[derive(Debug, Clone)]
-pub struct HeadingConfig {
-    /// Minimum font size ratio to body text for H1
-    pub h1_min_ratio: f32,
-
-    /// Minimum font size ratio to body text for H2
-    pub h2_min_ratio: f32,
-
-    /// Whether to detect headings from bold/large text
-    pub detect_from_style: bool,
-
-    /// Whether to detect headings from outline structure
-    pub use_outline: bool,
-
-    /// Korean-specific heading patterns (e.g., "제1장", "1.", "가.")
-    pub korean_patterns: bool,
-}
-
-impl Default for HeadingConfig {
-    fn default() -> Self {
-        Self {
-            h1_min_ratio: 1.5,
-            h2_min_ratio: 1.3,
-            detect_from_style: true,
-            use_outline: true,
-            korean_patterns: true,
-        }
     }
 }
 

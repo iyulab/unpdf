@@ -9,6 +9,10 @@ in the lists below.
 
 - **Minimum supported Rust version is now 1.87** (was 1.75). This follows the shared
   `uncore` crate the FFI plumbing moved onto.
+- **Three public options that never did anything have been removed** — `HeadingConfig` (and
+  `RenderOptions::heading_config`), `CleanupOptions::remove_headers_footers` and
+  `CleanupOptions::detect_mojibake`. Code that sets them stops compiling; its behaviour was
+  already whatever the library does without them. See **Removed** below.
 - **Python: the first parameter of every function is now named `source`, not `path`.**
   A positional call is unaffected — `to_markdown("a.pdf")` keeps working. A call that
   passes it by keyword (`to_markdown(path="a.pdf")`) must be renamed. The parameter now
@@ -124,6 +128,18 @@ in the lists below.
   unmodified.
 
 ### Removed
+- **`HeadingConfig` and `RenderOptions::heading_config`**, with the two builder methods that
+  set them (`with_heading_config`, `with_heading_analysis`). Nothing read any of it: heading
+  level is decided during layout analysis, from the absolute point difference against body
+  text and the rank of that size among the sizes actually observed on the page. The
+  `h1_min_ratio` / `h2_min_ratio` fields describe a ratio-based scheme that was never how
+  this library works, and `korean_patterns` promised pattern matching that does not exist
+  here at all. Tuning knobs for the real algorithm need a design of their own rather than a
+  struct that reads as if it already provides them.
+- **`CleanupOptions::remove_headers_footers` and `CleanupOptions::detect_mojibake`.** Neither
+  gated anything — the cleanup pass never read either field — so `CleanupPreset::Standard`
+  and `Aggressive`, which set them, advertised header/footer removal and mojibake handling
+  that never happened. An option is a promise that the pipeline acts on it.
 - `docs/superpowers/` — plan and design notes for a feature shipped in 0.5.0, kept in
   the published docs tree with nothing referencing them.
 

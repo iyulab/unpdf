@@ -27,9 +27,6 @@ pub struct CleanupOptions {
     /// Remove page numbers
     pub remove_page_numbers: bool,
 
-    /// Remove headers and footers
-    pub remove_headers_footers: bool,
-
     /// Remove table of contents
     pub remove_toc: bool,
 
@@ -38,9 +35,6 @@ pub struct CleanupOptions {
 
     /// Fix hyphenation at line breaks
     pub fix_hyphenation: bool,
-
-    /// Detect and flag mojibake (corrupted text)
-    pub detect_mojibake: bool,
 
     /// Remove Private Use Area (PUA) characters
     pub remove_pua: bool,
@@ -88,11 +82,9 @@ impl CleanupOptions {
             normalize_unicode: true,
             standardize_bullets: false,
             remove_page_numbers: false,
-            remove_headers_footers: false,
             remove_toc: false,
             fix_ligatures: false,
             fix_hyphenation: false,
-            detect_mojibake: false,
             remove_pua: false,
             remove_replacement_char: false,
             merge_single_newlines: false,
@@ -111,11 +103,9 @@ impl CleanupOptions {
             normalize_unicode: true,
             standardize_bullets: true,
             remove_page_numbers: true,
-            remove_headers_footers: true,
             remove_toc: true,
             fix_ligatures: true,
             fix_hyphenation: true,
-            detect_mojibake: false,
             remove_pua: false,
             remove_replacement_char: true,
             merge_single_newlines: true,
@@ -138,11 +128,9 @@ impl CleanupOptions {
             normalize_unicode: true,
             standardize_bullets: true,
             remove_page_numbers: true,
-            remove_headers_footers: true,
             remove_toc: true,
             fix_ligatures: true,
             fix_hyphenation: true,
-            detect_mojibake: true,
             remove_pua: true,
             remove_replacement_char: true,
             merge_single_newlines: true,

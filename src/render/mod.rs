@@ -12,7 +12,7 @@ pub mod visitor;
 pub use cleanup::{CleanupOptions, CleanupPipeline, CleanupPreset};
 pub use json::{to_json, JsonFormat};
 pub use markdown::{to_markdown, to_markdown_with_stats, MarkdownRenderer};
-pub use options::{HeadingConfig, PageMarkerStyle, PageSelection, RenderOptions, TableFallback};
+pub use options::{PageMarkerStyle, PageSelection, RenderOptions, TableFallback};
 pub use result::{ExtractionStats, RenderResult};
 pub use streaming::{collect_content, RenderEvent, StreamingRenderer};
 pub use text::to_text;
