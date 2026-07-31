@@ -50,12 +50,14 @@ in the lists below.
   from the internals.
 
 ### Fixed
-- **Enumerated list items were promoted to headings.** Heading detection refused to promote a
-  line opening with one of ten bullet glyphs, and enclosed enumerations (①, ⒈, ㈀, ❶ …) were
-  not among them — so a document setting its clause lists in a display face turned every item
-  into a heading. Documents that number clauses this way tend to do so throughout, which put
-  the noise everywhere at once. The exclusion now covers those ranges and a wider set of
-  bullet glyphs.
+- **Enumerated and bulleted list items were promoted to headings.** Heading detection refused
+  to promote a line opening with one of ten bullet glyphs, and enclosed enumerations
+  (①, ⒈, ㈀, ❶ …) were not among them — so a document setting its clause lists in a display
+  face turned every item into a heading. Documents that number clauses this way tend to do so
+  throughout, which put the noise everywhere at once. The exclusion now covers those three
+  Unicode ranges, and the glyph list grew from ten to thirty-three: among others `○ ● ■ □ ◆ ★
+  → ► ▹ ◁ ◀ ◃ ◂ ㆍ ㅇ ∙ ◼ ◾` and the en/em dashes. A line starting with any of them is now
+  read as a list item, so one that was previously emitted as a heading no longer is.
 - **The Markdown escaping and Roman-numeral helpers existed twice**, once per rendering path,
   so batch and streaming output could drift apart wherever one copy was changed and the other
   was not. Both paths now use the same implementation. No output change on its own.
