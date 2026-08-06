@@ -189,30 +189,31 @@ mod tests {
         assert_eq!(Error::Other("boom".into()).kind(), ErrorKind::Other);
     }
 
-    /// These values cross the C-ABI boundary and are duplicated by hand in
-    /// `bindings/unpdf.h` (`UnpdfErrorKind`). Pinning every one of them here is what
-    /// makes that duplication safe: renumbering shows up as a failure instead of as
-    /// silently misclassified errors in a consumer. Adding a reason means adding a
-    /// line with the next free number — never reusing or shifting one.
-    #[test]
-    fn test_error_kind_discriminants_are_stable() {
-        assert_eq!(ErrorKind::Other as i32, 1);
-        assert_eq!(ErrorKind::Io as i32, 2);
-        assert_eq!(ErrorKind::UnknownFormat as i32, 3);
-        assert_eq!(ErrorKind::UnsupportedVersion as i32, 4);
-        assert_eq!(ErrorKind::PdfParse as i32, 5);
-        assert_eq!(ErrorKind::Encrypted as i32, 6);
-        assert_eq!(ErrorKind::InvalidPassword as i32, 7);
-        assert_eq!(ErrorKind::Corrupted as i32, 8);
-        assert_eq!(ErrorKind::MissingObject as i32, 9);
-        assert_eq!(ErrorKind::FontDecode as i32, 10);
-        assert_eq!(ErrorKind::ImageExtract as i32, 11);
-        assert_eq!(ErrorKind::Render as i32, 12);
-        assert_eq!(ErrorKind::TextExtract as i32, 13);
-        assert_eq!(ErrorKind::PageOutOfRange as i32, 14);
-        assert_eq!(ErrorKind::InvalidPageRange as i32, 15);
-        assert_eq!(ErrorKind::ResourceNotFound as i32, 16);
-        assert_eq!(ErrorKind::Encoding as i32, 17);
+    // These values cross the C-ABI boundary and are duplicated by hand in
+    // `bindings/unpdf.h` (`UnpdfErrorKind`). Pinning every one of them here — via the
+    // same macro the sibling crates use — is what makes that duplication safe:
+    // renumbering shows up as a failure instead of as silently misclassified errors in
+    // a consumer. Adding a reason means adding a line with the next free number —
+    // never reusing or shifting one.
+    uncore::assert_stable_kinds! {
+        ErrorKind, test_error_kind_discriminants_are_stable,
+        Other = 1,
+        Io = 2,
+        UnknownFormat = 3,
+        UnsupportedVersion = 4,
+        PdfParse = 5,
+        Encrypted = 6,
+        InvalidPassword = 7,
+        Corrupted = 8,
+        MissingObject = 9,
+        FontDecode = 10,
+        ImageExtract = 11,
+        Render = 12,
+        TextExtract = 13,
+        PageOutOfRange = 14,
+        InvalidPageRange = 15,
+        ResourceNotFound = 16,
+        Encoding = 17,
     }
 
     #[test]
