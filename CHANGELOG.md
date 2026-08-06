@@ -21,6 +21,10 @@
   length is unknowable. Treat non-zero as a boolean "incomplete" signal; the magnitude
   only compares documents to each other.
 
+  `unpdf info` reports the count on its own line when non-zero, alongside the page-loss
+  line and for the same reason: `--quiet` silences warnings, and a diagnostic command
+  must not hide missing content because the caller asked for less noise.
+
   `warning_message()` reports it ahead of the empty-text warning, whose text lists
   "unsupported font encoding" among several guesses — when runs were suppressed, that
   cause is observed rather than guessed.
