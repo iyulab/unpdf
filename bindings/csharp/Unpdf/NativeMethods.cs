@@ -48,7 +48,9 @@ internal static class NativeMethods
     // Flags for markdown rendering
     public const int UNPDF_FLAG_FRONTMATTER = 1;
     public const int UNPDF_FLAG_ESCAPE_SPECIAL = 2;
-    public const int UNPDF_FLAG_PARAGRAPH_SPACING = 4;
+    // Bit 4 is retired: it named a paragraph-spacing option that never reached the
+    // renderer. Retired bits are not reused.
+    public const int UNPDF_FLAG_PAGE_MARKERS = 8;
 
     // JSON format options
     public const int UNPDF_JSON_PRETTY = 0;

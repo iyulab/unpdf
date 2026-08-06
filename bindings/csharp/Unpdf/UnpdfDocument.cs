@@ -21,16 +21,16 @@ public class MarkdownOptions
     public bool EscapeSpecialChars { get; set; } = false;
 
     /// <summary>
-    /// Add extra spacing between paragraphs.
+    /// Mark each page boundary with an HTML comment (<c>&lt;!-- page N --&gt;</c>).
     /// </summary>
-    public bool ParagraphSpacing { get; set; } = false;
+    public bool PageMarkers { get; set; } = false;
 
     internal int ToFlags()
     {
         int flags = 0;
         if (IncludeFrontmatter) flags |= NativeMethods.UNPDF_FLAG_FRONTMATTER;
         if (EscapeSpecialChars) flags |= NativeMethods.UNPDF_FLAG_ESCAPE_SPECIAL;
-        if (ParagraphSpacing) flags |= NativeMethods.UNPDF_FLAG_PARAGRAPH_SPACING;
+        if (PageMarkers) flags |= NativeMethods.UNPDF_FLAG_PAGE_MARKERS;
         return flags;
     }
 }

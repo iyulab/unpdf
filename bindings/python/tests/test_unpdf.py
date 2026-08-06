@@ -342,3 +342,42 @@ class TestErrorKind:
         """A future native build may report a reason this package predates."""
         err = unpdf.UnpdfError("from the future", 9999)
         assert err.kind == 9999
+
+
+class TestMarkdownFlags:
+    """A core render option is only real to a Python caller once the flag that
+    selects it is importable and actually reaches the renderer. An ignored flag
+    does not fail: the call succeeds and simply does not do what was asked."""
+
+    def test_flags_are_exported_from_the_package(self):
+        """The ``flags`` argument is public, so its constants must be too."""
+        assert unpdf.UNPDF_FLAG_FRONTMATTER == 1
+        assert unpdf.UNPDF_FLAG_ESCAPE_SPECIAL == 2
+        assert unpdf.UNPDF_FLAG_PAGE_MARKERS == 8
+
+    def test_page_markers_off_by_default(self, tmp_path):
+        path = tmp_path / "text.pdf"
+        path.write_bytes(_text_pdf())
+        assert "<!-- page " not in unpdf.to_markdown(str(path))
+
+    def test_page_markers_marks_page_boundaries(self, tmp_path):
+        path = tmp_path / "text.pdf"
+        path.write_bytes(_text_pdf())
+        markdown = unpdf.to_markdown(str(path), unpdf.UNPDF_FLAG_PAGE_MARKERS)
+        assert "<!-- page 1 -->" in markdown
+
+    def test_page_markers_does_not_imply_frontmatter(self, tmp_path):
+        path = tmp_path / "text.pdf"
+        path.write_bytes(_text_pdf())
+        markdown = unpdf.to_markdown(str(path), unpdf.UNPDF_FLAG_PAGE_MARKERS)
+        assert not markdown.startswith("---")
+
+    def test_flags_combine(self, tmp_path):
+        path = tmp_path / "text.pdf"
+        path.write_bytes(_text_pdf())
+        markdown = unpdf.to_markdown(
+            str(path),
+            unpdf.UNPDF_FLAG_FRONTMATTER | unpdf.UNPDF_FLAG_PAGE_MARKERS,
+        )
+        assert markdown.startswith("---")
+        assert "<!-- page 1 -->" in markdown

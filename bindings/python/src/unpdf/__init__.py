@@ -3,6 +3,9 @@ unpdf - Python bindings for unpdf PDF extraction library.
 """
 
 from .unpdf import (
+    UNPDF_FLAG_ESCAPE_SPECIAL,
+    UNPDF_FLAG_FRONTMATTER,
+    UNPDF_FLAG_PAGE_MARKERS,
     ErrorKind,
     PdfSource,
     UnpdfError,
@@ -18,6 +21,9 @@ from .unpdf import (
 )
 
 __all__ = [
+    "UNPDF_FLAG_ESCAPE_SPECIAL",
+    "UNPDF_FLAG_FRONTMATTER",
+    "UNPDF_FLAG_PAGE_MARKERS",
     "ErrorKind",
     "PdfSource",
     "UnpdfError",

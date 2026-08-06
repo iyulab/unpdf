@@ -21,7 +21,7 @@ use uncore::ffi::{self, invalid_argument, FfiError, LastErrorSlot};
 
 use crate::error::ErrorKind;
 use crate::model::Document;
-use crate::render::{JsonFormat, RenderOptions};
+use crate::render::{JsonFormat, PageMarkerStyle, RenderOptions};
 
 // Thread-local storage for the last error message and its classification. Declared
 // here rather than in `uncore` — see that crate's `ffi` module docs for why the slot
@@ -71,7 +71,28 @@ uncore::export_handle! {
 /// Flags for markdown rendering.
 pub const UNPDF_FLAG_FRONTMATTER: u32 = 1;
 pub const UNPDF_FLAG_ESCAPE_SPECIAL: u32 = 2;
-pub const UNPDF_FLAG_PARAGRAPH_SPACING: u32 = 4;
+/// Bit `4` is retired. It named a paragraph-spacing option that never reached the
+/// renderer, so setting it did nothing. Retired bits are not reused: a caller still
+/// passing it gets the default rendering, which is what it always produced.
+pub const UNPDF_FLAG_PAGE_MARKERS: u32 = 8;
+
+/// Build render options from the flag bitmask.
+///
+/// Both markdown entry points take the same bitmask, and reading it in two places is how
+/// a flag comes to be honoured by one of them and ignored by the other.
+fn render_options_from_flags(flags: u32) -> RenderOptions {
+    let mut options = RenderOptions::new();
+    if flags & UNPDF_FLAG_FRONTMATTER != 0 {
+        options.include_frontmatter = true;
+    }
+    if flags & UNPDF_FLAG_ESCAPE_SPECIAL != 0 {
+        options.escape_special_chars = true;
+    }
+    if flags & UNPDF_FLAG_PAGE_MARKERS != 0 {
+        options.page_markers = PageMarkerStyle::Comment;
+    }
+    options
+}
 
 /// JSON format options.
 pub const UNPDF_JSON_PRETTY: c_int = 0;
@@ -161,18 +182,7 @@ uncore::export_string_getter!(
     unpdf_to_markdown(doc: UnpdfDocument, flags: u32),
     {
         let document = &(*doc).inner;
-
-        let mut options = RenderOptions::new();
-
-        if flags & UNPDF_FLAG_FRONTMATTER != 0 {
-            options.include_frontmatter = true;
-        }
-        if flags & UNPDF_FLAG_ESCAPE_SPECIAL != 0 {
-            options.escape_special_chars = true;
-        }
-        // PARAGRAPH_SPACING: no direct field in unpdf's RenderOptions,
-        // treat as no-op for now
-
+        let options = render_options_from_flags(flags);
         crate::render::to_markdown(document, &options).map_err(ffi_err)
     }
 );
@@ -486,13 +496,7 @@ uncore::export_string_getter!(
             )
         })?;
 
-        let mut options = RenderOptions::new();
-        if flags & UNPDF_FLAG_FRONTMATTER != 0 {
-            options.include_frontmatter = true;
-        }
-        if flags & UNPDF_FLAG_ESCAPE_SPECIAL != 0 {
-            options.escape_special_chars = true;
-        }
+        let options = render_options_from_flags(flags);
 
         // Create a single-page document for rendering
         let mut single_page_doc = Document::new();

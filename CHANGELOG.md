@@ -29,7 +29,31 @@
   "unsupported font encoding" among several guesses — when runs were suppressed, that
   cause is observed rather than guessed.
 
+- **Page markers reach the C ABI and the language packages** —
+  `UNPDF_FLAG_PAGE_MARKERS` (`8`), C# `MarkdownOptions.PageMarkers`, Python
+  `unpdf.UNPDF_FLAG_PAGE_MARKERS`. The option has been in the core renderer and the CLI
+  since 0.5.0 but was reachable from neither binding, so a caller outside Rust had no way
+  to keep track of which page a passage came from — the common need behind chunking a
+  long document.
+
+- **Python exports the markdown flags.** `to_markdown` has always taken a `flags`
+  argument, but the constants naming its bits lived in a private module, so the only way
+  to use it was to hard-code integers or import from `unpdf._native`.
+  `UNPDF_FLAG_FRONTMATTER`, `UNPDF_FLAG_ESCAPE_SPECIAL` and `UNPDF_FLAG_PAGE_MARKERS` are
+  now importable from `unpdf`.
+
 ### Changed
+
+- **Flag bit `4` is retired.** It was published on all four surfaces as a
+  paragraph-spacing option — C `UNPDF_FLAG_PARAGRAPH_SPACING`, C#
+  `MarkdownOptions.ParagraphSpacing`, Python `UNPDF_FLAG_PARAGRAPH_SPACING` — and
+  documented as "add extra spacing between paragraphs", but it never reached the
+  renderer: setting it produced exactly the default output. The C# property and the two
+  constants are removed; C# code that sets `ParagraphSpacing` stops compiling, and its
+  behaviour was already whatever the library does without it.
+
+  The bit value itself is **not reused**. A caller still passing `4` to the C ABI gets the
+  default rendering, which is what it always got.
 
 - **`PdfBackend::decode_text` returns `DecodedText`, not `String`** (breaking for code
   implementing the trait; no effect on library users). A decoder that gives up on a run

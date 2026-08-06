@@ -59,7 +59,22 @@ unpdf.to_markdown(pdf_bytes)
 ## API Reference
 
 ### `to_markdown(source: PdfSource, flags: int = 0) -> str`
-Convert a PDF file to Markdown format.
+Convert a PDF file to Markdown format. `flags` is a bitwise OR of:
+
+| Constant | Effect |
+|---|---|
+| `UNPDF_FLAG_FRONTMATTER` | Emit YAML frontmatter with document metadata |
+| `UNPDF_FLAG_ESCAPE_SPECIAL` | Escape Markdown special characters |
+| `UNPDF_FLAG_PAGE_MARKERS` | Mark each page boundary with `<!-- page N -->` |
+
+```python
+import unpdf
+
+markdown = unpdf.to_markdown(
+    "document.pdf",
+    unpdf.UNPDF_FLAG_FRONTMATTER | unpdf.UNPDF_FLAG_PAGE_MARKERS,
+)
+```
 
 ### `to_text(source: PdfSource) -> str`
 Convert a PDF file to plain text.

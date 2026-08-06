@@ -855,7 +855,7 @@ string withFrontmatter = doc.ToMarkdown(new MarkdownOptions
 {
     IncludeFrontmatter = true,
     EscapeSpecialChars = true,
-    ParagraphSpacing = true,
+    PageMarkers = true,
 });
 
 // A single page (1-indexed)

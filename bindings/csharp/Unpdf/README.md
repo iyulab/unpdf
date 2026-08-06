@@ -48,7 +48,7 @@ var markdown = doc.ToMarkdown(new MarkdownOptions
 {
     IncludeFrontmatter = true,
     EscapeSpecialChars = true,
-    ParagraphSpacing = true,
+    PageMarkers = true,
 });
 ```
 
@@ -151,7 +151,7 @@ image-only pages rather than `ResourceCount`.
 |----------|------|---------|-------------|
 | `IncludeFrontmatter` | `bool` | `false` | Emit YAML frontmatter with document metadata |
 | `EscapeSpecialChars` | `bool` | `false` | Escape Markdown special characters |
-| `ParagraphSpacing` | `bool` | `false` | Add extra spacing between paragraphs |
+| `PageMarkers` | `bool` | `false` | Mark each page boundary with `<!-- page N -->` |
 
 ### `ExtractionQuality`
 

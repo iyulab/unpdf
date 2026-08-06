@@ -8,7 +8,14 @@ import os
 from enum import IntEnum
 from typing import Any, Union
 
-from ._native import get_library, UNPDF_JSON_PRETTY, UNPDF_JSON_COMPACT
+from ._native import (
+    get_library,
+    UNPDF_FLAG_ESCAPE_SPECIAL,
+    UNPDF_FLAG_FRONTMATTER,
+    UNPDF_FLAG_PAGE_MARKERS,
+    UNPDF_JSON_COMPACT,
+    UNPDF_JSON_PRETTY,
+)
 
 #: What every function in this module accepts as its PDF: a filesystem path
 #: (``str``, or anything implementing ``os.PathLike`` such as ``pathlib.Path``)
@@ -128,7 +135,9 @@ def to_markdown(source: PdfSource, flags: int = 0) -> str:
     Args:
         source: Path to the PDF file (``str`` or ``os.PathLike``), or the
             PDF's own bytes.
-        flags: Bitwise OR of UNPDF_FLAG_* constants (optional).
+        flags: Bitwise OR of ``UNPDF_FLAG_FRONTMATTER``,
+            ``UNPDF_FLAG_ESCAPE_SPECIAL`` and ``UNPDF_FLAG_PAGE_MARKERS``
+            (optional). All are importable from ``unpdf``.
 
     Returns:
         The extracted content as Markdown.

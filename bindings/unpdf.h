@@ -32,7 +32,9 @@ typedef struct UnpdfDocument UnpdfDocument;
 /* Flags for unpdf_to_markdown / unpdf_page_to_markdown. */
 #define UNPDF_FLAG_FRONTMATTER       1u
 #define UNPDF_FLAG_ESCAPE_SPECIAL    2u
-#define UNPDF_FLAG_PARAGRAPH_SPACING 4u
+/* Bit 4 is retired: it named a paragraph-spacing option that never reached the
+   renderer. Retired bits are not reused; passing it yields the default rendering. */
+#define UNPDF_FLAG_PAGE_MARKERS      8u
 
 /* Format selector for unpdf_to_json. */
 #define UNPDF_JSON_PRETTY  0
