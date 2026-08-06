@@ -701,6 +701,21 @@ fn cmd_info(input: &Path, quiet: bool) -> Result<bool, Box<dyn std::error::Error
         ),
         _ => println!("{}: {}", "Pages".bold(), doc.metadata.page_count),
     }
+    // Same reasoning as the Pages line above: text the decoder could not read is
+    // content missing from the output, and `--quiet` would silence the warning that
+    // otherwise carries it. Printed only when non-zero — an intact document should
+    // not have to read a line saying nothing was lost.
+    if q.suppressed_text_runs > 0 {
+        println!(
+            "{}: {}",
+            "Text runs".bold(),
+            format!(
+                "{} unreadable, dropped (fonts' character codes unresolved)",
+                q.suppressed_text_runs
+            )
+            .yellow()
+        );
+    }
     println!(
         "{}: {}",
         "Encrypted".bold(),

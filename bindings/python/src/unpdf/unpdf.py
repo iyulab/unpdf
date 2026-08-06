@@ -262,8 +262,13 @@ def get_extraction_quality(source: PdfSource) -> dict[str, Any]:
     Returns:
         Dictionary with ``char_count``, ``word_count``, ``replacement_char_count``,
         ``encrypted``, ``is_scan_pdf``, ``suppressed_ocr_pages``,
-        ``pages_incomplete``, ``declared_page_count``, ``unresolved_page_nodes``,
-        ``skipped_object_count``.
+        ``suppressed_text_runs``, ``pages_incomplete``, ``declared_page_count``,
+        ``unresolved_page_nodes``, ``skipped_object_count``.
+
+        ``suppressed_text_runs`` counts text runs the font decoder could not read
+        and discarded — content the document had and this output does not. Any
+        non-zero value means the extraction is incomplete; the count is in runs,
+        not characters, because the discarded text was never decoded.
 
         ``unresolved_page_nodes`` counts unreadable page-tree *nodes*, not lost
         pages — one unreadable node can cost a whole subtree. Treat any non-zero

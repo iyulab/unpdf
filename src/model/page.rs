@@ -31,6 +31,12 @@ pub struct Page {
     /// 스캔 이미지 위의 투명 텍스트가 아무 의미도 이루지 못할 때만 설정된다.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub ocr_text_suppressed: bool,
+    /// Text runs the font decoder could not read and discarded on this page.
+    ///
+    /// Non-zero means the page is missing content the document held. Unlike
+    /// `ocr_text_suppressed` this counts runs, not the page as a whole — a page can
+    /// lose a few runs and still carry most of its text.
+    pub suppressed_text_runs: usize,
 
     /// 콘텐츠 스트림의 텍스트 쇼잉 오퍼레이터(`Tj`/`TJ`/`'`/`"`) 수.
     /// 0이면서 `image_op_count > 0` 이면 텍스트 레이어 없는 스캔 페이지,
@@ -61,6 +67,7 @@ impl Page {
             rotation: 0,
             images: Vec::new(),
             ocr_text_suppressed: false,
+            suppressed_text_runs: 0,
             text_op_count: 0,
             image_op_count: 0,
         }

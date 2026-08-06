@@ -1,5 +1,38 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **Extraction quality reports text runs the decoder discarded** —
+  `ExtractionQuality::suppressed_text_runs` (C# `SuppressedTextRuns`, Python
+  `suppressed_text_runs`, and per page in `unpdf_page_stats`).
+
+  A run is one text string handed to the decoder — a `Tj` operand, or a single element
+  of a `TJ` array.
+
+  When a font's character codes cannot be resolved, the run is discarded rather than
+  emitted as mojibake. That policy is unchanged — what changes is that the extraction
+  no longer reports plain success afterwards. Content the document held and the output
+  does not is now counted, so a consumer can tell "the document did not say this" from
+  "we could not read it". Any non-zero value means the extraction is incomplete.
+
+  Counted in runs rather than characters: the discarded text was never decoded, so its
+  length is unknowable. Treat non-zero as a boolean "incomplete" signal; the magnitude
+  only compares documents to each other.
+
+  `warning_message()` reports it ahead of the empty-text warning, whose text lists
+  "unsupported font encoding" among several guesses — when runs were suppressed, that
+  cause is observed rather than guessed.
+
+### Changed
+
+- **`PdfBackend::decode_text` returns `DecodedText`, not `String`** (breaking for code
+  implementing the trait; no effect on library users). A decoder that gives up on a run
+  reports it via `DecodedText::suppressed` — an empty string could not distinguish
+  "discarded this run" from "this run held no text", and that difference is the whole
+  of the new diagnostic.
+
 ## 0.11.0 — 2026-07-31
 
 ### Upgrade notes

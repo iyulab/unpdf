@@ -309,6 +309,11 @@ pub struct LayoutAnalyzer<'a> {
     text_op_count: Cell<u32>,
     /// 마지막으로 분석한 페이지의 XObject `Do` 호출 수.
     image_op_count: Cell<u32>,
+    /// Text runs the font decoder discarded on the page last analysed.
+    ///
+    /// Reset on entry to `parse_operations`, like the operator counts above, so a
+    /// re-analysed page reports the last pass rather than the sum of every pass.
+    suppressed_text_runs: Cell<usize>,
 }
 
 /// What a page's content stream says about how its text was produced.
@@ -450,6 +455,7 @@ impl<'a> LayoutAnalyzer<'a> {
             ocr_text_suppressed: Cell::new(false),
             text_op_count: Cell::new(0),
             image_op_count: Cell::new(0),
+            suppressed_text_runs: Cell::new(0),
         }
     }
 
@@ -462,6 +468,14 @@ impl<'a> LayoutAnalyzer<'a> {
     /// Whether any page analysed so far had its OCR text layer dropped.
     pub fn ocr_text_suppressed(&self) -> bool {
         self.ocr_text_suppressed.get()
+    }
+
+    /// Text runs discarded by the font decoder on the page last analysed.
+    ///
+    /// Non-zero means the page's output is missing content the document contained —
+    /// the decoder could not read those runs and dropped them rather than emit noise.
+    pub fn suppressed_text_runs(&self) -> usize {
+        self.suppressed_text_runs.get()
     }
 
     /// 마지막으로 분석한 페이지의 `(text_op_count, image_op_count)`.
@@ -591,6 +605,7 @@ impl<'a> LayoutAnalyzer<'a> {
         // 마지막 호출의 집계가 그대로 유효하도록 진입 시점에 0으로 되돌린다.
         self.text_op_count.set(0);
         self.image_op_count.set(0);
+        self.suppressed_text_runs.set(0);
         let page_area = {
             let (w, h) = self.backend.page_dimensions(page_id);
             w * h
@@ -600,6 +615,7 @@ impl<'a> LayoutAnalyzer<'a> {
         let mut render_mode_stack: Vec<i64> = Vec::new();
         let mut invisible_chars = 0usize;
         let mut total_chars = 0usize;
+        let mut suppressed_runs = 0usize;
         let mut signals = PageTextLayerSignals::default();
 
         let mut spans = Vec::new();
@@ -706,11 +722,13 @@ impl<'a> LayoutAnalyzer<'a> {
                             for item in arr {
                                 match item {
                                     PdfValue::Str(bytes) => {
-                                        combined.push_str(&self.backend.decode_text(
+                                        let decoded = self.backend.decode_text(
                                             page_id,
                                             &current_font_name,
                                             bytes,
-                                        ));
+                                        );
+                                        note_suppression(&decoded, &mut suppressed_runs);
+                                        combined.push_str(&decoded.text);
                                     }
                                     PdfValue::Integer(n) => {
                                         let adjustment = -(*n as f32);
@@ -730,7 +748,10 @@ impl<'a> LayoutAnalyzer<'a> {
                     } else {
                         // Tj: single string
                         if let Some(PdfValue::Str(bytes)) = op.operands.first() {
-                            self.backend.decode_text(page_id, &current_font_name, bytes)
+                            let decoded =
+                                self.backend.decode_text(page_id, &current_font_name, bytes);
+                            note_suppression(&decoded, &mut suppressed_runs);
+                            decoded.text
                         } else {
                             String::new()
                         }
@@ -761,7 +782,10 @@ impl<'a> LayoutAnalyzer<'a> {
                     if in_text_block {
                         let text_idx = if op.operator == "\"" { 2 } else { 0 };
                         if let Some(PdfValue::Str(bytes)) = op.operands.get(text_idx) {
-                            let text = self.backend.decode_text(page_id, &current_font_name, bytes);
+                            let decoded =
+                                self.backend.decode_text(page_id, &current_font_name, bytes);
+                            note_suppression(&decoded, &mut suppressed_runs);
+                            let text = decoded.text;
 
                             if !text.trim().is_empty() {
                                 count_render_mode(
@@ -792,6 +816,7 @@ impl<'a> LayoutAnalyzer<'a> {
         if total_chars > 0 {
             signals.invisible_char_ratio = invisible_chars as f32 / total_chars as f32;
         }
+        self.suppressed_text_runs.set(suppressed_runs);
 
         Ok((spans, signals))
     }
@@ -1618,6 +1643,17 @@ fn concat_matrix(a: &[f32; 6], b: &[f32; 6]) -> [f32; 6] {
 
 /// Apply a CTM to a user-space point, returning device-space coordinates.
 #[inline]
+/// Tally a decoded run that the font decoder discarded.
+///
+/// Counted per run rather than per character: the discarded text was never decoded,
+/// so its length is unknown — the only honest unit is "how many runs went missing".
+fn note_suppression(decoded: &super::backend::DecodedText, suppressed_runs: &mut usize) {
+    if let Some(reason) = decoded.suppressed {
+        *suppressed_runs += 1;
+        log::debug!("dropped an unreadable text run: {:?}", reason);
+    }
+}
+
 /// Tally characters by whether they were painted, for [`PageTextLayerSignals`].
 ///
 /// Rendering mode 3 (and 7, which only sets a clipping path) draws nothing.

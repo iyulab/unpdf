@@ -391,6 +391,7 @@ uncore::export_string_getter!(
             "text_op_count": page.text_op_count,
             "image_op_count": page.image_op_count,
             "ocr_text_suppressed": page.ocr_text_suppressed,
+            "suppressed_text_runs": page.suppressed_text_runs,
         }))
         .map_err(json_err)
     }

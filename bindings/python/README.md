@@ -83,6 +83,7 @@ Get the version of the native library.
 ### `get_extraction_quality(source: PdfSource) -> dict`
 Document-level extraction diagnostics: `char_count`, `word_count`,
 `replacement_char_count`, `encrypted`, `is_scan_pdf`, `suppressed_ocr_pages`,
+`suppressed_text_runs`,
 `pages_incomplete`, `declared_page_count`, `unresolved_page_nodes`,
 `skipped_object_count`. See "Incomplete extraction" below.
 

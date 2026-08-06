@@ -43,6 +43,23 @@ public sealed class ExtractionQuality
     public long SuppressedOcrPages { get; init; }
 
     /// <summary>
+    /// Number of text runs the font decoder could not read and discarded.
+    /// <para>
+    /// A run is one text string handed to the decoder — a <c>Tj</c> operand, or a
+    /// single element of a <c>TJ</c> array. The decoder drops a run when the font's
+    /// character codes cannot be resolved — emitting the raw bytes would produce
+    /// mojibake rather than text. The dropped runs are content the document had and
+    /// the output does not, so any non-zero value means the extraction is incomplete
+    /// in a way no other property shows.
+    /// </para>
+    /// Counted in runs, not characters: the discarded text was never decoded, so its
+    /// length is unknowable. Treat non-zero as "incomplete"; the magnitude only
+    /// compares documents to each other.
+    /// </summary>
+    [JsonPropertyName("suppressed_text_runs")]
+    public long SuppressedTextRuns { get; init; }
+
+    /// <summary>
     /// Whether pages are known to be missing from the output.
     /// <para>
     /// <c>true</c> means the parser recovered what it could from a damaged document and

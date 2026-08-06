@@ -31,6 +31,21 @@ pub struct ExtractionQuality {
     #[serde(default)]
     pub suppressed_ocr_pages: usize,
 
+    /// Number of text runs the font decoder could not read and discarded.
+    ///
+    /// A run is one text string handed to the decoder — a `Tj` operand, or a single
+    /// element of a `TJ` array. The decoder drops a run when the font's
+    /// codes cannot be resolved to characters — emitting the raw bytes would produce
+    /// mojibake, not text. That policy is deliberate, but the dropped runs are content
+    /// the document had and the output does not, so the count is reported: a non-zero
+    /// value means the extraction is incomplete in a way no other field shows.
+    ///
+    /// Counted in runs because the discarded text was never decoded — its character
+    /// count is unknowable. Treat any non-zero value as "incomplete"; the magnitude
+    /// only compares documents to each other, not to a share of the whole.
+    #[serde(default)]
+    pub suppressed_text_runs: usize,
+
     /// Whether pages are known to be missing from the output.
     ///
     /// `true` means the parser recovered what it could from a damaged document and some
@@ -123,6 +138,18 @@ impl ExtractionQuality {
                 "PDF is encrypted. Text extraction may be incomplete or unavailable.".to_string(),
             );
         }
+        // Ahead of the empty-text branch: that message lists "unsupported font
+        // encoding" among several *guesses*, and a non-zero count here means we
+        // observed exactly that and know it. Reporting the guess-list over the
+        // observation would be a strict loss of information. A document that
+        // suppressed every run reaches both branches, and this is the useful one.
+        if self.suppressed_text_runs > 0 {
+            return Some(format!(
+                "Dropped {} unreadable text run(s): the fonts' character codes could not \
+                 be resolved. Extracted text is incomplete.",
+                self.suppressed_text_runs
+            ));
+        }
         if self.char_count == 0 {
             if self.is_scan_pdf {
                 return Some(
@@ -167,6 +194,7 @@ pub struct QualityAccumulator {
     word_count: usize,
     last_was_non_ws: bool,
     suppressed_ocr_pages: usize,
+    suppressed_text_runs: usize,
 }
 
 impl QualityAccumulator {
@@ -195,12 +223,18 @@ impl QualityAccumulator {
         self.suppressed_ocr_pages += 1;
     }
 
+    /// Record text runs a page lost to a decode the font resolver could not complete.
+    pub fn note_suppressed_text_runs(&mut self, runs: usize) {
+        self.suppressed_text_runs += runs;
+    }
+
     pub fn finalize(self) -> ExtractionQuality {
         ExtractionQuality {
             char_count: self.char_count,
             word_count: self.word_count,
             replacement_char_count: self.replacement_char_count,
             suppressed_ocr_pages: self.suppressed_ocr_pages,
+            suppressed_text_runs: self.suppressed_text_runs,
             ..Default::default()
         }
     }

@@ -237,6 +237,7 @@ pub(crate) fn parse_single_page(
         }
 
         page.ocr_text_suppressed = analyzer.ocr_text_suppressed();
+        page.suppressed_text_runs = analyzer.suppressed_text_runs();
         let (text_ops, image_ops) = analyzer.page_op_counts();
         page.text_op_count = text_ops;
         page.image_op_count = image_ops;

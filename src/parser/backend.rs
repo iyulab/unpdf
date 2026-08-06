@@ -116,6 +116,57 @@ impl DocumentIntegrity {
     }
 }
 
+/// Why a decoder discarded a text run instead of returning what it decoded.
+///
+/// Both reasons are deliberate policy: emitting mojibake would be worse than emitting
+/// nothing. But a discarded run is content the document had and the output does not,
+/// so the reason travels with the (empty) result — see [`DecodedText`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextSuppression {
+    /// A composite (Type0/CID) font whose codes could not be resolved to characters.
+    ///
+    /// The bytes are CID codes; interpreting them as single-byte characters is
+    /// categorically wrong rather than merely lossy, so no threshold is consulted —
+    /// every such run is discarded.
+    CompositeUnresolved,
+    /// A simple font whose fallback decode came out as binary noise.
+    ///
+    /// Judged by control-character density, so unlike [`Self::CompositeUnresolved`]
+    /// this one is a heuristic and can in principle be wrong in either direction.
+    BinaryDensity,
+}
+
+/// The outcome of decoding one text run.
+///
+/// `text` is empty whenever `suppressed` is set; the two fields are separate because
+/// an empty decode and a discarded decode mean opposite things to a caller trying to
+/// report extraction completeness.
+#[derive(Debug, Clone, Default)]
+pub struct DecodedText {
+    /// The decoded text, or empty if nothing was decoded or the run was discarded.
+    pub text: String,
+    /// Set when the decoder discarded a run it could not read.
+    pub suppressed: Option<TextSuppression>,
+}
+
+impl DecodedText {
+    /// A successful decode (possibly of an empty run).
+    pub fn text(text: String) -> Self {
+        Self {
+            text,
+            suppressed: None,
+        }
+    }
+
+    /// A run the decoder discarded, with the reason.
+    pub fn suppressed(reason: TextSuppression) -> Self {
+        Self {
+            text: String::new(),
+            suppressed: Some(reason),
+        }
+    }
+}
+
 /// Abstract interface for PDF document access.
 ///
 /// Implementations provide page enumeration, font info, content stream
@@ -142,7 +193,12 @@ pub trait PdfBackend: Send + Sync {
     /// the C ABI at all. Pass results through
     /// [`sanitize_extracted_text`](super::sanitize::sanitize_extracted_text) —
     /// on the way out, so any decode-quality judgement still sees the raw density.
-    fn decode_text(&self, page: PageId, font_name: &[u8], bytes: &[u8]) -> String;
+    ///
+    /// A decoder that gives up on a run must say so via
+    /// [`DecodedText::suppressed`] rather than returning a bare empty string:
+    /// "this run was discarded" and "this run held no text" look identical to the
+    /// caller otherwise, and the difference is the whole of the caller's diagnostic.
+    fn decode_text(&self, page: PageId, font_name: &[u8], bytes: &[u8]) -> DecodedText;
 
     /// Return raw metadata (version, info dict fields, encryption status).
     fn metadata(&self) -> PdfMetadataRaw;
@@ -307,14 +363,17 @@ impl PdfBackend for RawBackend {
         raw_content::parse_content_stream(data)
     }
 
-    fn decode_text(&self, page: PageId, font_name: &[u8], bytes: &[u8]) -> String {
+    fn decode_text(&self, page: PageId, font_name: &[u8], bytes: &[u8]) -> DecodedText {
         // Sanitising here — at the outermost return, not inside the decode paths —
         // is deliberate: the inner resolver judges suspect decodes by control-character
         // density, and that evidence must survive until after it has decided.
-        sanitize_extracted_text(
-            self.font_resolver
-                .decode_text(&self.doc, page, font_name, bytes),
-        )
+        let decoded = self
+            .font_resolver
+            .decode_text(&self.doc, page, font_name, bytes);
+        DecodedText {
+            text: sanitize_extracted_text(decoded.text),
+            suppressed: decoded.suppressed,
+        }
     }
 
     fn metadata(&self) -> PdfMetadataRaw {
@@ -818,7 +877,7 @@ impl RawFontResolver {
         page: PageId,
         font_name: &[u8],
         bytes: &[u8],
-    ) -> String {
+    ) -> DecodedText {
         let font_obj_id = self.find_font_dict(doc, page, font_name);
         let mut is_identity_h = false;
         let mut is_composite = false;
@@ -828,7 +887,7 @@ impl RawFontResolver {
             if let Some(cmap) = self.get_to_unicode_map(doc, fid) {
                 let decoded = cmap.decode(bytes);
                 if !decoded.is_empty() {
-                    return decoded;
+                    return DecodedText::text(decoded);
                 }
             }
             is_identity_h = self.is_identity_cid_font(doc, fid);
@@ -840,7 +899,7 @@ impl RawFontResolver {
             if let Some(cmap) = self.get_embedded_cmap(doc, fid) {
                 let decoded = cmap.decode(bytes);
                 if !decoded.is_empty() {
-                    return decoded;
+                    return DecodedText::text(decoded);
                 }
             }
         }
@@ -853,7 +912,7 @@ impl RawFontResolver {
                         &registry, &ordering, bytes,
                     ) {
                         if !decoded.is_empty() {
-                            return decoded;
+                            return DecodedText::text(decoded);
                         }
                     }
                 }
@@ -871,7 +930,7 @@ impl RawFontResolver {
                         crate::parser::predefined_cmap::decode(&name, &registry, &ordering, bytes)
                     {
                         if !decoded.is_empty() {
-                            return decoded;
+                            return DecodedText::text(decoded);
                         }
                     }
                 }
@@ -883,7 +942,7 @@ impl RawFontResolver {
             if let Some(enc_map) = self.get_encoding_map(doc, fid) {
                 let decoded = decode_with_encoding_map(bytes, &enc_map);
                 if !decoded.is_empty() {
-                    return decoded;
+                    return DecodedText::text(decoded);
                 }
             }
         }
@@ -893,15 +952,15 @@ impl RawFontResolver {
         // wrong for them and only produces mojibake (e.g. `/Encoding /KSC-EUC-H` fonts
         // without ToUnicode), so emit nothing rather than unreadable text.
         if is_identity_h || is_composite {
-            return String::new();
+            return DecodedText::suppressed(TextSuppression::CompositeUnresolved);
         }
 
         // 6. Final fallback
         let simple = decode_text_simple(bytes);
         if is_likely_binary(&simple) {
-            String::new()
+            DecodedText::suppressed(TextSuppression::BinaryDensity)
         } else {
-            simple
+            DecodedText::text(simple)
         }
     }
 
@@ -1716,7 +1775,9 @@ mod raw_backend_tests {
         };
         let pages = raw.pages();
         let first_page = *pages.values().next().unwrap();
-        let decoded = raw.decode_text(first_page, b"T1_1", &[31, 30, 29, 28, 27]);
+        let decoded = raw
+            .decode_text(first_page, b"T1_1", &[31, 30, 29, 28, 27])
+            .text;
         assert!(
             decoded.contains('사') && decoded.contains('서'),
             "Korean text should be decoded: got {:?}",
