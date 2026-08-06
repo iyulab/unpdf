@@ -575,6 +575,15 @@ if q.pages_incomplete {
 | `declared_page_count` | Page count the document declares (`/Count`), or `None` if that was unreadable too. |
 | `unresolved_page_nodes` | Unreadable page-tree *nodes*. Non-zero means incomplete — **not** a count of lost pages. |
 | `skipped_object_count` | Objects that could not be loaded. Most cost no page (fonts, annotations), so this alone does not imply missing text. |
+| `suppressed_text_runs` | Text runs the font decoder could not read and discarded. Non-zero means text is missing from an otherwise successful extraction. |
+
+`suppressed_text_runs` covers a second way content goes missing without an error. When a
+font's character codes cannot be resolved — a composite (Type0/CID) font with no usable
+`ToUnicode` map, most often — the decoder discards the run rather than emit the raw bytes
+as mojibake. That is the right call, but the discarded text is content the document had
+and the output does not. The count is in *runs* (a `Tj` operand, or one element of a `TJ`
+array), not characters: text that was never decoded has no knowable length. Treat any
+non-zero value as "incomplete"; compare magnitudes between documents, not against a total.
 
 Worth surfacing wherever extraction feeds an index or archive: a page that silently
 never arrived is indistinguishable from a page that never existed, so the omission
