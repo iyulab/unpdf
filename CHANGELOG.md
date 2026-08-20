@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.12.1 — 2026-08-20
+
+### Fixed
+
+- **Batch rendering (`to_markdown()`) now emits a real image link for an image block** —
+  previously it emitted only an HTML comment placeholder and never used the image's resource
+  id, so a document with images produced no usable image reference through the batch API at
+  all. The streaming renderer (and everything built on it) already did this correctly; batch
+  now matches.
+- **Streaming rendering now honors `table_fallback` for a table with merged cells** —
+  previously it always rendered a plain Markdown table regardless of the option, silently
+  losing the merge structure that the batch renderer preserved via HTML fallback. Both
+  renderers now share one table-rendering implementation, so they cannot diverge again.
+
 ## 0.12.0 — 2026-08-06
 
 ### Added
