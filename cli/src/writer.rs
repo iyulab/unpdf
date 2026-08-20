@@ -251,6 +251,16 @@ impl MultiFormatWriter {
                 let cleaned = CleanupPipeline::new(cleanup_opts.clone()).process(&raw);
                 std::fs::write(path, cleaned)?;
             }
+            // Same reasoning for refine: its passes (table shape, section
+            // anchors, frontmatter) need whole-document scope a single
+            // streamed page doesn't have.
+            if let (Some(path), Some(ref refine_opts)) =
+                (self.md_path.as_ref(), &self.render_opts.refine)
+            {
+                let raw = std::fs::read_to_string(path)?;
+                let refined = unpdf::render::refine(&raw, refine_opts);
+                std::fs::write(path, refined)?;
+            }
         }
         if let Some(mut w) = self.txt.take() {
             w.flush()?;

@@ -354,6 +354,13 @@ class TestMarkdownFlags:
         assert unpdf.UNPDF_FLAG_FRONTMATTER == 1
         assert unpdf.UNPDF_FLAG_ESCAPE_SPECIAL == 2
         assert unpdf.UNPDF_FLAG_PAGE_MARKERS == 8
+        assert unpdf.UNPDF_FLAG_REFINE == 16
+
+    def test_refine_does_not_error_when_enabled(self, tmp_path):
+        path = tmp_path / "text.pdf"
+        path.write_bytes(_text_pdf())
+        markdown = unpdf.to_markdown(str(path), unpdf.UNPDF_FLAG_REFINE)
+        assert len(markdown) > 0
 
     def test_page_markers_off_by_default(self, tmp_path):
         path = tmp_path / "text.pdf"

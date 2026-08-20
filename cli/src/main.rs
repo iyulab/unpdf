@@ -30,6 +30,11 @@ pub struct ConvertArgs {
     #[arg(long, value_enum)]
     pub cleanup: Option<CleanupLevel>,
 
+    /// Apply the markdown shape-refinement pass (table shape, list numbering,
+    /// link/image paths, frontmatter, section anchors)
+    #[arg(long)]
+    pub refine: bool,
+
     /// Output formats (comma-separated: md,txt,json)
     #[arg(long, value_delimiter = ',', default_value = "md")]
     pub formats: Vec<String>,
@@ -86,6 +91,11 @@ struct Cli {
     #[arg(long, value_enum)]
     cleanup: Option<CleanupLevel>,
 
+    /// Apply the markdown shape-refinement pass (table shape, list numbering,
+    /// link/image paths, frontmatter, section anchors)
+    #[arg(long)]
+    refine: bool,
+
     /// Suppress warning messages
     #[arg(short, long)]
     quiet: bool,
@@ -122,6 +132,11 @@ enum Commands {
         #[arg(long, value_enum)]
         cleanup: Option<CleanupLevel>,
 
+        /// Apply the markdown shape-refinement pass (table shape, list
+        /// numbering, link/image paths, frontmatter, section anchors)
+        #[arg(long)]
+        refine: bool,
+
         /// Maximum heading level (1-6)
         #[arg(long, default_value = "6")]
         max_heading: u8,
@@ -148,6 +163,11 @@ enum Commands {
         /// Text cleanup preset
         #[arg(long, value_enum)]
         cleanup: Option<CleanupLevel>,
+
+        /// Accepted for API consistency with other subcommands; has no
+        /// effect since plain text output is not markdown.
+        #[arg(long)]
+        refine: bool,
 
         /// Page range (e.g., "1-10", "1,3,5")
         #[arg(long)]
@@ -296,6 +316,7 @@ fn main() {
             frontmatter,
             table_mode,
             cleanup,
+            refine,
             max_heading,
             pages,
             page_markers,
@@ -305,6 +326,7 @@ fn main() {
             frontmatter,
             table_mode,
             cleanup,
+            refine,
             max_heading,
             pages.as_deref(),
             page_markers,
@@ -314,8 +336,12 @@ fn main() {
             input,
             output,
             cleanup,
+            refine,
             pages,
-        }) => cmd_text(&input, output.as_deref(), cleanup, pages.as_deref(), quiet),
+        }) => {
+            let _ = refine;
+            cmd_text(&input, output.as_deref(), cleanup, pages.as_deref(), quiet)
+        }
         Some(Commands::Json {
             input,
             output,
@@ -345,6 +371,7 @@ fn main() {
                     input,
                     output: cli.output,
                     cleanup: cli.cleanup,
+                    refine: cli.refine,
                     formats: vec!["md".to_string()],
                     all: false,
                     no_images: false,
@@ -441,6 +468,9 @@ fn cmd_convert(args: &ConvertArgs) -> Result<bool, Box<dyn std::error::Error>> {
     }
     if let Some(level) = args.cleanup {
         render_opts = render_opts.with_cleanup_preset(level.into());
+    }
+    if args.refine {
+        render_opts = render_opts.with_refine();
     }
     if args.page_markers {
         render_opts = render_opts.with_page_markers(unpdf::PageMarkerStyle::Comment);
@@ -563,6 +593,7 @@ fn cmd_markdown(
     frontmatter: bool,
     table_mode: TableMode,
     cleanup: Option<CleanupLevel>,
+    refine: bool,
     max_heading: u8,
     pages: Option<&str>,
     page_markers: bool,
@@ -593,6 +624,9 @@ fn cmd_markdown(
 
     if let Some(level) = cleanup {
         render_options = render_options.with_cleanup_preset(level.into());
+    }
+    if refine {
+        render_options = render_options.with_refine();
     }
 
     let markdown = unpdf::render::to_markdown(&doc, &render_options)?;

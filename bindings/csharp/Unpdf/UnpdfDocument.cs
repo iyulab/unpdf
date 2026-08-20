@@ -25,12 +25,20 @@ public class MarkdownOptions
     /// </summary>
     public bool PageMarkers { get; set; } = false;
 
+    /// <summary>
+    /// Apply the lossless, idempotent markdown shape-refinement pass (table
+    /// shape, ordered-list numbering, link/image paths, frontmatter, section
+    /// anchors) after rendering. Default: <see langword="false"/>.
+    /// </summary>
+    public bool Refine { get; set; } = false;
+
     internal int ToFlags()
     {
         int flags = 0;
         if (IncludeFrontmatter) flags |= NativeMethods.UNPDF_FLAG_FRONTMATTER;
         if (EscapeSpecialChars) flags |= NativeMethods.UNPDF_FLAG_ESCAPE_SPECIAL;
         if (PageMarkers) flags |= NativeMethods.UNPDF_FLAG_PAGE_MARKERS;
+        if (Refine) flags |= NativeMethods.UNPDF_FLAG_REFINE;
         return flags;
     }
 }

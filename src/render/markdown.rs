@@ -90,7 +90,24 @@ impl MarkdownRenderer {
             output = pipeline.process(&output);
         }
 
-        Ok(output.trim().to_string())
+        let output = output.trim().to_string();
+
+        // Shape-refinement runs last, after cleanup: it never deletes
+        // visible text, so it composes safely with cleanup's noise removal
+        // in either order, but normalizing the shape of what cleanup left
+        // standing reads more naturally than the reverse. This is the
+        // whole-document batch path; the streaming path applies refine as a
+        // separate file-level post-flush pass instead (see the CLI writer)
+        // because refine's passes (table shape, section anchors,
+        // frontmatter) need whole-document scope that a single streamed
+        // page doesn't have.
+        #[cfg(feature = "refine")]
+        let output = match self.options.refine {
+            Some(ref refine_options) => unrefine::refine(&output, refine_options),
+            None => output,
+        };
+
+        Ok(output)
     }
 
     fn render_page(&mut self, output: &mut String, page: &Page) {
@@ -326,6 +343,64 @@ mod tests {
         let result = to_markdown(&doc, &options).unwrap();
         // Exclamation mark is NOT escaped (only special with brackets for images)
         assert!(result.contains("Hello, world!"));
+    }
+
+    /// `RenderOptions::default()` leaves `refine` off — the last line of
+    /// defense protecting deployed consumers. A backslash-separated link
+    /// path is exactly the kind of value `unrefine`'s link normalization
+    /// pass would touch, so its survival here proves refine did not run.
+    #[cfg(feature = "refine")]
+    #[test]
+    fn test_refine_off_by_default_leaves_backslash_link_paths_untouched() {
+        let mut doc = Document::new();
+        let mut page = Page::letter(1);
+        let mut para = Paragraph::new();
+        para.content.push(InlineContent::Link {
+            text: "doc".to_string(),
+            url: "sub\\folder\\file.pdf".to_string(),
+            title: None,
+        });
+        page.add_paragraph(para);
+        doc.add_page(page);
+
+        let options = RenderOptions::default();
+        assert!(options.refine.is_none());
+
+        let result = to_markdown(&doc, &options).unwrap();
+        assert!(
+            result.contains("sub\\folder\\file.pdf"),
+            "refine must not run when RenderOptions::default() leaves it off: {result:?}"
+        );
+    }
+
+    /// `render_internal` wires `RenderOptions.refine` into `unrefine::refine`
+    /// after cleanup -- this exercises that wiring end to end, not
+    /// `unrefine`'s own pass logic (that's `unrefine`'s test suite).
+    #[cfg(feature = "refine")]
+    #[test]
+    fn test_refine_on_normalizes_backslash_link_paths() {
+        let mut doc = Document::new();
+        let mut page = Page::letter(1);
+        let mut para = Paragraph::new();
+        para.content.push(InlineContent::Link {
+            text: "doc".to_string(),
+            url: "sub\\folder\\file.pdf".to_string(),
+            title: None,
+        });
+        page.add_paragraph(para);
+        doc.add_page(page);
+
+        let options = RenderOptions::default().with_refine();
+        let result = to_markdown(&doc, &options).unwrap();
+
+        assert!(
+            result.contains("sub/folder/file.pdf"),
+            "refine should normalize backslashes to forward slashes: {result:?}"
+        );
+        assert!(
+            !result.contains('\\'),
+            "no backslash should remain: {result:?}"
+        );
     }
 
     #[test]

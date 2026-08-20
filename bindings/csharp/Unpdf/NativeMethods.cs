@@ -51,6 +51,7 @@ internal static class NativeMethods
     // Bit 4 is retired: it named a paragraph-spacing option that never reached the
     // renderer. Retired bits are not reused.
     public const int UNPDF_FLAG_PAGE_MARKERS = 8;
+    public const int UNPDF_FLAG_REFINE = 16;
 
     // JSON format options
     public const int UNPDF_JSON_PRETTY = 0;

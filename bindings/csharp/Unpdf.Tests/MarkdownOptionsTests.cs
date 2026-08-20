@@ -54,4 +54,21 @@ public class MarkdownOptionsTests
         Assert.StartsWith("---", markdown);
         Assert.Contains("<!-- page 1 -->", markdown);
     }
+
+    [Fact]
+    public void Refine_Off_ByDefault()
+    {
+        var opts = new MarkdownOptions();
+        Assert.False(opts.Refine);
+    }
+
+    [Fact]
+    public void Refine_DoesNotErrorWhenEnabled()
+    {
+        using var doc = UnpdfDocument.ParseBytes(PdfFixtures.TextPdf());
+
+        var markdown = doc.ToMarkdown(new MarkdownOptions { Refine = true });
+
+        Assert.NotEmpty(markdown);
+    }
 }

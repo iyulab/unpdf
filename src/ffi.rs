@@ -75,6 +75,7 @@ pub const UNPDF_FLAG_ESCAPE_SPECIAL: u32 = 2;
 /// renderer, so setting it did nothing. Retired bits are not reused: a caller still
 /// passing it gets the default rendering, which is what it always produced.
 pub const UNPDF_FLAG_PAGE_MARKERS: u32 = 8;
+pub const UNPDF_FLAG_REFINE: u32 = 16;
 
 /// Build render options from the flag bitmask.
 ///
@@ -90,6 +91,10 @@ fn render_options_from_flags(flags: u32) -> RenderOptions {
     }
     if flags & UNPDF_FLAG_PAGE_MARKERS != 0 {
         options.page_markers = PageMarkerStyle::Comment;
+    }
+    #[cfg(feature = "refine")]
+    if flags & UNPDF_FLAG_REFINE != 0 {
+        options = options.with_refine();
     }
     options
 }

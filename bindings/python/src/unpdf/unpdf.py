@@ -13,6 +13,7 @@ from ._native import (
     UNPDF_FLAG_ESCAPE_SPECIAL,
     UNPDF_FLAG_FRONTMATTER,
     UNPDF_FLAG_PAGE_MARKERS,
+    UNPDF_FLAG_REFINE,
     UNPDF_JSON_COMPACT,
     UNPDF_JSON_PRETTY,
 )
@@ -136,8 +137,9 @@ def to_markdown(source: PdfSource, flags: int = 0) -> str:
         source: Path to the PDF file (``str`` or ``os.PathLike``), or the
             PDF's own bytes.
         flags: Bitwise OR of ``UNPDF_FLAG_FRONTMATTER``,
-            ``UNPDF_FLAG_ESCAPE_SPECIAL`` and ``UNPDF_FLAG_PAGE_MARKERS``
-            (optional). All are importable from ``unpdf``.
+            ``UNPDF_FLAG_ESCAPE_SPECIAL``, ``UNPDF_FLAG_PAGE_MARKERS`` and
+            ``UNPDF_FLAG_REFINE`` (optional). All are importable from
+            ``unpdf``.
 
     Returns:
         The extracted content as Markdown.

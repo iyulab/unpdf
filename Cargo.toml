@@ -22,10 +22,15 @@ name = "unpdf"
 crate-type = ["lib", "cdylib"]
 
 [features]
-default = ["fast-parse"]
+default = ["fast-parse", "refine"]
 ffi = []
 async = ["tokio"]
 fast-parse = []  # Enable nom_parser for faster PDF parsing
+# Shape-refinement pass (RenderOptions.refine). Pulls in unrefine, and with
+# it pulldown-cmark + pulldown-cmark-to-cmark (unpdf has no other use for a
+# CommonMark parser). On by default for native/CLI/FFI builds; unpdf-wasm
+# excludes it (see its Cargo.toml) to keep the wasm bundle delta negligible.
+refine = ["dep:unrefine"]
 
 [dependencies]
 # Serialization
@@ -60,6 +65,9 @@ log = "0.4"
 
 # Optional: Async I/O
 tokio = { version = "1.42", features = ["rt", "fs"], optional = true }
+
+# Lossless, idempotent markdown shape-refinement pass (RenderOptions.refine)
+unrefine = { version = "0.1", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rayon = "1.10"

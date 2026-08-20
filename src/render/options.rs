@@ -34,6 +34,14 @@ pub struct RenderOptions {
     /// Text cleanup options
     pub cleanup: Option<CleanupOptions>,
 
+    /// Shape-refinement pass ([`unrefine::refine`]) applied after cleanup.
+    /// Lossless and idempotent — normalizes table shape, ordered-list
+    /// numbering, link/image paths, frontmatter, and section anchors without
+    /// deleting any visible text. If `None` (the default), no refinement is
+    /// performed and output is unchanged from pre-`refine` behavior.
+    #[cfg(feature = "refine")]
+    pub refine: Option<unrefine::RefineOptions>,
+
     /// Page selection
     pub page_selection: PageSelection,
 
@@ -107,6 +115,13 @@ impl RenderOptions {
         self
     }
 
+    /// Enable the shape-refinement pass with default options.
+    #[cfg(feature = "refine")]
+    pub fn with_refine(mut self) -> Self {
+        self.refine = Some(unrefine::RefineOptions::default());
+        self
+    }
+
     /// Enable minimal cleanup (Unicode normalization only).
     pub fn with_minimal_cleanup(mut self) -> Self {
         self.cleanup = Some(CleanupOptions::from_preset(super::CleanupPreset::Minimal));
@@ -170,6 +185,8 @@ impl Default for RenderOptions {
             list_marker: '-',
             escape_special_chars: true,
             cleanup: Some(CleanupOptions::standard()), // Enable standard cleanup by default
+            #[cfg(feature = "refine")]
+            refine: None,
             page_selection: PageSelection::All,
             line_width: 0,
             collect_stats: false,
