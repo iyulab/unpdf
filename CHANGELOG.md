@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.12.2 — 2026-08-20
+
+### Fixed
+
+- **A link or image destination containing a space is now wrapped in `<...>`** —
+  previously a raw space in the destination (e.g. a resource path built from a
+  filename with a space in it) produced Markdown that is not valid CommonMark
+  outside `<...>` at all, so a downstream consumer read the literal brackets and
+  parentheses as text instead of a link. A destination containing a literal `<`
+  or `>` is now backslash-escaped rather than percent-encoded, so the escaped
+  target still resolves to the original path.
+
 ## 0.12.1 — 2026-08-20
 
 ### Fixed
