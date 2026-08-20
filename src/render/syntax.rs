@@ -119,7 +119,14 @@ fn render_html_row(output: &mut String, row: &TableRow, is_header: bool) {
 /// hyperlink target, a resource id) that can legitimately contain either.
 pub(super) fn format_link_destination(url: &str) -> String {
     if url.contains(' ') || url.contains(['<', '>']) {
-        format!("<{}>", url.replace('<', "%3C").replace('>', "%3E"))
+        // Backslash-escape, not percent-encode: a link destination is data, and
+        // percent-encoding `<`/`>` would silently change the target (e.g. a real
+        // file path) instead of just escaping it for Markdown syntax.
+        let escaped = url
+            .replace('\\', "\\\\")
+            .replace('<', "\\<")
+            .replace('>', "\\>");
+        format!("<{}>", escaped)
     } else {
         url.to_string()
     }
@@ -193,7 +200,14 @@ mod tests {
 
     #[test]
     fn test_format_link_destination_escapes_angle_brackets_inside_the_wrapper() {
-        assert_eq!(format_link_destination("a<b>c d"), "<a%3Cb%3Ec d>");
+        assert_eq!(format_link_destination("a<b>c d"), "<a\\<b\\>c d>");
+    }
+
+    #[test]
+    fn test_format_link_destination_escapes_backslash_before_angle_brackets() {
+        // Escaping order matters: escaping `<`/`>` first would double-escape the
+        // backslashes the escaping itself introduces.
+        assert_eq!(format_link_destination("a\\b c"), "<a\\\\b c>");
     }
 
     #[test]
