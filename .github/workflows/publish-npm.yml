@@ -17,10 +17,12 @@ jobs:
 
       - name: Verify requested version matches Cargo.toml
         if: inputs.version != ''
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
         run: |
           actual=$(grep -m1 '^version' Cargo.toml | sed -E 's/version = "(.*)"/\1/')
-          if [ "${{ inputs.version }}" != "$actual" ]; then
-            echo "::error::Requested version ${{ inputs.version }} does not match Cargo.toml version $actual"
+          if [ "$REQUESTED_VERSION" != "$actual" ]; then
+            echo "::error::Requested version $REQUESTED_VERSION does not match Cargo.toml version $actual"
             exit 1
           fi
 
