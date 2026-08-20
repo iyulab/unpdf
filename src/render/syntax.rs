@@ -109,6 +109,22 @@ fn render_html_row(output: &mut String, row: &TableRow, is_header: bool) {
     output.push_str("</tr>\n");
 }
 
+/// Format a link/image destination for `[text](destination)` syntax, wrapping it in
+/// `<...>` when it contains a character CommonMark's bare-parenthesis destination form
+/// forbids. A destination with a raw space is not valid CommonMark outside `<...>` at
+/// all -- `pulldown-cmark` does not even produce a `Link`/`Image` event for it, so a
+/// consumer sees the brackets as literal text instead of a link (found while building
+/// `unrefine`, cycle-23; `<`/`>` themselves are the only other characters the bare form
+/// forbids). Both renderers build a destination from data the document held (a
+/// hyperlink target, a resource id) that can legitimately contain either.
+pub(super) fn format_link_destination(url: &str) -> String {
+    if url.contains(' ') || url.contains(['<', '>']) {
+        format!("<{}>", url.replace('<', "%3C").replace('>', "%3E"))
+    } else {
+        url.to_string()
+    }
+}
+
 /// Escape the characters that would otherwise be read as Markdown syntax.
 pub(super) fn escape_markdown(text: &str) -> String {
     let mut result = String::with_capacity(text.len());
@@ -161,6 +177,24 @@ pub(super) fn to_roman(mut num: u32) -> String {
 mod tests {
     use super::*;
     use crate::model::{TableCell, TableRow};
+
+    #[test]
+    fn test_format_link_destination_leaves_a_clean_destination_alone() {
+        assert_eq!(format_link_destination("images/a.png"), "images/a.png");
+    }
+
+    #[test]
+    fn test_format_link_destination_wraps_a_destination_containing_a_space() {
+        assert_eq!(
+            format_link_destination("my folder/file.png"),
+            "<my folder/file.png>"
+        );
+    }
+
+    #[test]
+    fn test_format_link_destination_escapes_angle_brackets_inside_the_wrapper() {
+        assert_eq!(format_link_destination("a<b>c d"), "<a%3Cb%3Ec d>");
+    }
 
     #[test]
     fn test_render_table_empty_is_empty_string() {

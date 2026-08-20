@@ -6,7 +6,7 @@ use crate::model::{
     TextRun, TextStyle,
 };
 
-use super::syntax::{escape_markdown, render_table, to_roman};
+use super::syntax::{escape_markdown, format_link_destination, render_table, to_roman};
 use super::{CleanupPipeline, ExtractionStats, PageMarkerStyle, RenderOptions, RenderResult};
 
 /// Convert a document to Markdown.
@@ -225,10 +225,11 @@ impl MarkdownRenderer {
                     }
                 }
                 InlineContent::Link { text, url, title } => {
+                    let dest = format_link_destination(url);
                     if let Some(ref t) = title {
-                        output.push_str(&format!("[{}]({} \"{}\")", text, url, t));
+                        output.push_str(&format!("[{}]({} \"{}\")", text, dest, t));
                     } else {
-                        output.push_str(&format!("[{}]({})", text, url));
+                        output.push_str(&format!("[{}]({})", text, dest));
                     }
                 }
                 InlineContent::Image {
@@ -237,7 +238,7 @@ impl MarkdownRenderer {
                 } => {
                     let alt = alt_text.as_deref().unwrap_or("");
                     let path = format!("{}{}", self.options.image_path_prefix, resource_id);
-                    output.push_str(&format!("![{}]({})", alt, path));
+                    output.push_str(&format!("![{}]({})", alt, format_link_destination(&path)));
                 }
             }
         }
@@ -287,7 +288,11 @@ impl MarkdownRenderer {
     fn render_image(&self, output: &mut String, resource_id: &str, alt_text: Option<&str>) {
         let alt = alt_text.unwrap_or("");
         let path = format!("{}{}", self.options.image_path_prefix, resource_id);
-        output.push_str(&format!("![{}]({})\n\n", alt, path));
+        output.push_str(&format!(
+            "![{}]({})\n\n",
+            alt,
+            format_link_destination(&path)
+        ));
     }
 }
 
@@ -349,6 +354,30 @@ mod tests {
         assert!(
             result.contains("![A photo](images/page1_Im1.jpg)"),
             "expected a real image link, got:\n{result}"
+        );
+    }
+
+    #[test]
+    fn test_link_destination_with_a_space_is_angle_wrapped() {
+        // Regression: a bare `(dest with space)` is not valid CommonMark syntax at all --
+        // pulldown-cmark never produces a Link event for it, so a consumer sees the
+        // brackets as literal text instead of a link (unrefine cycle-23 finding).
+        let mut doc = Document::new();
+        let mut page = Page::letter(1);
+        let mut para = Paragraph::new();
+        para.content.push(InlineContent::Link {
+            text: "doc".to_string(),
+            url: "my folder/file.png".to_string(),
+            title: None,
+        });
+        page.elements.push(Block::Paragraph(para));
+        doc.add_page(page);
+
+        let options = RenderOptions::new();
+        let result = to_markdown(&doc, &options).unwrap();
+        assert!(
+            result.contains("[doc](<my folder/file.png>)"),
+            "destination not angle-wrapped: {result:?}"
         );
     }
 

@@ -32,7 +32,7 @@
 
 use crate::model::{Block, Document, Metadata};
 
-use super::syntax::{escape_markdown, render_table, to_roman};
+use super::syntax::{escape_markdown, format_link_destination, render_table, to_roman};
 use super::{PageMarkerStyle, RenderOptions};
 
 /// Events emitted during streaming rendering.
@@ -218,7 +218,7 @@ impl<'a> StreamingRenderer<'a> {
             } => {
                 let alt = alt_text.as_deref().unwrap_or("");
                 let path = format!("{}{}", self.options.image_path_prefix, resource_id);
-                format!("![{}]({})\n\n", alt, path)
+                format!("![{}]({})\n\n", alt, format_link_destination(&path))
             }
             Block::HorizontalRule => "\n---\n\n".to_string(),
             Block::PageBreak | Block::SectionBreak => "\n\n".to_string(),
@@ -240,10 +240,11 @@ impl<'a> StreamingRenderer<'a> {
                     }
                 }
                 crate::model::InlineContent::Link { text, url, title } => {
+                    let dest = format_link_destination(url);
                     if let Some(t) = title {
-                        output.push_str(&format!("[{}]({} \"{}\")", text, url, t));
+                        output.push_str(&format!("[{}]({} \"{}\")", text, dest, t));
                     } else {
-                        output.push_str(&format!("[{}]({})", text, url));
+                        output.push_str(&format!("[{}]({})", text, dest));
                     }
                 }
                 crate::model::InlineContent::Image {
@@ -252,7 +253,7 @@ impl<'a> StreamingRenderer<'a> {
                 } => {
                     let alt = alt_text.as_deref().unwrap_or("");
                     let path = format!("{}{}", self.options.image_path_prefix, resource_id);
-                    output.push_str(&format!("![{}]({})", alt, path));
+                    output.push_str(&format!("![{}]({})", alt, format_link_destination(&path)));
                 }
             }
         }
