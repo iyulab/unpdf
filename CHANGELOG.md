@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.13.0 — 2026-08-20
+
+### Added
+
+- **Markdown shape-refinement pass** (`RenderOptions.refine`, CLI `--refine`, C-ABI
+  `UNPDF_FLAG_REFINE`, C# `MarkdownOptions.Refine`, Python `to_markdown(..., flags=
+  UNPDF_FLAG_REFINE)`) — a lossless, idempotent post-processing pass
+  ([`unrefine`](https://crates.io/crates/unrefine)) that normalizes table shape,
+  ordered-list numbering, link/image path separators, frontmatter formatting, and
+  assigns a GitHub-compatible slug to every heading. Never deletes visible text. Off
+  by default — existing output is unaffected.
+- Gated behind a new `refine` cargo feature (on by default). `unpdf-wasm` excludes
+  it: `unrefine` needs a fresh `pulldown-cmark`/`pulldown-cmark-to-cmark` that unpdf
+  otherwise has no use for — with the feature off, the wasm bundle delta is
+  negligible (+54 bytes).
+
 ## 0.12.2 — 2026-08-20
 
 ### Fixed
