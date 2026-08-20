@@ -2,14 +2,12 @@
 
 use crate::error::Result;
 use crate::model::{
-    Alignment, Block, Document, InlineContent, ListInfo, ListStyle, NumberStyle, Page, Paragraph,
-    Table, TextRun, TextStyle,
+    Block, Document, InlineContent, ListInfo, ListStyle, NumberStyle, Page, Paragraph, Table,
+    TextRun, TextStyle,
 };
 
-use super::syntax::{escape_markdown, to_roman};
-use super::{
-    CleanupPipeline, ExtractionStats, PageMarkerStyle, RenderOptions, RenderResult, TableFallback,
-};
+use super::syntax::{escape_markdown, render_table, to_roman};
+use super::{CleanupPipeline, ExtractionStats, PageMarkerStyle, RenderOptions, RenderResult};
 
 /// Convert a document to Markdown.
 pub fn to_markdown(doc: &Document, options: &RenderOptions) -> Result<String> {
@@ -283,101 +281,13 @@ impl MarkdownRenderer {
     }
 
     fn render_table(&self, output: &mut String, table: &Table) {
-        if table.is_empty() {
-            return;
-        }
-
-        // Use HTML for complex tables
-        if table.has_merged_cells() && self.options.table_fallback == TableFallback::Html {
-            self.render_table_html(output, table);
-            return;
-        }
-
-        // Standard Markdown table
-        self.render_table_markdown(output, table);
+        output.push_str(&render_table(table, &self.options));
     }
 
-    fn render_table_markdown(&self, output: &mut String, table: &Table) {
-        let col_count = table.column_count();
-        if col_count == 0 {
-            return;
-        }
-
-        // Render rows
-        for (i, row) in table.rows.iter().enumerate() {
-            output.push('|');
-            for cell in &row.cells {
-                let content = cell.plain_text().replace('\n', " ");
-                output.push_str(&format!(" {} |", content.trim()));
-            }
-            output.push('\n');
-
-            // Add separator after header row
-            if i == 0 || (table.header_rows > 0 && i == table.header_rows as usize - 1) {
-                output.push('|');
-                for cell in &row.cells {
-                    let align_marker = match cell.alignment {
-                        Alignment::Left => " --- |",
-                        Alignment::Center => " :---: |",
-                        Alignment::Right => " ---: |",
-                        Alignment::Justify => " --- |",
-                    };
-                    output.push_str(align_marker);
-                }
-                output.push('\n');
-            }
-        }
-
-        output.push('\n');
-    }
-
-    fn render_table_html(&self, output: &mut String, table: &Table) {
-        output.push_str("<table>\n");
-
-        // Header
-        if table.header_rows > 0 {
-            output.push_str("<thead>\n");
-            for row in table.header() {
-                self.render_html_row(output, row, true);
-            }
-            output.push_str("</thead>\n");
-        }
-
-        // Body
-        output.push_str("<tbody>\n");
-        for row in table.body() {
-            self.render_html_row(output, row, false);
-        }
-        output.push_str("</tbody>\n");
-
-        output.push_str("</table>\n\n");
-    }
-
-    fn render_html_row(&self, output: &mut String, row: &crate::model::TableRow, is_header: bool) {
-        let tag = if is_header { "th" } else { "td" };
-        output.push_str("<tr>");
-
-        for cell in &row.cells {
-            let mut attrs = String::new();
-            if cell.rowspan > 1 {
-                attrs.push_str(&format!(" rowspan=\"{}\"", cell.rowspan));
-            }
-            if cell.colspan > 1 {
-                attrs.push_str(&format!(" colspan=\"{}\"", cell.colspan));
-            }
-
-            let content = cell.plain_text();
-            output.push_str(&format!("<{}{}>", tag, attrs));
-            output.push_str(&content);
-            output.push_str(&format!("</{}>", tag));
-        }
-
-        output.push_str("</tr>\n");
-    }
-
-    fn render_image(&self, output: &mut String, _resource_id: &str, alt_text: Option<&str>) {
-        let alt = alt_text.unwrap_or("Image");
-        output.push_str(&format!("\n<!-- [{}] -->\n\n", alt));
+    fn render_image(&self, output: &mut String, resource_id: &str, alt_text: Option<&str>) {
+        let alt = alt_text.unwrap_or("");
+        let path = format!("{}{}", self.options.image_path_prefix, resource_id);
+        output.push_str(&format!("![{}]({})\n\n", alt, path));
     }
 }
 
@@ -411,6 +321,35 @@ mod tests {
         let result = to_markdown(&doc, &options).unwrap();
         // Exclamation mark is NOT escaped (only special with brackets for images)
         assert!(result.contains("Hello, world!"));
+    }
+
+    #[test]
+    fn test_render_block_image_emits_a_real_markdown_link() {
+        // Regression: `render_image` used to ignore `resource_id` (it was
+        // even underscore-prefixed) and emit only an HTML comment, so a
+        // library consumer calling `to_markdown()` directly never got a
+        // usable image reference -- `StreamingRenderer::render_block`
+        // (used by both `collect_content` and the CLI writer) already built
+        // a real `![alt](path)` link from `image_path_prefix` + resource id;
+        // batch had silently diverged from it.
+        let mut doc = Document::new();
+        let mut page = Page::letter(1);
+        page.elements.push(Block::Image {
+            resource_id: "page1_Im1.jpg".to_string(),
+            alt_text: Some("A photo".to_string()),
+            width: None,
+            height: None,
+            x: None,
+            y: None,
+        });
+        doc.add_page(page);
+
+        let options = RenderOptions::new().with_image_prefix("images/");
+        let result = to_markdown(&doc, &options).unwrap();
+        assert!(
+            result.contains("![A photo](images/page1_Im1.jpg)"),
+            "expected a real image link, got:\n{result}"
+        );
     }
 
     #[test]

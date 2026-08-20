@@ -32,7 +32,7 @@
 
 use crate::model::{Block, Document, Metadata};
 
-use super::syntax::{escape_markdown, to_roman};
+use super::syntax::{escape_markdown, render_table, to_roman};
 use super::{PageMarkerStyle, RenderOptions};
 
 /// Events emitted during streaming rendering.
@@ -210,44 +210,7 @@ impl<'a> StreamingRenderer<'a> {
                 output.push_str("\n\n");
                 output
             }
-            Block::Table(t) => {
-                if t.is_empty() {
-                    return String::new();
-                }
-
-                let mut output = String::new();
-                let col_count = t.column_count();
-                if col_count == 0 {
-                    return output;
-                }
-
-                // Render rows
-                for (i, row) in t.rows.iter().enumerate() {
-                    output.push('|');
-                    for cell in &row.cells {
-                        let content = cell.plain_text().replace('\n', " ");
-                        output.push_str(&format!(" {} |", content.trim()));
-                    }
-                    output.push('\n');
-
-                    // Add separator after header row
-                    if i == 0 || (t.header_rows > 0 && i == t.header_rows as usize - 1) {
-                        output.push('|');
-                        for cell in &row.cells {
-                            let align_marker = match cell.alignment {
-                                crate::model::Alignment::Left => " --- |",
-                                crate::model::Alignment::Center => " :---: |",
-                                crate::model::Alignment::Right => " ---: |",
-                                crate::model::Alignment::Justify => " --- |",
-                            };
-                            output.push_str(align_marker);
-                        }
-                        output.push('\n');
-                    }
-                }
-                output.push('\n');
-                output
-            }
+            Block::Table(t) => render_table(t, &self.options),
             Block::Image {
                 resource_id,
                 alt_text,
@@ -523,6 +486,35 @@ mod tests {
             Some(RenderEvent::DocumentStart { .. })
         ));
         assert!(matches!(events.last(), Some(RenderEvent::DocumentEnd)));
+    }
+
+    #[test]
+    fn test_streaming_renderer_honors_html_table_fallback() {
+        // Regression: streaming's own copy of the table body never looked at
+        // `table_fallback` at all, so a merged-cell table rendered as HTML
+        // via `to_markdown()` but as a plain table (silently losing the
+        // merge) via `StreamingRenderer`/the CLI, depending only on which
+        // renderer happened to be driving (cycle-26, ISSUE-unpdf-20260730-
+        // 205711-*). Both now delegate to `syntax::render_table`.
+        use crate::model::{Block, TableCell, TableRow};
+
+        let mut table = crate::model::Table::new();
+        table.add_row(TableRow::new(vec![TableCell::text("Merged").colspan(2)]));
+
+        let mut doc = Document::new();
+        let mut page = Page::letter(1);
+        page.elements.push(Block::Table(table));
+        doc.add_page(page);
+
+        let options =
+            RenderOptions::default().with_table_fallback(crate::render::TableFallback::Html);
+        let renderer = StreamingRenderer::new(&doc, options);
+        let content = collect_content(renderer);
+
+        assert!(
+            content.contains("<table>") && content.contains("colspan=\"2\""),
+            "expected HTML fallback for a merged-cell table, got:\n{content}"
+        );
     }
 
     #[test]
