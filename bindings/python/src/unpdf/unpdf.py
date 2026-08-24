@@ -318,7 +318,10 @@ def get_page_stats(source: PdfSource, page_number: int) -> dict[str, Any]:
 
     Returns:
         Dictionary with ``page``, ``text_op_count``, ``image_op_count``,
-        ``ocr_text_suppressed``.
+        ``ocr_text_suppressed``, ``suppressed_text_runs``. ``suppressed_text_runs``
+        is this page's share of the document-level total reported by
+        :func:`get_extraction_quality` — the count of text runs the font decoder
+        could not read and discarded on this page.
 
     Raises:
         UnpdfError: If parsing fails or the page is out of range

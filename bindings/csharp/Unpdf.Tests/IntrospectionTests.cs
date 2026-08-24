@@ -54,6 +54,22 @@ public class IntrospectionTests
         Assert.Throws<UnpdfException>(() => doc.GetPageStats(99));
     }
 
+    /// <summary>
+    /// The per-page count is what the document-level total is built from, so a
+    /// consumer discriminating causes across pages in a mixed-quality document
+    /// needs it on <see cref="PageStats"/> too, not just <see cref="ExtractionQuality"/>.
+    /// </summary>
+    [Fact]
+    public void GetPageStats_UnresolvableFont_ReportsSuppressedTextRuns()
+    {
+        using var doc = UnpdfDocument.ParseBytes(PdfFixtures.SuppressedTextRunPdf());
+        var stats = doc.GetPageStats(1);
+        var quality = doc.GetExtractionQuality();
+
+        Assert.True(stats.SuppressedTextRuns > 0);
+        Assert.Equal(quality.SuppressedTextRuns, stats.SuppressedTextRuns);
+    }
+
     [Fact]
     public void GetExtractionQuality_IntactPdf_ReportsComplete()
     {
@@ -138,6 +154,30 @@ internal static class PdfFixtures
                 "/Resources<</Font<</F1 5 0 R>>>>/Contents 4 0 R>>",
             StreamObject($"<</Length {content.Length}>>", content),
             "<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>",
+        });
+    }
+
+    /// <summary>
+    /// One page whose text uses an Identity-H composite font with no
+    /// <c>ToUnicode</c> map and no embedded cmap — the decoder has no way to turn
+    /// its CIDs into characters, so the run is discarded and counted as suppressed.
+    /// Mirrors the Rust fixture in <c>tests/suppression_reporting_test.rs</c>.
+    /// </summary>
+    public static byte[] SuppressedTextRunPdf()
+    {
+        // Two CIDs (\x01\x42, \x01\x43) — byte-wise Latin-1 reading would be wrong.
+        var content = "BT /F1 12 Tf 72 720 Td (BC) Tj ET\n";
+        return Assemble(new[]
+        {
+            "<</Type/Catalog/Pages 2 0 R>>",
+            "<</Type/Pages/Kids[3 0 R]/Count 1>>",
+            "<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]" +
+                "/Resources<</Font<</F1 5 0 R>>>>/Contents 4 0 R>>",
+            StreamObject($"<</Length {content.Length}>>", content),
+            "<</Type/Font/Subtype/Type0/BaseFont/NoMap/Encoding/Identity-H" +
+                "/DescendantFonts[6 0 R]>>",
+            "<</Type/Font/Subtype/CIDFontType2/BaseFont/NoMap" +
+                "/CIDSystemInfo<</Registry(Adobe)/Ordering(Identity)/Supplement 0>>>>",
         });
     }
 

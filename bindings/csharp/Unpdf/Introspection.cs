@@ -134,4 +134,12 @@ public sealed class PageStats
     /// <summary>Whether this page's unreadable OCR text layer was dropped.</summary>
     [JsonPropertyName("ocr_text_suppressed")]
     public bool OcrTextSuppressed { get; init; }
+
+    /// <summary>
+    /// Number of text runs the font decoder could not read and discarded on this page.
+    /// Same signal as <see cref="ExtractionQuality.SuppressedTextRuns"/>, broken down
+    /// per page — the document-level total is the sum of this field across all pages.
+    /// </summary>
+    [JsonPropertyName("suppressed_text_runs")]
+    public long SuppressedTextRuns { get; init; }
 }

@@ -129,6 +129,27 @@ def _lost_page_pdf() -> bytes:
     ])
 
 
+def _suppressed_text_run_pdf() -> bytes:
+    """One page whose text uses an Identity-H composite font with no
+    ``ToUnicode`` map and no embedded cmap — the decoder has no way to turn its
+    CIDs into characters, so the run is discarded and counted as suppressed.
+
+    Mirrors the Rust fixture in ``tests/suppression_reporting_test.rs``.
+    """
+    content = b"BT /F1 12 Tf 72 720 Td (BC) Tj ET\n"
+    return _assemble([
+        b"<</Type/Catalog/Pages 2 0 R>>",
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>",
+        b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]"
+        b"/Resources<</Font<</F1 5 0 R>>>>/Contents 4 0 R>>",
+        _stream_object(b"<</Length %d>>" % len(content), content),
+        b"<</Type/Font/Subtype/Type0/BaseFont/NoMap/Encoding/Identity-H"
+        b"/DescendantFonts[6 0 R]>>",
+        b"<</Type/Font/Subtype/CIDFontType2/BaseFont/NoMap"
+        b"/CIDSystemInfo<</Registry(Adobe)/Ordering(Identity)/Supplement 0>>>>",
+    ])
+
+
 class TestInputForms:
     """A PDF may be given as a path, a path-like object, or its own bytes.
 
@@ -263,6 +284,18 @@ class TestGetPageStats:
         pdf_file.write_bytes(_text_pdf())
         with pytest.raises(RuntimeError):
             unpdf.get_page_stats(str(pdf_file), 99)
+
+    def test_unresolvable_font_reports_suppressed_text_runs(self, tmp_path):
+        """The per-page count is what the document-level total is built from, so
+        a consumer discriminating causes across pages in a mixed-quality document
+        needs it here too, not just from ``get_extraction_quality``.
+        """
+        pdf_file = tmp_path / "suppressed.pdf"
+        pdf_file.write_bytes(_suppressed_text_run_pdf())
+        stats = unpdf.get_page_stats(str(pdf_file), 1)
+        quality = unpdf.get_extraction_quality(str(pdf_file))
+        assert stats["suppressed_text_runs"] > 0
+        assert stats["suppressed_text_runs"] == quality["suppressed_text_runs"]
 
 
 class TestToJson:
