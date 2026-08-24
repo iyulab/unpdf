@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.14.0 — 2026-08-24
+
+### Added
+
+- **`PageStats.SuppressedTextRuns` (C#) / `suppressed_text_runs` (Python `get_page_stats`)** —
+  the per-page count of text runs the font decoder could not read and discarded. The
+  C ABI (`unpdf_page_stats`) has reported this alongside `ocr_text_suppressed` since
+  0.12.0; the document-level total (`ExtractionQuality.SuppressedTextRuns` /
+  `extraction_quality()["suppressed_text_runs"]`) was already exposed, but neither
+  binding surfaced the same signal per page — so a consumer discriminating causes
+  across pages in a mixed-quality document (e.g. some pages losing text to an
+  unresolvable font while others are clean) had no way to attribute the loss to a
+  specific page, unlike the identically-shaped `OcrTextSuppressed` signal. The
+  document-level total is unchanged and remains the sum of the per-page counts.
+
 ## 0.13.0 — 2026-08-20
 
 ### Added
