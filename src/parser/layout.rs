@@ -123,8 +123,9 @@ pub(crate) fn normalize_dot_leaders(spans: Vec<TextSpan>) -> Vec<TextSpan> {
         // A purely-numeric span immediately after the run is the page number.
         if let Some(page_span) = spans.get(j) {
             let digits = page_span.text.trim();
-            let is_page_number =
-                !digits.is_empty() && digits.len() <= 5 && digits.chars().all(|c| c.is_ascii_digit());
+            let is_page_number = !digits.is_empty()
+                && digits.len() <= 5
+                && digits.chars().all(|c| c.is_ascii_digit());
             if is_page_number {
                 let mut renumbered = page_span.clone();
                 renumbered.text = format!("(p.{})", digits);
@@ -594,6 +595,17 @@ impl<'a> LayoutAnalyzer<'a> {
 
     /// Extract text spans from a page with position and font information.
     pub fn extract_page_spans(&self, page_num: u32) -> Result<Vec<TextSpan>> {
+        Ok(self.extract_page_spans_and_lattice_grids(page_num)?.0)
+    }
+
+    /// Like [`extract_page_spans`](Self::extract_page_spans), but also returns
+    /// the page's inferred lattice (ruling-line) grids — used by lattice-mode
+    /// table detection. Kept `pub(crate)`: `LatticeGrid` is an internal
+    /// detection-pipeline type, not part of this crate's public surface.
+    pub(crate) fn extract_page_spans_and_lattice_grids(
+        &self,
+        page_num: u32,
+    ) -> Result<(Vec<TextSpan>, Vec<super::lattice::LatticeGrid>)> {
         let pages = self.backend.pages();
         let page_id = pages
             .get(&page_num)
@@ -612,7 +624,7 @@ impl<'a> LayoutAnalyzer<'a> {
         }
 
         let content = self.backend.page_content(*page_id)?;
-        let (spans, signals) = self.parse_operations(&content, &fonts, *page_id)?;
+        let (spans, signals, grids) = self.parse_operations(&content, &fonts, *page_id)?;
 
         if self.suppress_low_confidence_ocr && signals.is_ocr_layer_over_scan() {
             let text = spans
@@ -626,11 +638,11 @@ impl<'a> LayoutAnalyzer<'a> {
                     page_num
                 );
                 self.ocr_text_suppressed.set(true);
-                return Ok(Vec::new());
+                return Ok((Vec::new(), Vec::new()));
             }
         }
 
-        Ok(spans)
+        Ok((spans, grids))
     }
 
     /// Extract structured text blocks from a page.
@@ -674,8 +686,20 @@ impl<'a> LayoutAnalyzer<'a> {
         content: &[u8],
         fonts: &HashMap<Vec<u8>, FontInfo>,
         page_id: super::backend::PageId,
-    ) -> Result<(Vec<TextSpan>, PageTextLayerSignals)> {
+    ) -> Result<(
+        Vec<TextSpan>,
+        PageTextLayerSignals,
+        Vec<super::lattice::LatticeGrid>,
+    )> {
         let operations = self.backend.decode_content(content)?;
+        let ruling_lines = super::vector_graphics::extract_lines(&operations);
+        let lattice_grids =
+            super::lattice::infer_grids(&ruling_lines, &super::lattice::LatticeConfig::default());
+        log::debug!(
+            "page has {} painted vector line segments; {} lattice grid(s) inferred",
+            ruling_lines.len(),
+            lattice_grids.len()
+        );
         // 페이지 오퍼레이터 통계 리셋 — 같은 페이지를 재분석해도(fallback 경로)
         // 마지막 호출의 집계가 그대로 유효하도록 진입 시점에 0으로 되돌린다.
         self.text_op_count.set(0);
@@ -893,7 +917,7 @@ impl<'a> LayoutAnalyzer<'a> {
         }
         self.suppressed_text_runs.set(suppressed_runs);
 
-        Ok((spans, signals))
+        Ok((spans, signals, lattice_grids))
     }
 
     /// Detect columns in a page based on vertical gap (gutter) detection.
@@ -1705,7 +1729,7 @@ fn maybe_insert_space_tj(text: &mut String, adjustment: f32) {
 /// Concatenate two PDF transformation matrices (right-multiply: result = a × b).
 /// Matrix form: `[a, b, c, d, e, f]` where a point `(x,y)` transforms as
 /// `x' = a*x + c*y + e`,  `y' = b*x + d*y + f`.
-fn concat_matrix(a: &[f32; 6], b: &[f32; 6]) -> [f32; 6] {
+pub(crate) fn concat_matrix(a: &[f32; 6], b: &[f32; 6]) -> [f32; 6] {
     [
         a[0] * b[0] + a[1] * b[2],
         a[0] * b[1] + a[1] * b[3],
@@ -1716,8 +1740,6 @@ fn concat_matrix(a: &[f32; 6], b: &[f32; 6]) -> [f32; 6] {
     ]
 }
 
-/// Apply a CTM to a user-space point, returning device-space coordinates.
-#[inline]
 /// Tally a decoded run that the font decoder discarded.
 ///
 /// Counted per run rather than per character: the discarded text was never decoded,
@@ -1740,7 +1762,9 @@ fn count_render_mode(text: &str, render_mode: i64, total: &mut usize, invisible:
     }
 }
 
-fn apply_ctm(ctm: &[f32; 6], x: f32, y: f32) -> (f32, f32) {
+/// Apply a CTM to a user-space point, returning device-space coordinates.
+#[inline]
+pub(crate) fn apply_ctm(ctm: &[f32; 6], x: f32, y: f32) -> (f32, f32) {
     (
         ctm[0] * x + ctm[2] * y + ctm[4],
         ctm[1] * x + ctm[3] * y + ctm[5],
@@ -2317,11 +2341,8 @@ mod tests {
     fn test_from_spans_leader_only_line_is_empty() {
         // A pure divider line of dots with no title and no page number — decorative
         // noise, not content. Must not panic on an all-filtered span list.
-        let line = TextLine::from_spans(vec![span_at(
-            "............................",
-            100.0,
-            150.0,
-        )]);
+        let line =
+            TextLine::from_spans(vec![span_at("............................", 100.0, 150.0)]);
 
         assert_eq!(line.text(), "");
         assert!(line.spans.is_empty());

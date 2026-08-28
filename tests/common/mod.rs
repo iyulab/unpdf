@@ -35,6 +35,32 @@ pub fn text_pdf() -> Vec<u8> {
     assemble(objects)
 }
 
+/// One page with a bordered 2x2 grid (ruling lines drawn via `m`/`l`/`S`) and
+/// real text in each cell — a lattice-mode table, not just aligned text.
+pub fn bordered_table_pdf() -> Vec<u8> {
+    let content = b"2 w \
+        70 660 m 70 700 l S \
+        170 660 m 170 700 l S \
+        270 660 m 270 700 l S \
+        70 700 m 270 700 l S \
+        70 680 m 270 680 l S \
+        70 660 m 270 660 l S \
+        BT /F1 12 Tf 80 690 Td (Name) Tj ET \
+        BT /F1 12 Tf 180 690 Td (Age) Tj ET \
+        BT /F1 12 Tf 80 670 Td (Alice) Tj ET \
+        BT /F1 12 Tf 180 670 Td (30) Tj ET\n";
+    let objects: Vec<Vec<u8>> = vec![
+        b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+        b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]\
+          /Resources<</Font<</F1 5 0 R>>>>/Contents 4 0 R>>"
+            .to_vec(),
+        stream_object(&format!("<</Length {}>>", content.len()), content),
+        HELVETICA.to_vec(),
+    ];
+    assemble(objects)
+}
+
 /// One page whose content stream paints nothing.
 pub fn blank_pdf() -> Vec<u8> {
     let content = b"q Q\n";

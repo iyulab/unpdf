@@ -5,6 +5,7 @@ pub mod bidi;
 pub mod cmap_table;
 pub(crate) mod encoding;
 pub(crate) mod font;
+mod lattice;
 mod layout;
 mod ocr_gate;
 mod options;
@@ -15,6 +16,7 @@ pub mod raw;
 pub(crate) mod sanitize;
 pub mod stream;
 mod table_detector;
+mod vector_graphics;
 pub mod xycut;
 
 pub use layout::{

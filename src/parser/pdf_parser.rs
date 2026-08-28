@@ -463,7 +463,7 @@ fn extract_page_with_tables_fn(
     analyzer: &mut super::layout::LayoutAnalyzer,
     page_num: u32,
 ) -> Result<Vec<Block>> {
-    let mut spans = analyzer.extract_page_spans(page_num)?;
+    let (mut spans, lattice_grids) = analyzer.extract_page_spans_and_lattice_grids(page_num)?;
 
     // Apply header/footer filter before table detection so page numbers
     // in margins don't end up as spurious table rows or body paragraphs.
@@ -473,19 +473,49 @@ fn extract_page_with_tables_fn(
         return Ok(vec![]);
     }
 
+    // Lattice mode first: explicit ruling lines are direct structural
+    // evidence, so a confirmed grid is accepted outright — it doesn't need
+    // stream mode's alignment/occupancy heuristics, which exist only to
+    // *guess* structure from text position when no such evidence exists.
+    // Spans a lattice table consumes are removed before stream-mode
+    // detection runs, so the same content isn't extracted twice.
+    let mut lattice_tables: Vec<(f32, crate::model::Table)> = Vec::new();
+    let mut lattice_consumed = std::collections::HashSet::new();
+    for grid in &lattice_grids {
+        if let Some((table, consumed)) = super::lattice::build_table(grid, &spans) {
+            lattice_tables.push((grid.top_y, table));
+            lattice_consumed.extend(consumed);
+        }
+    }
+    let spans: Vec<super::layout::TextSpan> = if lattice_consumed.is_empty() {
+        spans
+    } else {
+        spans
+            .into_iter()
+            .enumerate()
+            .filter(|(i, _)| !lattice_consumed.contains(i))
+            .map(|(_, s)| s)
+            .collect()
+    };
+
     let table_detector = super::table_detector::TableDetector::new();
     let (detected_tables, remaining_spans) = table_detector.detect(spans.clone());
 
     let mut blocks: Vec<Block> = Vec::new();
 
-    if !detected_tables.is_empty() {
+    if !lattice_tables.is_empty() || !detected_tables.is_empty() {
         log::debug!(
-            "Detected {} tables on page {}",
+            "Detected {} lattice + {} stream tables on page {}",
+            lattice_tables.len(),
             detected_tables.len(),
             page_num
         );
 
         let mut elements: Vec<(f32, Block)> = Vec::new();
+
+        for (top_y, table) in lattice_tables {
+            elements.push((top_y, Block::Table(table)));
+        }
 
         const TABLE_CONFIDENCE_THRESHOLD: f32 = 0.4;
         for detected in &detected_tables {
