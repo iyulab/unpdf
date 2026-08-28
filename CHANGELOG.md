@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.16.0 — 2026-08-28
+
+### Added
+
+- **Lattice-mode table detection** — tables with explicit ruling lines (drawn
+  cell borders, not just aligned text) are now detected directly from the
+  page's own vector graphics, complementing the existing text-alignment-based
+  detection. This catches bordered tables the alignment heuristic previously
+  missed or misclassified as plain paragraphs — sparse cells, short cell
+  content, or otherwise low text-occupancy regions that nonetheless have a
+  visible grid on the page. When a page has both a ruling-line grid and
+  aligned-text evidence, the ruling-line grid takes priority for that region;
+  the rest of the page is still processed by the existing detector unchanged.
+  No new option is introduced — this runs automatically, the same as the
+  existing table detection it complements.
+
 ## 0.15.1 — 2026-08-28
 
 ### Fixed
