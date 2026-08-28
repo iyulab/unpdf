@@ -79,6 +79,62 @@ pub struct TextLine {
     pub heading_level: u8,
 }
 
+/// True if a span's text is nothing but a run of `.` characters (a PDF-rendered
+/// TOC dot leader), long enough not to be a truncated prose ellipsis. Unlike the
+/// text-level regex in `render::cleanup`, this checks a single span in isolation —
+/// a span with *only* dots is a far stronger signal than a dot run inside otherwise
+/// mixed text, so a lower, more inclusive threshold is safe here.
+fn is_dot_leader_span(span: &TextSpan) -> bool {
+    let t = span.text.trim();
+    t.len() >= 4 && t.chars().all(|c| c == '.')
+}
+
+/// Strip PDF-rendered TOC dot leaders directly from a line's spans, before line-
+/// joining collapses the exact span boundaries a text-level regex would otherwise
+/// have to guess at from whitespace alone. A run of one or more consecutive
+/// dot-leader spans is dropped; if a purely-numeric span immediately follows the
+/// run, it is kept and reformatted as `(p.N)` (matching `render::cleanup`'s output
+/// shape) instead of being left as a bare trailing digit.
+///
+/// This only catches the case where the dot leader is its own span(s) — a PDF
+/// backend that emits an entire "Title .... N" line as one merged span is still
+/// caught downstream by the (optional) `render::cleanup` regex pass; the two are
+/// complementary, not redundant.
+fn normalize_dot_leaders(spans: Vec<TextSpan>) -> Vec<TextSpan> {
+    let mut out: Vec<TextSpan> = Vec::with_capacity(spans.len());
+    let mut i = 0;
+    while i < spans.len() {
+        if !is_dot_leader_span(&spans[i]) {
+            out.push(spans[i].clone());
+            i += 1;
+            continue;
+        }
+
+        // Consume the whole run of consecutive dot-leader spans.
+        let mut j = i + 1;
+        while j < spans.len() && is_dot_leader_span(&spans[j]) {
+            j += 1;
+        }
+
+        // A purely-numeric span immediately after the run is the page number.
+        if let Some(page_span) = spans.get(j) {
+            let digits = page_span.text.trim();
+            let is_page_number =
+                !digits.is_empty() && digits.len() <= 5 && digits.chars().all(|c| c.is_ascii_digit());
+            if is_page_number {
+                let mut renumbered = page_span.clone();
+                renumbered.text = format!("(p.{})", digits);
+                out.push(renumbered);
+                i = j + 1;
+                continue;
+            }
+        }
+
+        i = j;
+    }
+    out
+}
+
 impl TextLine {
     /// Create a new text line from spans.
     pub fn from_spans(mut spans: Vec<TextSpan>) -> Self {
@@ -96,6 +152,24 @@ impl TextLine {
         // Sort spans by X position
         spans.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
 
+        // Position is taken from the original leftmost span, before dot-leader
+        // normalization — a line that turns out to be leader-only still occupies
+        // its real position on the page.
+        let y = spans[0].y;
+        let x = spans[0].x;
+
+        let spans = normalize_dot_leaders(spans);
+        if spans.is_empty() {
+            return Self {
+                spans,
+                y,
+                x,
+                font_size: 0.0,
+                is_heading: false,
+                heading_level: 0,
+            };
+        }
+
         // Calculate dominant font size (weighted by text length)
         let total_chars: usize = spans.iter().map(|s| s.text.len()).sum();
         let weighted_size: f32 = spans
@@ -107,9 +181,6 @@ impl TextLine {
         } else {
             spans[0].font_size
         };
-
-        let y = spans[0].y;
-        let x = spans[0].x;
 
         Self {
             spans,
@@ -2126,5 +2197,129 @@ mod tests {
             ..span3
         };
         assert!(!col.contains_span(&span3));
+    }
+
+    /// Helper: a span at a given x/width, dots leader spans included.
+    fn span_at(text: &str, x: f32, width: f32) -> TextSpan {
+        TextSpan {
+            width,
+            ..TextSpan::new(text.to_string(), x, 500.0, 12.0, "Helvetica".to_string())
+        }
+    }
+
+    #[test]
+    fn test_normalize_dot_leaders_drops_leader_keeps_page_number() {
+        let spans = vec![
+            span_at("Chapter 1", 100.0, 54.0),
+            span_at("....................", 160.0, 120.0),
+            span_at("6", 290.0, 6.0),
+        ];
+
+        let result = normalize_dot_leaders(spans);
+
+        assert_eq!(result.len(), 2, "leader span dropped, title and page kept");
+        assert_eq!(result[0].text, "Chapter 1");
+        assert_eq!(result[1].text, "(p.6)");
+    }
+
+    #[test]
+    fn test_normalize_dot_leaders_drops_leader_without_page_number() {
+        let spans = vec![
+            span_at("Introduction", 100.0, 70.0),
+            span_at("............................", 180.0, 150.0),
+        ];
+
+        let result = normalize_dot_leaders(spans);
+
+        assert_eq!(result.len(), 1, "leader dropped, nothing follows to keep");
+        assert_eq!(result[0].text, "Introduction");
+    }
+
+    #[test]
+    fn test_normalize_dot_leaders_merges_a_split_leader_run() {
+        // Some backends emit the leader as several adjacent dot-only spans rather
+        // than one — the run must still be treated as a single leader.
+        let spans = vec![
+            span_at("Chapter 1", 100.0, 54.0),
+            span_at("..........", 160.0, 60.0),
+            span_at("..........", 220.0, 60.0),
+            span_at("6", 290.0, 6.0),
+        ];
+
+        let result = normalize_dot_leaders(spans);
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].text, "Chapter 1");
+        assert_eq!(result[1].text, "(p.6)");
+    }
+
+    #[test]
+    fn test_normalize_dot_leaders_inline_between_two_titles() {
+        // "Chapter 1 .......... Chapter 2" — a leader with no page number on either
+        // side, e.g. two TOC entries whose own line-joining put them on one line.
+        let spans = vec![
+            span_at("Chapter 1", 100.0, 54.0),
+            span_at("....................", 160.0, 120.0),
+            span_at("Chapter 2", 290.0, 54.0),
+        ];
+
+        let result = normalize_dot_leaders(spans);
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].text, "Chapter 1");
+        assert_eq!(result[1].text, "Chapter 2");
+    }
+
+    #[test]
+    fn test_normalize_dot_leaders_preserves_short_prose_ellipsis() {
+        // A 3-dot span (e.g. a quoted trailing pause) is under the 4-dot floor and
+        // must survive untouched — mirrors render::cleanup's own prose guard.
+        let spans = vec![span_at("Wait", 100.0, 24.0), span_at("...", 130.0, 10.0)];
+
+        let result = normalize_dot_leaders(spans.clone());
+
+        assert_eq!(result.len(), spans.len());
+        assert_eq!(result[1].text, "...");
+    }
+
+    #[test]
+    fn test_normalize_dot_leaders_ignores_non_numeric_span_after_run() {
+        // A leader followed by more prose text (not a page number) — drop the
+        // leader, leave the following span exactly as it was.
+        let spans = vec![
+            span_at("Section", 100.0, 50.0),
+            span_at("........", 155.0, 60.0),
+            span_at("Appendix", 220.0, 60.0),
+        ];
+
+        let result = normalize_dot_leaders(spans);
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[1].text, "Appendix");
+    }
+
+    #[test]
+    fn test_from_spans_renders_toc_entry_end_to_end() {
+        let line = TextLine::from_spans(vec![
+            span_at("Chapter 1", 100.0, 54.0),
+            span_at("....................", 160.0, 120.0),
+            span_at("6", 290.0, 6.0),
+        ]);
+
+        assert_eq!(line.text(), "Chapter 1 (p.6)");
+    }
+
+    #[test]
+    fn test_from_spans_leader_only_line_is_empty() {
+        // A pure divider line of dots with no title and no page number — decorative
+        // noise, not content. Must not panic on an all-filtered span list.
+        let line = TextLine::from_spans(vec![span_at(
+            "............................",
+            100.0,
+            150.0,
+        )]);
+
+        assert_eq!(line.text(), "");
+        assert!(line.spans.is_empty());
     }
 }
