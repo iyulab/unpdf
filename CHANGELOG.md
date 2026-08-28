@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.15.0 — 2026-08-28
+
+### Added
+
+- **`ParseOptions` reachable from every C-ABI-based binding (C#, Python)** — the C
+  ABI's parse entry points previously took no arguments beyond the document source,
+  so no `ParseOptions` field (resource extraction, page selection, password,
+  extraction mode, and more) was reachable from C# or Python, even though the Rust
+  API and CLI already supported all of them. New C ABI functions
+  `unpdf_parse_file_with_options` / `unpdf_parse_bytes_with_options` accept a JSON
+  options payload; existing `unpdf_parse_file` / `unpdf_parse_bytes` are unchanged.
+  C#: `ParseFile`/`ParseBytes` gained an optional `ParseOptions?` parameter. Python:
+  every parsing function gained an optional `options: dict` parameter, and
+  `get_resource_ids` / `get_resource_info` / `get_resource_data` — previously
+  unreachable from Python entirely — are now exposed. `unpdf-wasm`'s `ParseOptions`
+  also gained `withResources`/`withMinImageDimension`, closing a parity gap against
+  its own `parseWithOptions` entry point.
+
+### Fixed
+
+- **Resource extraction (`ParseOptions.extract_resources`) ignored
+  `min_image_dimension` and included undecodable image formats** when parsing
+  through the primary `parse()` API (i.e. every consumer of `parse_file`/
+  `parse_bytes`, including the CLI's own resource-extraction flag) — a second,
+  independently-drifted copy of the resource-collection logic never applied the
+  filtering the streaming API already did. Both paths now share one filter.
+
 ## 0.14.0 — 2026-08-24
 
 ### Added
