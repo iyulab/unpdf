@@ -99,10 +99,14 @@ impl PdfParser {
                         if let Ok(xobjects) = self.backend.page_xobjects(*page_id) {
                             for xobj in xobjects {
                                 let key = format!("page{}_{}", page.number, xobj.name);
-                                if let Some(r) = convert_resource_xobject(
+                                // The unsupported-image quality signal is counted once, from
+                                // `parse_single_page`'s pass over the same XObjects (below) —
+                                // not duplicated here.
+                                let (resource, _unsupported) = convert_resource_xobject(
                                     xobj,
                                     self.options.min_image_dimension,
-                                ) {
+                                );
+                                if let Some(r) = resource {
                                     document.resources.insert(key, r);
                                 }
                             }
@@ -237,9 +241,12 @@ pub(crate) fn parse_single_page(
             if let Ok(xobjects) = backend.page_xobjects(*page_id) {
                 for xobj in xobjects {
                     let base_id = format!("page{}_{}", page_num, xobj.name);
-                    if let Some(resource) =
-                        convert_resource_xobject(xobj, options.min_image_dimension)
-                    {
+                    let (resource, unsupported) =
+                        convert_resource_xobject(xobj, options.min_image_dimension);
+                    if unsupported {
+                        page.unsupported_image_count += 1;
+                    }
+                    if let Some(resource) = resource {
                         let id = resource.suggested_filename(&base_id);
                         let mut img_block = Block::image(id.clone());
                         if let Block::Image {
@@ -265,22 +272,66 @@ pub(crate) fn parse_single_page(
 /// Free-function version of `PdfParser::convert_xobject` so `parse_single_page`
 /// (and other `run_stream` consumers) can use it without needing `&self`.
 pub(crate) fn convert_xobject_pub(xobj: RawXObject) -> Option<Resource> {
-    let mime_type = match xobj.filter.as_deref() {
-        Some("DCTDecode") => "image/jpeg",
-        Some("JPXDecode") => "image/jp2",
-        _ => "application/octet-stream",
+    let RawXObject {
+        data,
+        filter,
+        width,
+        height,
+        bits_per_component,
+        color_space,
+        ..
+    } = xobj;
+
+    let (data, mime_type) = match filter.as_deref() {
+        Some("DCTDecode") => (data, "image/jpeg"),
+        Some("JPXDecode") => (data, "image/jp2"),
+        Some("FlateDecode") => {
+            match reencode_flate_image_as_png(&data, width, height, bits_per_component, color_space.as_deref())
+            {
+                Some(png) => (png, "image/png"),
+                None => (data, "application/octet-stream"),
+            }
+        }
+        _ => (data, "application/octet-stream"),
     };
-    let mut resource = Resource::new(xobj.data, mime_type.to_string(), ResourceType::Image);
-    if let (Some(w), Some(h)) = (xobj.width, xobj.height) {
+
+    let mut resource = Resource::new(data, mime_type.to_string(), ResourceType::Image);
+    if let (Some(w), Some(h)) = (width, height) {
         resource = resource.with_dimensions(w, h);
     }
-    if let Some(b) = xobj.bits_per_component {
+    if let Some(b) = bits_per_component {
         resource = resource.with_bits_per_component(b);
     }
-    if let Some(cs) = xobj.color_space {
+    if let Some(cs) = color_space {
         resource = resource.with_color_space(cs);
     }
     Some(resource)
+}
+
+/// Re-encode an already-inflated `/FlateDecode` image XObject's raw scanlines as PNG.
+///
+/// Stage-1 scope: 8-bit `DeviceGray`/`DeviceRGB` only (`backend::resolve_color_space_name`
+/// already folds `ICCBased` down to its device-equivalent by component count before this
+/// runs). `None` means "not eligible", not "encoding failed" — the caller falls back to the
+/// existing raw/undecoded-drop path. See
+/// `claudedocs/unpdf/issues/ISSUE-unpdf-20260828-123513-flatedecode-images-unconditionally-dropped.md`
+/// in the umbrella repo for the staged-rollout rationale and the follow-up scope (Indexed/CMYK).
+fn reencode_flate_image_as_png(
+    data: &[u8],
+    width: Option<u32>,
+    height: Option<u32>,
+    bits_per_component: Option<u8>,
+    color_space: Option<&str>,
+) -> Option<Vec<u8>> {
+    if bits_per_component != Some(8) {
+        return None;
+    }
+    let color_type = match color_space {
+        Some("DeviceGray") | Some("CalGray") => super::png_encode::PngColorType::Gray,
+        Some("DeviceRGB") | Some("CalRGB") => super::png_encode::PngColorType::Rgb,
+        _ => return None,
+    };
+    super::png_encode::encode(width?, height?, color_type, data)
 }
 
 /// Convert an XObject into a resource for the document's resource inventory, applying the
@@ -293,25 +344,33 @@ pub(crate) fn convert_xobject_pub(xobj: RawXObject) -> Option<Resource> {
 /// [`parse_single_page`]'s inline-block collection — they must apply identical filtering, or
 /// `ParseOptions::min_image_dimension`'s documented default silently stops applying to
 /// whichever caller's copy of the filter drifts from the other's.
-fn convert_resource_xobject(xobj: RawXObject, min_image_dimension: u32) -> Option<Resource> {
-    let resource = convert_xobject_pub(xobj)?;
+///
+/// Returns `(resource, unsupported)`: `unsupported` is `true` only when the XObject was a
+/// recognized image that couldn't be materialized (raw/undecoded) — not for a non-image or a
+/// below-`min_image_dimension` drop, neither of which is a format-support gap worth a quality
+/// warning.
+fn convert_resource_xobject(xobj: RawXObject, min_image_dimension: u32) -> (Option<Resource>, bool) {
+    let resource = match convert_xobject_pub(xobj) {
+        Some(r) => r,
+        None => return (None, false),
+    };
     if !resource.is_image() {
-        return None;
+        return (None, false);
     }
     let ext = resource.extension();
     if ext == "raw" || ext == "bin" {
-        return None;
+        return (None, true);
     }
     // Decorative-image cutoff applies only when both dimensions are known — measured is
     // conservative, unmeasured is kept as-is.
     if min_image_dimension > 0 {
         if let (Some(w), Some(h)) = (resource.width, resource.height) {
             if w < min_image_dimension || h < min_image_dimension {
-                return None;
+                return (None, false);
             }
         }
     }
-    Some(resource)
+    (Some(resource), false)
 }
 
 /// Convert a raw outline item into a model `OutlineItem`. Exposed as

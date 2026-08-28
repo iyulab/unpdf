@@ -100,6 +100,18 @@ public sealed class ExtractionQuality
     /// </summary>
     [JsonPropertyName("skipped_object_count")]
     public long SkippedObjectCount { get; init; }
+
+    /// <summary>
+    /// Embedded images recognized as image XObjects but not extractable in the current
+    /// output format (an unsupported color space or bit depth), so they were dropped.
+    /// <para>
+    /// Distinguishes "this page has no image" from "this page has an image we couldn't
+    /// materialize" — a resource inventory with zero entries looks the same either way
+    /// unless this is checked.
+    /// </para>
+    /// </summary>
+    [JsonPropertyName("unsupported_image_count")]
+    public long UnsupportedImageCount { get; init; }
 }
 
 /// <summary>

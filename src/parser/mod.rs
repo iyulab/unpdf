@@ -9,6 +9,7 @@ mod layout;
 mod ocr_gate;
 mod options;
 mod pdf_parser;
+pub(crate) mod png_encode;
 pub(crate) mod predefined_cmap;
 pub mod raw;
 pub(crate) mod sanitize;

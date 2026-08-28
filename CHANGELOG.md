@@ -17,6 +17,17 @@
   unreachable from Python entirely — are now exposed. `unpdf-wasm`'s `ParseOptions`
   also gained `withResources`/`withMinImageDimension`, closing a parity gap against
   its own `parseWithOptions` entry point.
+- **`/FlateDecode` embedded images are re-encoded as PNG instead of being dropped.**
+  Only `DCTDecode` (JPEG) and `JPXDecode` (JPEG2000) image XObjects were ever
+  materialized into the resource inventory; `/FlateDecode` — the filter most
+  Office-export-to-PDF screenshots and diagrams use — was always classified as an
+  undecoded raw format and discarded, even with `extract_resources: true`. 8-bit
+  `DeviceGray`/`DeviceRGB` images (including `ICCBased` color spaces, resolved by
+  their embedded profile's component count) are now reconstructed into a valid PNG
+  container. Other color spaces (Indexed, CMYK, ...) are still dropped, but now
+  counted in the new `ExtractionQuality.unsupported_image_count` field — surfaced
+  through `unpdf_get_extraction_quality`'s JSON and the C#/Python bindings — so a
+  caller can tell "no image" from "image present but not extractable".
 
 ### Fixed
 

@@ -311,7 +311,8 @@ def get_extraction_quality(
         Dictionary with ``char_count``, ``word_count``, ``replacement_char_count``,
         ``encrypted``, ``is_scan_pdf``, ``suppressed_ocr_pages``,
         ``suppressed_text_runs``, ``pages_incomplete``, ``declared_page_count``,
-        ``unresolved_page_nodes``, ``skipped_object_count``.
+        ``unresolved_page_nodes``, ``skipped_object_count``,
+        ``unsupported_image_count``.
 
         ``suppressed_text_runs`` counts text runs the font decoder could not read
         and discarded — content the document had and this output does not. Any
@@ -321,6 +322,11 @@ def get_extraction_quality(
         ``unresolved_page_nodes`` counts unreadable page-tree *nodes*, not lost
         pages — one unreadable node can cost a whole subtree. Treat any non-zero
         value as "incomplete" and do not report it as a page count.
+
+        ``unsupported_image_count`` counts embedded images recognized as image
+        XObjects but dropped because their color space or bit depth isn't
+        extractable — distinguishes "no image" from "image present but
+        couldn't be extracted".
 
     Raises:
         UnpdfError: If parsing or retrieval fails. Its ``kind`` says why.

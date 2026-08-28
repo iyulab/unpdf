@@ -83,6 +83,15 @@ pub struct ExtractionQuality {
     /// is the signal for lost content.
     #[serde(default)]
     pub skipped_object_count: usize,
+
+    /// Embedded images recognized as image XObjects but not extractable in the current
+    /// output format (an unsupported color space or bit depth), so they were dropped.
+    ///
+    /// Distinguishes "this page has no image" from "this page has an image we couldn't
+    /// materialize" — a resource inventory with zero entries looks the same either way
+    /// unless this is checked.
+    #[serde(default)]
+    pub unsupported_image_count: usize,
 }
 
 impl ExtractionQuality {
@@ -178,6 +187,15 @@ impl ExtractionQuality {
                 self.replacement_char_count, self.char_count
             ));
         }
+        // Last: a text-quality problem above is more consequential than a partial image
+        // gap, so it takes priority when both are present in the same document.
+        if self.unsupported_image_count > 0 {
+            return Some(format!(
+                "{} embedded image(s) use an unsupported color space or bit depth and were \
+                 dropped from the resource inventory.",
+                self.unsupported_image_count
+            ));
+        }
         None
     }
 }
@@ -195,6 +213,7 @@ pub struct QualityAccumulator {
     last_was_non_ws: bool,
     suppressed_ocr_pages: usize,
     suppressed_text_runs: usize,
+    unsupported_image_count: usize,
 }
 
 impl QualityAccumulator {
@@ -228,6 +247,11 @@ impl QualityAccumulator {
         self.suppressed_text_runs += runs;
     }
 
+    /// Record images a page recognized as image XObjects but could not extract.
+    pub fn note_unsupported_images(&mut self, count: usize) {
+        self.unsupported_image_count += count;
+    }
+
     pub fn finalize(self) -> ExtractionQuality {
         ExtractionQuality {
             char_count: self.char_count,
@@ -235,6 +259,7 @@ impl QualityAccumulator {
             replacement_char_count: self.replacement_char_count,
             suppressed_ocr_pages: self.suppressed_ocr_pages,
             suppressed_text_runs: self.suppressed_text_runs,
+            unsupported_image_count: self.unsupported_image_count,
             ..Default::default()
         }
     }

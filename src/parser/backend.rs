@@ -507,17 +507,8 @@ impl PdfBackend for RawBackend {
                             .and_then(|b| b.as_i64())
                             .map(|b| b as u8);
 
-                        let color_space =
-                            raw_dict_get(dict, b"ColorSpace").and_then(|cs| match cs {
-                                RawPdfObject::Name(n) => {
-                                    Some(String::from_utf8_lossy(n).to_string())
-                                }
-                                RawPdfObject::Array(arr) => arr
-                                    .first()
-                                    .and_then(|o| o.as_name())
-                                    .map(|n| String::from_utf8_lossy(n).to_string()),
-                                _ => None,
-                            });
+                        let color_space = raw_dict_get(dict, b"ColorSpace")
+                            .and_then(|cs| resolve_color_space_name(&self.doc, cs));
 
                         xobjects.push(RawXObject {
                             name: String::from_utf8_lossy(name).to_string(),
@@ -539,6 +530,46 @@ impl PdfBackend for RawBackend {
 
     fn acroform_fields(&self) -> Vec<FormField> {
         self.extract_acroform_fields()
+    }
+}
+
+/// Resolve an image XObject's `/ColorSpace` entry to a name.
+///
+/// `/ICCBased` is the common case for Office-exported images (an embedded sRGB/greyscale/CMYK
+/// ICC profile) but carries no component count of its own in the name — that lives on the
+/// referenced profile stream's `/N` entry. Consumers that gate on device color space (the PNG
+/// re-encoder among them) would otherwise see every `ICCBased` image as unrecognized, so this
+/// resolves `/N` (1/3/4 components) to the equivalent `Device*` name up front.
+fn resolve_color_space_name(doc: &RawDocument, cs: &RawPdfObject) -> Option<String> {
+    match cs {
+        RawPdfObject::Name(n) => Some(String::from_utf8_lossy(n).to_string()),
+        RawPdfObject::Array(arr) => {
+            let first_name = arr
+                .first()
+                .and_then(|o| o.as_name())
+                .map(|n| String::from_utf8_lossy(n).to_string())?;
+            if first_name == "ICCBased" {
+                if let Some(profile) = arr.get(1).map(|second| doc.resolve(second)) {
+                    if let Some(stream) = profile.as_stream() {
+                        if let Some(components) =
+                            raw_dict_get(&stream.dict, b"N").and_then(|n| n.as_i64())
+                        {
+                            return Some(
+                                match components {
+                                    1 => "DeviceGray",
+                                    3 => "DeviceRGB",
+                                    4 => "DeviceCMYK",
+                                    _ => return Some(first_name),
+                                }
+                                .to_string(),
+                            );
+                        }
+                    }
+                }
+            }
+            Some(first_name)
+        }
+        _ => None,
     }
 }
 

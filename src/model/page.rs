@@ -50,6 +50,11 @@ pub struct Page {
     /// JSON에서는 0일 때 생략된다(부재 = 0).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub image_op_count: u32,
+
+    /// Image XObjects on this page recognized as images but not extractable in the
+    /// current output format (unsupported color space or bit depth), so dropped.
+    #[serde(default)]
+    pub unsupported_image_count: usize,
 }
 
 fn is_zero(n: &u32) -> bool {
@@ -70,6 +75,7 @@ impl Page {
             suppressed_text_runs: 0,
             text_op_count: 0,
             image_op_count: 0,
+            unsupported_image_count: 0,
         }
     }
 

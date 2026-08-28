@@ -166,10 +166,10 @@ char* unpdf_get_author(const UnpdfDocument* doc);
  *
  * Fields: char_count, word_count, replacement_char_count, encrypted,
  * is_scan_pdf, suppressed_ocr_pages, pages_incomplete, declared_page_count,
- * unresolved_page_nodes, skipped_object_count. `is_scan_pdf` is true when
- * sampled pages draw images with no text-showing operators — the document-level
- * "scanned document, OCR required" signal. For page-level discrimination
- * (mixed documents) use unpdf_page_stats.
+ * unresolved_page_nodes, skipped_object_count, unsupported_image_count.
+ * `is_scan_pdf` is true when sampled pages draw images with no text-showing
+ * operators — the document-level "scanned document, OCR required" signal.
+ * For page-level discrimination (mixed documents) use unpdf_page_stats.
  *
  * pages_incomplete is true when the document was damaged and pages are missing
  * from the output — parsing "succeeded" over a short page set, which is
@@ -179,6 +179,9 @@ char* unpdf_get_author(const UnpdfDocument* doc);
  * *nodes*, not lost pages: one unusable node drops its whole subtree, so treat
  * any non-zero value as "incomplete" and nothing more. skipped_object_count is
  * a damage indicator only — most skipped objects cost no page.
+ * unsupported_image_count counts embedded images recognized as image XObjects
+ * but dropped because their color space or bit depth isn't extractable —
+ * distinguishes "no image" from "image present but couldn't be extracted".
  *
  * Fields are only ever added here, never removed or renamed; a consumer that
  * parses this JSON should ignore unknown fields.

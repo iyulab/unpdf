@@ -343,6 +343,7 @@ where
                         quality.note_suppressed_ocr_page();
                     }
                     quality.note_suppressed_text_runs(page.suppressed_text_runs);
+                    quality.note_unsupported_images(page.unsupported_image_count);
                     for block in &page.elements {
                         let mut buf = String::new();
                         block.append_plain_text(&mut buf);

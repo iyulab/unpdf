@@ -576,6 +576,7 @@ if q.pages_incomplete {
 | `unresolved_page_nodes` | Unreadable page-tree *nodes*. Non-zero means incomplete — **not** a count of lost pages. |
 | `skipped_object_count` | Objects that could not be loaded. Most cost no page (fonts, annotations), so this alone does not imply missing text. |
 | `suppressed_text_runs` | Text runs the font decoder could not read and discarded. Non-zero means text is missing from an otherwise successful extraction. |
+| `unsupported_image_count` | Embedded images recognized as image XObjects but not extractable (unsupported color space/bit depth), so dropped. Distinguishes "no image" from "image present but couldn't be extracted". |
 
 `suppressed_text_runs` covers a second way content goes missing without an error. When a
 font's character codes cannot be resolved — a composite (Type0/CID) font with no usable

@@ -45,6 +45,7 @@ uncore = "0.2"
 
 # Compression
 flate2 = "1.1"
+crc32fast = "1.5"  # PNG chunk CRCs when re-encoding FlateDecode images
 
 # PDF decryption
 rc4 = "0.2"
@@ -78,6 +79,7 @@ criterion = { version = "0.5", features = ["html_reports"] }
 tempfile = "3.14"
 peak_alloc = "0.3"
 serde_json = "1.0"  # FFI introspection 테스트의 JSON 결과 검증용
+png = "0.17"  # round-trip verification for the FlateDecode-image PNG re-encoder
 
 [[bench]]
 name = "parse_benchmark"

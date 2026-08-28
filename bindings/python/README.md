@@ -103,7 +103,7 @@ Document-level extraction diagnostics: `char_count`, `word_count`,
 `replacement_char_count`, `encrypted`, `is_scan_pdf`, `suppressed_ocr_pages`,
 `suppressed_text_runs`,
 `pages_incomplete`, `declared_page_count`, `unresolved_page_nodes`,
-`skipped_object_count`. See "Incomplete extraction" below.
+`skipped_object_count`, `unsupported_image_count`. See "Incomplete extraction" below.
 
 ### `get_page_stats(source: PdfSource, page_number: int, options: dict | None = None) -> dict`
 Per-page content-stream operator counts (1-indexed): `page`, `text_op_count`,
