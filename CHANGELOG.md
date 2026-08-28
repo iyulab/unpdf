@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.15.1 — 2026-08-28
+
+### Fixed
+
+- **Table-of-contents dot leaders (`Chapter 1 .......... 6`) are now normalized
+  structurally during layout analysis**, not only by the opt-in cleanup pass. The
+  dot run is detected from the original text-fragment positions on the page before
+  line-joining collapses their boundaries — a stronger, position-based signal than
+  matching the dot count in already-joined text — and a trailing page number is
+  folded into `(p.N)` in the same step. This closes a gap where the plain-text
+  output (and any consumer that doesn't opt into the markdown cleanup pipeline) saw
+  raw dot leaders untouched, and removes a source of duplicated page-number
+  fragments the text-level regex pass could produce when leader runs were split
+  across multiple fragments. The existing opt-in cleanup pass is unchanged and
+  still applies when a table-of-contents line is extracted as a single merged
+  fragment rather than separate title/leader/number fragments.
+
 ## 0.15.0 — 2026-08-28
 
 ### Added
