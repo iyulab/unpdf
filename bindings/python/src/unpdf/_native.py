@@ -126,11 +126,15 @@ _lib.unpdf_last_error.restype = ctypes.c_char_p
 _lib.unpdf_last_error_kind.argtypes = []
 _lib.unpdf_last_error_kind.restype = ctypes.c_int
 
-_lib.unpdf_parse_file.argtypes = [ctypes.c_char_p]
-_lib.unpdf_parse_file.restype = ctypes.c_void_p
+_lib.unpdf_parse_file_with_options.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
+_lib.unpdf_parse_file_with_options.restype = ctypes.c_void_p
 
-_lib.unpdf_parse_bytes.argtypes = [ctypes.POINTER(ctypes.c_uint8), ctypes.c_size_t]
-_lib.unpdf_parse_bytes.restype = ctypes.c_void_p
+_lib.unpdf_parse_bytes_with_options.argtypes = [
+    ctypes.POINTER(ctypes.c_uint8),
+    ctypes.c_size_t,
+    ctypes.c_char_p,
+]
+_lib.unpdf_parse_bytes_with_options.restype = ctypes.c_void_p
 
 _lib.unpdf_free_document.argtypes = [ctypes.c_void_p]
 _lib.unpdf_free_document.restype = None

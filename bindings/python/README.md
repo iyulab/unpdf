@@ -58,7 +58,10 @@ unpdf.to_markdown(pdf_bytes)
 
 ## API Reference
 
-### `to_markdown(source: PdfSource, flags: int = 0) -> str`
+Every function below also accepts an optional `options: dict` keyword argument —
+see [Parsing options](#parsing-options).
+
+### `to_markdown(source: PdfSource, flags: int = 0, options: dict | None = None) -> str`
 Convert a PDF file to Markdown format. `flags` is a bitwise OR of:
 
 | Constant | Effect |
@@ -76,35 +79,78 @@ markdown = unpdf.to_markdown(
 )
 ```
 
-### `to_text(source: PdfSource) -> str`
+### `to_text(source: PdfSource, options: dict | None = None) -> str`
 Convert a PDF file to plain text.
 
-### `to_json(source: PdfSource, pretty: bool = False) -> str`
+### `to_json(source: PdfSource, pretty: bool = False, options: dict | None = None) -> str`
 Convert a PDF file to JSON format.
 
-### `get_info(source: PdfSource) -> dict`
+### `get_info(source: PdfSource, options: dict | None = None) -> dict`
 Get document metadata. Keys: `section_count` (the page count), `resource_count`,
 plus `title` / `author` only when the document sets them.
 
-### `get_page_count(source: PdfSource) -> int`
+### `get_page_count(source: PdfSource, options: dict | None = None) -> int`
 Get the number of pages in a PDF file.
 
-### `is_pdf(source: PdfSource) -> bool`
+### `is_pdf(source: PdfSource, options: dict | None = None) -> bool`
 Check if a file is a valid PDF.
 
 ### `version() -> str`
 Get the version of the native library.
 
-### `get_extraction_quality(source: PdfSource) -> dict`
+### `get_extraction_quality(source: PdfSource, options: dict | None = None) -> dict`
 Document-level extraction diagnostics: `char_count`, `word_count`,
 `replacement_char_count`, `encrypted`, `is_scan_pdf`, `suppressed_ocr_pages`,
 `suppressed_text_runs`,
 `pages_incomplete`, `declared_page_count`, `unresolved_page_nodes`,
 `skipped_object_count`. See "Incomplete extraction" below.
 
-### `get_page_stats(source: PdfSource, page_number: int) -> dict`
+### `get_page_stats(source: PdfSource, page_number: int, options: dict | None = None) -> dict`
 Per-page content-stream operator counts (1-indexed): `page`, `text_op_count`,
 `image_op_count`, `ocr_text_suppressed`.
+
+### `get_resource_ids(source: PdfSource, options: dict | None = None) -> list[str]`
+### `get_resource_info(source: PdfSource, resource_id: str, options: dict | None = None) -> dict`
+### `get_resource_data(source: PdfSource, resource_id: str, options: dict | None = None) -> bytes`
+List and retrieve extracted embedded resources (images). See
+[Embedded resources](#embedded-resources) — these only return anything once
+`extract_resources` is enabled via `options`.
+
+## Parsing options
+
+Every function accepts `options: dict | None = None`. Every key is optional; an
+absent key keeps unpdf's own default:
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `error_mode` | `"strict"` \| `"lenient"` | `"lenient"` | Fail on any parse error, or skip invalid content and continue. |
+| `extract_mode` | `"full"` \| `"text_only"` \| `"structure_only"` | `"full"` | What to extract. |
+| `extract_resources` | `bool` | `False` | Populate the resource inventory `get_resource_ids` etc. read from. Off by default — bounds peak memory on large PDFs. |
+| `min_image_dimension` | `int` | `64` | Images below this on either axis are dropped as decorative (logos, rule lines, tracking pixels). `0` keeps every image. |
+| `parallel` | `bool` | `True` | Multi-threaded page processing. |
+| `password` | `str` | — | Password for encrypted documents. |
+| `suppress_low_confidence_ocr` | `bool` | `True` | Drop an invisible OCR text layer whose recognized text is not readable. |
+
+```python
+info = unpdf.get_info("document.pdf", options={"extract_resources": True})
+print(info["resource_count"])
+```
+
+## Embedded resources
+
+```python
+options = {"extract_resources": True, "min_image_dimension": 0}
+data = open("document.pdf", "rb").read()
+
+for resource_id in unpdf.get_resource_ids(data, options=options):
+    info = unpdf.get_resource_info(data, resource_id, options=options)
+    image_bytes = unpdf.get_resource_data(data, resource_id, options=options)
+    # ...
+```
+
+Each call above re-parses the document — `options` must be passed identically to
+every call in the sequence, since Python has no persistent document handle the way
+the C#/Rust APIs do.
 
 ## Detecting scanned (image-only) PDFs
 
@@ -149,8 +195,8 @@ if quality["pages_incomplete"]:
 | `skipped_object_count` | Objects that could not be loaded. Most cost no page. |
 
 Also note that `get_info()["resource_count"]` counts the extracted-resource
-inventory, which this binding's parse path leaves empty (resource extraction is off
-by default to bound peak memory) — it is not a count of images on the page. Use
+inventory, which is empty unless `options={"extract_resources": True}` (see
+[Parsing options](#parsing-options)) — it is not a count of images on the page. Use
 `get_page_stats` for scan detection.
 
 ## Handling failures

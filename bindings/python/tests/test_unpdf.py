@@ -150,6 +150,127 @@ def _suppressed_text_run_pdf() -> bytes:
     ])
 
 
+def _jpeg_pdf(width: int, height: int) -> bytes:
+    """One page with a single ``DCTDecode``-tagged image XObject of the given size.
+
+    The bytes are not a real decodable JPEG — nothing decodes them — but the
+    ``Filter`` entry is what the parser uses to classify a resource as a renderable
+    image format, unlike the raw/undecoded pixel buffer ``_image_only_pdf`` produces.
+    """
+    content = b"q 595 0 0 842 0 0 cm /Im0 Do Q\n"
+    return _assemble([
+        b"<</Type/Catalog/Pages 2 0 R>>",
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>",
+        b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]"
+        b"/Resources<</XObject<</Im0 5 0 R>>>>/Contents 4 0 R>>",
+        _stream_object(b"<</Length %d>>" % len(content), content),
+        _stream_object(
+            b"<</Type/XObject/Subtype/Image/Width %d/Height %d/ColorSpace/DeviceRGB"
+            b"/BitsPerComponent 8/Filter/DCTDecode/Length 4>>" % (width, height),
+            b"\xff\xd8\xff\xd9",
+        ),
+    ])
+
+
+class TestParseOptions:
+    """``options`` — the C ABI surface for ``ParseOptions``, previously unreachable
+    from this binding (docket #125: no ``ParseOptions`` field at all reached C# or
+    Python, both routed through the same option-less C ABI entry points)."""
+
+    def test_no_options_matches_previous_behavior(self):
+        info = unpdf.get_info(_jpeg_pdf(100, 100))
+        assert info["resource_count"] == 0
+
+    def test_extract_resources_populates_resource_inventory(self):
+        info = unpdf.get_info(
+            _jpeg_pdf(100, 100), options={"extract_resources": True}
+        )
+        assert info["resource_count"] == 1
+
+    def test_raw_undecoded_images_never_surfaced(self):
+        # The undecoded pixel buffer `_image_only_pdf` produces is a format most
+        # GetResourceData callers cannot use, and must never appear regardless of
+        # `min_image_dimension` — the shared-filter fix landed in the same cycle
+        # this options surface was added, and this is its regression test.
+        info = unpdf.get_info(
+            _image_only_pdf(),
+            options={"extract_resources": True, "min_image_dimension": 0},
+        )
+        assert info["resource_count"] == 0
+
+    def test_min_image_dimension_drops_small_images_by_default(self):
+        info = unpdf.get_info(_jpeg_pdf(10, 10), options={"extract_resources": True})
+        assert info["resource_count"] == 0
+
+    def test_min_image_dimension_zero_keeps_small_images(self):
+        info = unpdf.get_info(
+            _jpeg_pdf(10, 10),
+            options={"extract_resources": True, "min_image_dimension": 0},
+        )
+        assert info["resource_count"] == 1
+
+    def test_malformed_options_json_raises_invalid_argument(self):
+        # `options` must be JSON-serializable; a non-serializable value raises in
+        # Python before any native call, which is the correct place for it to fail.
+        with pytest.raises(TypeError):
+            unpdf.get_info(_jpeg_pdf(10, 10), options={"extract_resources": object()})
+
+    def test_options_reaches_file_path_entry_point_too(self, tmp_path):
+        path = tmp_path / "jpeg.pdf"
+        path.write_bytes(_jpeg_pdf(100, 100))
+        info = unpdf.get_info(str(path), options={"extract_resources": True})
+        assert info["resource_count"] == 1
+
+
+class TestResourceAccessors:
+    """``get_resource_ids`` / ``get_resource_info`` / ``get_resource_data`` — the
+    Python binding declared these native functions in ``_native.py`` but never
+    exposed them; ``resource_count`` was reachable but nothing to retrieve the
+    resources themselves was (docket #125 triage finding)."""
+
+    def test_no_extract_resources_returns_empty_list(self):
+        assert unpdf.get_resource_ids(_jpeg_pdf(100, 100)) == []
+
+    def test_get_resource_ids_lists_extracted_resources(self):
+        ids = unpdf.get_resource_ids(
+            _jpeg_pdf(100, 100), options={"extract_resources": True}
+        )
+        assert len(ids) == 1
+        assert ids[0].startswith("page1_Im0")
+
+    def test_get_resource_info_reports_metadata(self):
+        options = {"extract_resources": True}
+        data = _jpeg_pdf(100, 100)
+        [resource_id] = unpdf.get_resource_ids(data, options=options)
+
+        info = unpdf.get_resource_info(data, resource_id, options=options)
+        assert info["width"] == 100
+        assert info["height"] == 100
+        assert info["type"] == "image"
+
+    def test_get_resource_data_returns_bytes(self):
+        options = {"extract_resources": True}
+        data = _jpeg_pdf(100, 100)
+        [resource_id] = unpdf.get_resource_ids(data, options=options)
+
+        resource_bytes = unpdf.get_resource_data(data, resource_id, options=options)
+        assert resource_bytes == b"\xff\xd8\xff\xd9"
+
+    def test_get_resource_info_unknown_id_raises(self):
+        with pytest.raises(RuntimeError) as exc_info:
+            unpdf.get_resource_info(
+                _jpeg_pdf(100, 100), "nonexistent", options={"extract_resources": True}
+            )
+        assert exc_info.value.kind == unpdf.ErrorKind.RESOURCE_NOT_FOUND
+
+    def test_get_resource_data_unknown_id_raises(self):
+        with pytest.raises(RuntimeError) as exc_info:
+            unpdf.get_resource_data(
+                _jpeg_pdf(100, 100), "nonexistent", options={"extract_resources": True}
+            )
+        assert exc_info.value.kind == unpdf.ErrorKind.RESOURCE_NOT_FOUND
+
+
 class TestInputForms:
     """A PDF may be given as a path, a path-like object, or its own bytes.
 

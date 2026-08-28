@@ -110,26 +110,45 @@ def _native_error(lib: ctypes.CDLL) -> "UnpdfError":
     return UnpdfError(f"unpdf error: {message}", kind)
 
 
-def _parse_file(lib: ctypes.CDLL, source: PdfSource) -> ctypes.c_void_p:
+#: Parsing options accepted by every function below, passed straight through to the
+#: native library as JSON. Every key is optional; an absent key keeps unpdf's own
+#: default for that setting. Known keys: ``error_mode`` (``"strict"`` |
+#: ``"lenient"``), ``extract_mode`` (``"full"`` | ``"text_only"`` |
+#: ``"structure_only"``), ``extract_resources`` (bool — off by default; enable to
+#: populate the resource inventory :func:`get_resource_ids`/:func:`get_resource_info`/
+#: :func:`get_resource_data` read from), ``min_image_dimension`` (int, default 64 —
+#: images below this on either axis are dropped as decorative; 0 keeps every image),
+#: ``parallel`` (bool), ``password`` (str), ``suppress_low_confidence_ocr`` (bool).
+ParseOptions = "dict[str, Any]"
+
+
+def _parse_file(
+    lib: ctypes.CDLL, source: PdfSource, options: "dict[str, Any] | None" = None
+) -> ctypes.c_void_p:
     """Parse a PDF and return the document handle. Raises on failure.
 
     Dispatches on the type of ``source``: bytes are parsed in memory, anything
-    else is treated as a filesystem path.
+    else is treated as a filesystem path. ``options`` is JSON-encoded and passed
+    to the native library; ``None`` (the default) keeps unpdf's own defaults.
     """
+    options_json = json.dumps(options).encode("utf-8") if options is not None else None
+
     if isinstance(source, (bytes, bytearray)):
         if not source:
             raise UnpdfError("unpdf error: empty PDF data", ErrorKind.INVALID_ARGUMENT)
         buf = (ctypes.c_uint8 * len(source)).from_buffer_copy(source)
-        handle = lib.unpdf_parse_bytes(buf, len(source))
+        handle = lib.unpdf_parse_bytes_with_options(buf, len(source), options_json)
     else:
-        handle = lib.unpdf_parse_file(_encode_path(source))
+        handle = lib.unpdf_parse_file_with_options(_encode_path(source), options_json)
 
     if not handle:
         raise _native_error(lib)
     return handle
 
 
-def to_markdown(source: PdfSource, flags: int = 0) -> str:
+def to_markdown(
+    source: PdfSource, flags: int = 0, options: "dict[str, Any] | None" = None
+) -> str:
     """
     Convert a PDF file to Markdown format.
 
@@ -140,6 +159,8 @@ def to_markdown(source: PdfSource, flags: int = 0) -> str:
             ``UNPDF_FLAG_ESCAPE_SPECIAL``, ``UNPDF_FLAG_PAGE_MARKERS`` and
             ``UNPDF_FLAG_REFINE`` (optional). All are importable from
             ``unpdf``.
+        options: Parsing options — see :data:`ParseOptions`. ``None`` (the
+            default) uses unpdf's own defaults.
 
     Returns:
         The extracted content as Markdown.
@@ -148,7 +169,7 @@ def to_markdown(source: PdfSource, flags: int = 0) -> str:
         UnpdfError: If conversion fails. Its ``kind`` says why.
     """
     lib = get_library()
-    handle = _parse_file(lib, source)
+    handle = _parse_file(lib, source, options)
     try:
         result = lib.unpdf_to_markdown(handle, flags)
         if not result:
@@ -158,13 +179,15 @@ def to_markdown(source: PdfSource, flags: int = 0) -> str:
         lib.unpdf_free_document(handle)
 
 
-def to_text(source: PdfSource) -> str:
+def to_text(source: PdfSource, options: "dict[str, Any] | None" = None) -> str:
     """
     Convert a PDF file to plain text.
 
     Args:
         source: Path to the PDF file (``str`` or ``os.PathLike``), or the
             PDF's own bytes.
+        options: Parsing options — see :data:`ParseOptions`. ``None`` (the
+            default) uses unpdf's own defaults.
 
     Returns:
         The extracted content as plain text.
@@ -173,7 +196,7 @@ def to_text(source: PdfSource) -> str:
         UnpdfError: If conversion fails. Its ``kind`` says why.
     """
     lib = get_library()
-    handle = _parse_file(lib, source)
+    handle = _parse_file(lib, source, options)
     try:
         result = lib.unpdf_to_text(handle)
         if not result:
@@ -183,7 +206,9 @@ def to_text(source: PdfSource) -> str:
         lib.unpdf_free_document(handle)
 
 
-def to_json(source: PdfSource, pretty: bool = False) -> str:
+def to_json(
+    source: PdfSource, pretty: bool = False, options: "dict[str, Any] | None" = None
+) -> str:
     """
     Convert a PDF file to JSON format.
 
@@ -191,6 +216,8 @@ def to_json(source: PdfSource, pretty: bool = False) -> str:
         source: Path to the PDF file (``str`` or ``os.PathLike``), or the
             PDF's own bytes.
         pretty: If True, format JSON with indentation.
+        options: Parsing options — see :data:`ParseOptions`. ``None`` (the
+            default) uses unpdf's own defaults.
 
     Returns:
         The extracted content as JSON string.
@@ -199,7 +226,7 @@ def to_json(source: PdfSource, pretty: bool = False) -> str:
         UnpdfError: If conversion fails. Its ``kind`` says why.
     """
     lib = get_library()
-    handle = _parse_file(lib, source)
+    handle = _parse_file(lib, source, options)
     try:
         fmt = UNPDF_JSON_PRETTY if pretty else UNPDF_JSON_COMPACT
         result = lib.unpdf_to_json(handle, fmt)
@@ -210,21 +237,27 @@ def to_json(source: PdfSource, pretty: bool = False) -> str:
         lib.unpdf_free_document(handle)
 
 
-def get_info(source: PdfSource) -> dict[str, Any]:
+def get_info(
+    source: PdfSource, options: "dict[str, Any] | None" = None
+) -> dict[str, Any]:
     """
     Get document metadata from a PDF file.
 
     Note:
         ``resource_count`` counts the extracted-resource inventory, which is
-        populated only when parsing runs with resource extraction enabled — the
-        FFI parse path keeps it off by default (since 0.4.0), so it is 0 here.
-        It is not a count of images referenced by page content streams; to detect
-        image-only (scanned) pages use :func:`get_page_stats` or
+        populated only when parsing runs with resource extraction enabled — pass
+        ``options={"extract_resources": True}`` (see :data:`ParseOptions`), then
+        read the resources themselves with :func:`get_resource_ids` /
+        :func:`get_resource_info` / :func:`get_resource_data`. It is not a count
+        of images referenced by page content streams; to detect image-only
+        (scanned) pages use :func:`get_page_stats` or
         :func:`get_extraction_quality` instead.
 
     Args:
         source: Path to the PDF file (``str`` or ``os.PathLike``), or the
             PDF's own bytes.
+        options: Parsing options — see :data:`ParseOptions`. ``None`` (the
+            default) uses unpdf's own defaults.
 
     Returns:
         Dictionary containing document metadata (title, author, section_count, etc.)
@@ -233,7 +266,7 @@ def get_info(source: PdfSource) -> dict[str, Any]:
         UnpdfError: If extraction fails. Its ``kind`` says why.
     """
     lib = get_library()
-    handle = _parse_file(lib, source)
+    handle = _parse_file(lib, source, options)
     try:
         info: dict[str, Any] = {}
 
@@ -253,7 +286,9 @@ def get_info(source: PdfSource) -> dict[str, Any]:
         lib.unpdf_free_document(handle)
 
 
-def get_extraction_quality(source: PdfSource) -> dict[str, Any]:
+def get_extraction_quality(
+    source: PdfSource, options: "dict[str, Any] | None" = None
+) -> dict[str, Any]:
     """
     Get extraction quality diagnostics for a PDF file.
 
@@ -269,6 +304,8 @@ def get_extraction_quality(source: PdfSource) -> dict[str, Any]:
     Args:
         source: Path to the PDF file (``str`` or ``os.PathLike``), or the
             PDF's own bytes.
+        options: Parsing options — see :data:`ParseOptions`. ``None`` (the
+            default) uses unpdf's own defaults.
 
     Returns:
         Dictionary with ``char_count``, ``word_count``, ``replacement_char_count``,
@@ -289,7 +326,7 @@ def get_extraction_quality(source: PdfSource) -> dict[str, Any]:
         UnpdfError: If parsing or retrieval fails. Its ``kind`` says why.
     """
     lib = get_library()
-    handle = _parse_file(lib, source)
+    handle = _parse_file(lib, source, options)
     try:
         result = lib.unpdf_get_extraction_quality(handle)
         if not result:
@@ -299,7 +336,9 @@ def get_extraction_quality(source: PdfSource) -> dict[str, Any]:
         lib.unpdf_free_document(handle)
 
 
-def get_page_stats(source: PdfSource, page_number: int) -> dict[str, Any]:
+def get_page_stats(
+    source: PdfSource, page_number: int, options: "dict[str, Any] | None" = None
+) -> dict[str, Any]:
     """
     Get content-stream operator statistics for a single page.
 
@@ -315,6 +354,8 @@ def get_page_stats(source: PdfSource, page_number: int) -> dict[str, Any]:
         source: Path to the PDF file (``str`` or ``os.PathLike``), or the
             PDF's own bytes.
         page_number: Page number (1-indexed).
+        options: Parsing options — see :data:`ParseOptions`. ``None`` (the
+            default) uses unpdf's own defaults.
 
     Returns:
         Dictionary with ``page``, ``text_op_count``, ``image_op_count``,
@@ -328,7 +369,7 @@ def get_page_stats(source: PdfSource, page_number: int) -> dict[str, Any]:
             (``kind == ErrorKind.PAGE_OUT_OF_RANGE``).
     """
     lib = get_library()
-    handle = _parse_file(lib, source)
+    handle = _parse_file(lib, source, options)
     try:
         result = lib.unpdf_page_stats(handle, page_number)
         if not result:
@@ -338,13 +379,124 @@ def get_page_stats(source: PdfSource, page_number: int) -> dict[str, Any]:
         lib.unpdf_free_document(handle)
 
 
-def get_page_count(source: PdfSource) -> int:
+def get_resource_ids(
+    source: PdfSource, options: "dict[str, Any] | None" = None
+) -> "list[str]":
+    """
+    List the ids of a document's extracted embedded resources (images).
+
+    The inventory is only populated when parsing with
+    ``options={"extract_resources": True}`` (see :data:`ParseOptions`) — without
+    it this returns an empty list, not an error, matching :func:`get_info`'s
+    ``resource_count``.
+
+    Args:
+        source: Path to the PDF file (``str`` or ``os.PathLike``), or the
+            PDF's own bytes.
+        options: Parsing options — see :data:`ParseOptions`.
+
+    Returns:
+        Resource ids, e.g. ``["page1_Im0.jpg"]``. Pass one to
+        :func:`get_resource_info` or :func:`get_resource_data`.
+
+    Raises:
+        UnpdfError: If parsing fails. Its ``kind`` says why.
+    """
+    lib = get_library()
+    handle = _parse_file(lib, source, options)
+    try:
+        result = lib.unpdf_get_resource_ids(handle)
+        if not result:
+            raise _native_error(lib)
+        return json.loads(result.decode("utf-8"))
+    finally:
+        lib.unpdf_free_document(handle)
+
+
+def get_resource_info(
+    source: PdfSource, resource_id: str, options: "dict[str, Any] | None" = None
+) -> dict[str, Any]:
+    """
+    Get metadata for one extracted resource, without its binary data.
+
+    Requires ``options={"extract_resources": True}`` — see
+    :func:`get_resource_ids`.
+
+    Args:
+        source: Path to the PDF file (``str`` or ``os.PathLike``), or the
+            PDF's own bytes.
+        resource_id: A resource id from :func:`get_resource_ids`.
+        options: Parsing options — see :data:`ParseOptions`.
+
+    Returns:
+        Dictionary with ``id``, ``type``, ``filename``, ``mime_type``, ``size``,
+        ``width``, ``height``.
+
+    Raises:
+        UnpdfError: If parsing fails or ``resource_id`` is not found
+            (``kind == ErrorKind.RESOURCE_NOT_FOUND``).
+    """
+    lib = get_library()
+    handle = _parse_file(lib, source, options)
+    try:
+        result = lib.unpdf_get_resource_info(handle, resource_id.encode("utf-8"))
+        if not result:
+            raise _native_error(lib)
+        return json.loads(result.decode("utf-8"))
+    finally:
+        lib.unpdf_free_document(handle)
+
+
+def get_resource_data(
+    source: PdfSource, resource_id: str, options: "dict[str, Any] | None" = None
+) -> bytes:
+    """
+    Get the binary data of one extracted resource.
+
+    Requires ``options={"extract_resources": True}`` — see
+    :func:`get_resource_ids`.
+
+    Args:
+        source: Path to the PDF file (``str`` or ``os.PathLike``), or the
+            PDF's own bytes.
+        resource_id: A resource id from :func:`get_resource_ids`.
+        options: Parsing options — see :data:`ParseOptions`.
+
+    Returns:
+        The resource's raw bytes (e.g. JPEG-encoded image data).
+
+    Raises:
+        UnpdfError: If parsing fails or ``resource_id`` is not found
+            (``kind == ErrorKind.RESOURCE_NOT_FOUND``).
+    """
+    lib = get_library()
+    handle = _parse_file(lib, source, options)
+    try:
+        out_len = ctypes.c_size_t(0)
+        result = lib.unpdf_get_resource_data(
+            handle, resource_id.encode("utf-8"), ctypes.byref(out_len)
+        )
+        if not result:
+            raise _native_error(lib)
+        try:
+            return ctypes.string_at(result, out_len.value)
+        finally:
+            lib.unpdf_free_bytes(result, out_len.value)
+    finally:
+        lib.unpdf_free_document(handle)
+
+
+def get_page_count(
+    source: PdfSource, options: "dict[str, Any] | None" = None
+) -> int:
     """
     Get the number of pages (sections) in a PDF file.
 
     Args:
         source: Path to the PDF file (``str`` or ``os.PathLike``), or the
             PDF's own bytes.
+        options: Parsing options — see :data:`ParseOptions`. ``None`` (the
+            default) uses unpdf's own defaults.
 
     Returns:
         The number of pages, or -1 if it could not be parsed.
@@ -356,7 +508,7 @@ def get_page_count(source: PdfSource) -> int:
     """
     lib = get_library()
     try:
-        handle = _parse_file(lib, source)
+        handle = _parse_file(lib, source, options)
     except UnpdfError:
         return -1
     try:
@@ -365,7 +517,7 @@ def get_page_count(source: PdfSource) -> int:
         lib.unpdf_free_document(handle)
 
 
-def is_pdf(source: PdfSource) -> bool:
+def is_pdf(source: PdfSource, options: "dict[str, Any] | None" = None) -> bool:
     """
     Check whether a PDF can be parsed, by attempting to parse it.
 
@@ -375,6 +527,8 @@ def is_pdf(source: PdfSource) -> bool:
 
     Args:
         source: Path to the file (``str`` or ``os.PathLike``), or PDF bytes.
+        options: Parsing options — see :data:`ParseOptions`. ``None`` (the
+            default) uses unpdf's own defaults.
 
     Returns:
         True if it can be parsed as a PDF, False otherwise — including when the
@@ -387,7 +541,7 @@ def is_pdf(source: PdfSource) -> bool:
     """
     lib = get_library()
     try:
-        handle = _parse_file(lib, source)
+        handle = _parse_file(lib, source, options)
     except UnpdfError:
         return False
     lib.unpdf_free_document(handle)

@@ -37,6 +37,25 @@ impl ParseOptions {
         self.inner = self.inner.with_pages(PageSelection::Range(from..=to));
         self
     }
+
+    /// Enable or disable resource (embedded image) extraction. Off by default —
+    /// large PDFs loading every embedded image into memory is the largest peak-
+    /// memory vector in this library. See `withMinImageDimension` to also tune
+    /// which images count.
+    #[wasm_bindgen(js_name = withResources)]
+    pub fn with_resources(mut self, extract: bool) -> Self {
+        self.inner = self.inner.with_resources(extract);
+        self
+    }
+
+    /// Minimum pixel width/height for an extracted image to be kept — images
+    /// below this on either axis are dropped as decorative (logos, rule lines,
+    /// tracking pixels). Default 64; `0` keeps every image regardless of size.
+    #[wasm_bindgen(js_name = withMinImageDimension)]
+    pub fn with_min_image_dimension(mut self, min_px: u32) -> Self {
+        self.inner = self.inner.with_min_image_dimension(min_px);
+        self
+    }
 }
 
 #[cfg(test)]
@@ -68,5 +87,17 @@ mod tests {
             opts.inner.pages,
             unpdf::render::PageSelection::Range(_)
         ));
+    }
+
+    #[wasm_bindgen_test]
+    fn test_parse_options_with_resources() {
+        let opts = ParseOptions::new().with_resources(true);
+        assert!(opts.inner.extract_resources);
+    }
+
+    #[wasm_bindgen_test]
+    fn test_parse_options_with_min_image_dimension() {
+        let opts = ParseOptions::new().with_min_image_dimension(0);
+        assert_eq!(opts.inner.min_image_dimension, 0);
     }
 }
