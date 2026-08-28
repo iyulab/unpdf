@@ -498,6 +498,55 @@ public class UnpdfDocument : IDisposable
     }
 
     /// <summary>
+    /// Raw JSON payload behind <see cref="GetExtractionQuality"/>, before it is
+    /// deserialized into <see cref="ExtractionQuality"/>.
+    /// </summary>
+    /// <remarks>
+    /// Test-only: lets the field-coverage regression suite compare the native
+    /// payload's actual keys against <see cref="ExtractionQuality"/>'s declared
+    /// properties by reflection, instead of a hand-maintained field list that can
+    /// silently drift from either side.
+    /// </remarks>
+    internal string GetExtractionQualityRawJson()
+    {
+        ThrowIfDisposed();
+        var ptr = NativeMethods.unpdf_get_extraction_quality(_handle);
+        if (ptr == IntPtr.Zero)
+            throw Failure("Failed to get extraction quality");
+
+        try
+        {
+            return PtrToStringUtf8(ptr);
+        }
+        finally
+        {
+            NativeMethods.unpdf_free_string(ptr);
+        }
+    }
+
+    /// <summary>
+    /// Raw JSON payload behind <see cref="GetPageStats"/>, before it is
+    /// deserialized into <see cref="PageStats"/>. Test-only — see
+    /// <see cref="GetExtractionQualityRawJson"/> for why this exists.
+    /// </summary>
+    internal string GetPageStatsRawJson(int pageNumber)
+    {
+        ThrowIfDisposed();
+        var ptr = NativeMethods.unpdf_page_stats(_handle, pageNumber);
+        if (ptr == IntPtr.Zero)
+            throw Failure($"Failed to get stats for page {pageNumber}");
+
+        try
+        {
+            return PtrToStringUtf8(ptr);
+        }
+        finally
+        {
+            NativeMethods.unpdf_free_string(ptr);
+        }
+    }
+
+    /// <summary>
     /// Get list of resource IDs in the document.
     /// </summary>
     /// <returns>Array of resource ID strings</returns>

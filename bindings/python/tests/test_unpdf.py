@@ -419,6 +419,35 @@ class TestGetPageStats:
         assert stats["suppressed_text_runs"] == quality["suppressed_text_runs"]
 
 
+class TestDtoFieldCoverage:
+    """Canary for the field-drift bug class the C# binding hit (docket #87):
+    a hand-maintained strongly-typed DTO silently stops mapping a field the
+    native FFI JSON still sends, because JSON deserialization ignores unknown
+    keys by default.
+
+    This binding is structurally immune today — ``get_extraction_quality``/
+    ``get_page_stats`` return the parsed JSON dict as-is, with no intermediate
+    typed model to fall out of sync — so there is nothing to reflect over here
+    the way ``Unpdf.Tests/DtoFieldCoverageTests.cs`` does for the C# DTOs.
+    These tests exist to keep that invariant visible: if a future change
+    introduces a dataclass/typed model for either function, one of these
+    assertions breaks, which is the signal to add the equivalent reflection
+    coverage test rather than let the same drift risk back in unguarded.
+    """
+
+    def test_get_extraction_quality_returns_plain_dict(self, tmp_path):
+        pdf_file = tmp_path / "text.pdf"
+        pdf_file.write_bytes(_text_pdf())
+        quality = unpdf.get_extraction_quality(str(pdf_file))
+        assert type(quality) is dict
+
+    def test_get_page_stats_returns_plain_dict(self, tmp_path):
+        pdf_file = tmp_path / "text.pdf"
+        pdf_file.write_bytes(_text_pdf())
+        stats = unpdf.get_page_stats(str(pdf_file), 1)
+        assert type(stats) is dict
+
+
 class TestToJson:
     """Tests for to_json function."""
 
