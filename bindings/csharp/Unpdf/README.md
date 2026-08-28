@@ -115,10 +115,26 @@ reports `UnpdfErrorKind.Other`.
 
 ### Embedded resources
 
-Resource extraction is off by default in this binding's parse path (it bounds peak
-memory on large PDFs), so `ResourceCount` is 0 and `GetResourceIds()` is empty for
-documents parsed through `ParseFile` / `ParseBytes`. Use `GetPageStats` to detect
-image-only pages rather than `ResourceCount`.
+Resource extraction is off by default (it bounds peak memory on large PDFs), so
+`ResourceCount` is 0 and `GetResourceIds()` is empty unless you opt in:
+
+```csharp
+using var doc = UnpdfDocument.ParseFile(path, new ParseOptions
+{
+    ExtractResources = true,
+    MinImageDimension = 0, // keep every image regardless of size; default 64 drops decorative ones
+});
+
+foreach (var id in doc.GetResourceIds())
+{
+    var info = doc.GetResourceInfo(id);
+    var data = doc.GetResourceData(id);
+    // ...
+}
+```
+
+Use `GetPageStats` instead of `ResourceCount` to detect image-only pages without
+paying the extraction cost.
 
 ## API Reference
 
@@ -126,8 +142,8 @@ image-only pages rather than `ResourceCount`.
 
 | Member | Description |
 |--------|-------------|
-| `static UnpdfDocument ParseFile(string path)` | Parse a PDF from disk. |
-| `static UnpdfDocument ParseBytes(byte[] data)` | Parse a PDF from memory. |
+| `static UnpdfDocument ParseFile(string path, ParseOptions? options = null)` | Parse a PDF from disk. |
+| `static UnpdfDocument ParseBytes(byte[] data, ParseOptions? options = null)` | Parse a PDF from memory. |
 | `static string Version` | Native library version. |
 | `string ToMarkdown(MarkdownOptions? options = null)` | Render the whole document as Markdown. |
 | `string ToText()` | Render the whole document as plain text. |

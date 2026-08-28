@@ -76,16 +76,23 @@ internal static class NativeMethods
     public static extern int unpdf_last_error_kind();
 
     /// <summary>
-    /// Parse a document from a file path.
+    /// Parse a document from a file path, with options. <paramref name="optionsJson"/> may be
+    /// <see langword="null"/> (defaults).
     /// </summary>
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
-    public static extern IntPtr unpdf_parse_file([MarshalAs(UnmanagedType.LPUTF8Str)] string path);
+    public static extern IntPtr unpdf_parse_file_with_options(
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string path,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string? optionsJson);
 
     /// <summary>
-    /// Parse a document from a byte buffer.
+    /// Parse a document from a byte buffer, with options. <paramref name="optionsJson"/> may be
+    /// <see langword="null"/> (defaults).
     /// </summary>
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    public static extern IntPtr unpdf_parse_bytes(IntPtr data, UIntPtr len);
+    public static extern IntPtr unpdf_parse_bytes_with_options(
+        IntPtr data,
+        UIntPtr len,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string? optionsJson);
 
     /// <summary>
     /// Free a document handle.

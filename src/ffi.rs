@@ -21,7 +21,8 @@ use uncore::ffi::{self, invalid_argument, FfiError, LastErrorSlot};
 
 use crate::error::ErrorKind;
 use crate::model::Document;
-use crate::render::{JsonFormat, PageMarkerStyle, RenderOptions};
+use crate::parser::{ErrorMode, ExtractMode, ParseOptions};
+use crate::render::{JsonFormat, PageMarkerStyle, PageSelection, RenderOptions};
 
 // Thread-local storage for the last error message and its classification. Declared
 // here rather than in `uncore` — see that crate's `ffi` module docs for why the slot
@@ -63,7 +64,8 @@ uncore::export_handle! {
     ///
     /// # Safety
     ///
-    /// - `doc` must be a valid pointer returned by `unpdf_parse_file` or `unpdf_parse_bytes`.
+    /// - `doc` must be a valid pointer returned by `unpdf_parse_file`, `unpdf_parse_bytes`,
+    ///   `unpdf_parse_file_with_options`, or `unpdf_parse_bytes_with_options`.
     /// - After calling this function, the handle is invalid and must not be used.
     free unpdf_free_document,
 }
@@ -161,6 +163,194 @@ pub unsafe extern "C" fn unpdf_parse_bytes(data: *const u8, len: usize) -> *mut 
         let bytes = std::slice::from_raw_parts(data, len);
 
         crate::parse_bytes(bytes)
+            .map(|doc| Box::into_raw(Box::new(UnpdfDocument { inner: doc })))
+            .map_err(ffi_err)
+    });
+
+    match result {
+        Ok(doc) => doc,
+        Err(error) => {
+            LAST_ERROR.with(|slot| slot.set_error(&error));
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Deserializable mirror of [`ParseOptions`] for the `_with_options` C ABI entry points.
+///
+/// Every field is optional; an absent field keeps `ParseOptions::default()`'s value. Kept
+/// separate from `ParseOptions` itself so the core Rust API's shape is not dictated by the
+/// FFI JSON wire format — the same separation `unpdf-wasm`'s own `ParseOptions` wrapper
+/// already keeps from the core type.
+///
+/// # Schema
+///
+/// ```json
+/// {
+///   "error_mode": "strict" | "lenient",
+///   "extract_mode": "full" | "text_only" | "structure_only",
+///   "extract_resources": bool,
+///   "min_image_dimension": number,
+///   "parallel": bool,
+///   "pages": "all" | { "range": { "from": number, "to": number } } | { "pages": [number, ...] },
+///   "password": string,
+///   "suppress_low_confidence_ocr": bool
+/// }
+/// ```
+#[derive(serde::Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+struct FfiParseOptions {
+    error_mode: Option<FfiErrorMode>,
+    extract_mode: Option<FfiExtractMode>,
+    extract_resources: Option<bool>,
+    min_image_dimension: Option<u32>,
+    parallel: Option<bool>,
+    pages: Option<FfiPageSelection>,
+    password: Option<String>,
+    suppress_low_confidence_ocr: Option<bool>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum FfiErrorMode {
+    Strict,
+    Lenient,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum FfiExtractMode {
+    Full,
+    TextOnly,
+    StructureOnly,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum FfiPageSelection {
+    All,
+    Range { from: u32, to: u32 },
+    Pages(Vec<u32>),
+}
+
+impl From<FfiParseOptions> for ParseOptions {
+    fn from(ffi: FfiParseOptions) -> Self {
+        let mut options = ParseOptions::default();
+        if let Some(mode) = ffi.error_mode {
+            options.error_mode = match mode {
+                FfiErrorMode::Strict => ErrorMode::Strict,
+                FfiErrorMode::Lenient => ErrorMode::Lenient,
+            };
+        }
+        if let Some(mode) = ffi.extract_mode {
+            options.extract_mode = match mode {
+                FfiExtractMode::Full => ExtractMode::Full,
+                FfiExtractMode::TextOnly => ExtractMode::TextOnly,
+                FfiExtractMode::StructureOnly => ExtractMode::StructureOnly,
+            };
+        }
+        if let Some(v) = ffi.extract_resources {
+            options.extract_resources = v;
+        }
+        if let Some(v) = ffi.min_image_dimension {
+            options.min_image_dimension = v;
+        }
+        if let Some(v) = ffi.parallel {
+            options.parallel = v;
+        }
+        if let Some(pages) = ffi.pages {
+            options.pages = match pages {
+                FfiPageSelection::All => PageSelection::All,
+                FfiPageSelection::Range { from, to } => PageSelection::Range(from..=to),
+                FfiPageSelection::Pages(list) => PageSelection::Pages(list),
+            };
+        }
+        if ffi.password.is_some() {
+            options.password = ffi.password;
+        }
+        if let Some(v) = ffi.suppress_low_confidence_ocr {
+            options.suppress_low_confidence_ocr = v;
+        }
+        options
+    }
+}
+
+/// Resolve the `options_json` argument shared by the `_with_options` entry points below.
+/// A null pointer means "use defaults" — it is not an error.
+///
+/// # Safety
+/// `ptr` must be null or a valid null-terminated UTF-8 string.
+unsafe fn parse_options_from_json(ptr: *const c_char) -> Result<ParseOptions, FfiError> {
+    if ptr.is_null() {
+        return Ok(ParseOptions::default());
+    }
+    let json = uncore::with_c_str!(ptr)?;
+    serde_json::from_str::<FfiParseOptions>(json)
+        .map(ParseOptions::from)
+        .map_err(|e| invalid_argument(format!("invalid options_json: {e}")))
+}
+
+/// Parse a document from a file path, with options.
+///
+/// # Safety
+///
+/// - `path` must be a valid null-terminated UTF-8 string.
+/// - `options_json` may be null (equivalent to default options) or a valid null-terminated
+///   UTF-8 JSON string matching [`FfiParseOptions`]'s schema (see that type's docs).
+/// - Returns null on error, including malformed `options_json`. Use `unpdf_last_error`.
+/// - The returned handle must be freed with `unpdf_free_document`.
+#[no_mangle]
+pub unsafe extern "C" fn unpdf_parse_file_with_options(
+    path: *const c_char,
+    options_json: *const c_char,
+) -> *mut UnpdfDocument {
+    LAST_ERROR.with(|slot| slot.clear());
+
+    let result: Result<*mut UnpdfDocument, FfiError> = ffi::catch(|| {
+        let path_str = uncore::with_c_str!(path)?;
+        let options = parse_options_from_json(options_json)?;
+
+        crate::parse_file_with_options(path_str, options)
+            .map(|doc| Box::into_raw(Box::new(UnpdfDocument { inner: doc })))
+            .map_err(ffi_err)
+    });
+
+    match result {
+        Ok(doc) => doc,
+        Err(error) => {
+            LAST_ERROR.with(|slot| slot.set_error(&error));
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Parse a document from a byte buffer, with options.
+///
+/// # Safety
+///
+/// - `data` must be a valid pointer to a byte buffer of at least `len` bytes.
+/// - `options_json` may be null (equivalent to default options) or a valid null-terminated
+///   UTF-8 JSON string matching [`FfiParseOptions`]'s schema (see that type's docs).
+/// - Returns null on error, including malformed `options_json`. Use `unpdf_last_error`.
+/// - The returned handle must be freed with `unpdf_free_document`.
+#[no_mangle]
+pub unsafe extern "C" fn unpdf_parse_bytes_with_options(
+    data: *const u8,
+    len: usize,
+    options_json: *const c_char,
+) -> *mut UnpdfDocument {
+    LAST_ERROR.with(|slot| slot.clear());
+
+    if data.is_null() {
+        LAST_ERROR.with(|slot| slot.set_error(&invalid_argument("data is null")));
+        return ptr::null_mut();
+    }
+
+    let result: Result<*mut UnpdfDocument, FfiError> = ffi::catch(|| {
+        let bytes = std::slice::from_raw_parts(data, len);
+        let options = parse_options_from_json(options_json)?;
+
+        crate::parse_bytes_with_options(bytes, options)
             .map(|doc| Box::into_raw(Box::new(UnpdfDocument { inner: doc })))
             .map_err(ffi_err)
     });

@@ -44,6 +44,91 @@ public class MarkdownOptions
 }
 
 /// <summary>
+/// What to extract from a document. Mirrors the Rust <c>ExtractMode</c>.
+/// </summary>
+public enum ExtractMode
+{
+    /// <summary>Extract everything (text, structure, resources). The default.</summary>
+    Full,
+
+    /// <summary>Extract text content only.</summary>
+    TextOnly,
+
+    /// <summary>Extract structure only (no text content).</summary>
+    StructureOnly,
+}
+
+/// <summary>
+/// Options for parsing a document.
+/// </summary>
+/// <remarks>
+/// Every property is nullable; a property left <see langword="null"/> keeps unpdf's own
+/// default for that setting rather than overriding it. Passed to the native library as a
+/// JSON payload — see the Rust <c>ffi::FfiParseOptions</c> docs for the schema this mirrors.
+/// </remarks>
+public class ParseOptions
+{
+    /// <summary>Fail on any parse error instead of skipping invalid content and continuing. Default: lenient (<see langword="false"/>).</summary>
+    public bool? Strict { get; set; }
+
+    /// <summary>What to extract. Default: <see cref="Unpdf.ExtractMode.Full"/>.</summary>
+    public ExtractMode? ExtractMode { get; set; }
+
+    /// <summary>
+    /// Extract embedded resources (images) so <see cref="UnpdfDocument.ResourceCount"/>,
+    /// <see cref="UnpdfDocument.GetResourceIds"/>, etc. are populated. Off by default — a
+    /// large PDF loading every embedded image into memory is the largest peak-memory vector
+    /// in this library. See <see cref="MinImageDimension"/> to also tune which images count.
+    /// </summary>
+    public bool? ExtractResources { get; set; }
+
+    /// <summary>
+    /// Minimum pixel width/height for an extracted image to be kept — images below this on
+    /// either axis are dropped as decorative (logos, rule lines, tracking pixels). Default:
+    /// 64. Set to 0 to keep every image regardless of size.
+    /// </summary>
+    public uint? MinImageDimension { get; set; }
+
+    /// <summary>Use parallel (multi-threaded) page processing. Default: <see langword="true"/>.</summary>
+    public bool? Parallel { get; set; }
+
+    /// <summary>Password for encrypted documents.</summary>
+    public string? Password { get; set; }
+
+    /// <summary>
+    /// Drop an invisible OCR text layer whose recognized text is not readable, rather than
+    /// keeping the raw (often garbled) layer. Default: <see langword="true"/>.
+    /// </summary>
+    public bool? SuppressLowConfidenceOcr { get; set; }
+
+    internal string? ToJson()
+    {
+        var set = Strict.HasValue || ExtractMode.HasValue || ExtractResources.HasValue
+            || MinImageDimension.HasValue || Parallel.HasValue || Password is not null
+            || SuppressLowConfidenceOcr.HasValue;
+        if (!set) return null;
+
+        var payload = new Dictionary<string, object?>();
+        if (Strict.HasValue) payload["error_mode"] = Strict.Value ? "strict" : "lenient";
+        if (ExtractMode.HasValue)
+        {
+            payload["extract_mode"] = ExtractMode.Value switch
+            {
+                Unpdf.ExtractMode.TextOnly => "text_only",
+                Unpdf.ExtractMode.StructureOnly => "structure_only",
+                _ => "full",
+            };
+        }
+        if (ExtractResources.HasValue) payload["extract_resources"] = ExtractResources.Value;
+        if (MinImageDimension.HasValue) payload["min_image_dimension"] = MinImageDimension.Value;
+        if (Parallel.HasValue) payload["parallel"] = Parallel.Value;
+        if (Password is not null) payload["password"] = Password;
+        if (SuppressLowConfidenceOcr.HasValue) payload["suppress_low_confidence_ocr"] = SuppressLowConfidenceOcr.Value;
+        return JsonSerializer.Serialize(payload);
+    }
+}
+
+/// <summary>
 /// Represents a parsed PDF document.
 /// </summary>
 /// <remarks>
@@ -76,15 +161,19 @@ public class UnpdfDocument : IDisposable
     /// Parse a document from a file path.
     /// </summary>
     /// <param name="path">Path to the PDF file</param>
+    /// <param name="options">
+    /// Parsing options. <see langword="null"/> (the default) uses unpdf's own defaults —
+    /// identical to omitting this parameter entirely.
+    /// </param>
     /// <returns>Parsed document</returns>
     /// <exception cref="UnpdfException">If parsing fails</exception>
     /// <exception cref="FileNotFoundException">If file doesn't exist</exception>
-    public static UnpdfDocument ParseFile(string path)
+    public static UnpdfDocument ParseFile(string path, ParseOptions? options = null)
     {
         if (!System.IO.File.Exists(path))
             throw new System.IO.FileNotFoundException($"File not found: {path}", path);
 
-        var handle = NativeMethods.unpdf_parse_file(path);
+        var handle = NativeMethods.unpdf_parse_file_with_options(path, options?.ToJson());
         if (handle == IntPtr.Zero)
             throw Failure($"Failed to parse {path}");
 
@@ -95,15 +184,20 @@ public class UnpdfDocument : IDisposable
     /// Parse a document from a byte array.
     /// </summary>
     /// <param name="data">Document content as bytes</param>
+    /// <param name="options">
+    /// Parsing options. <see langword="null"/> (the default) uses unpdf's own defaults —
+    /// identical to omitting this parameter entirely.
+    /// </param>
     /// <returns>Parsed document</returns>
     /// <exception cref="UnpdfException">If parsing fails</exception>
-    public static UnpdfDocument ParseBytes(byte[] data)
+    public static UnpdfDocument ParseBytes(byte[] data, ParseOptions? options = null)
     {
         var dataPtr = Marshal.AllocHGlobal(data.Length);
         try
         {
             Marshal.Copy(data, 0, dataPtr, data.Length);
-            var handle = NativeMethods.unpdf_parse_bytes(dataPtr, (UIntPtr)data.Length);
+            var handle = NativeMethods.unpdf_parse_bytes_with_options(
+                dataPtr, (UIntPtr)data.Length, options?.ToJson());
             if (handle == IntPtr.Zero)
                 throw Failure("Failed to parse bytes");
 
