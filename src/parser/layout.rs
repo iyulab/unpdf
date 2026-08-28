@@ -100,7 +100,11 @@ fn is_dot_leader_span(span: &TextSpan) -> bool {
 /// backend that emits an entire "Title .... N" line as one merged span is still
 /// caught downstream by the (optional) `render::cleanup` regex pass; the two are
 /// complementary, not redundant.
-fn normalize_dot_leaders(spans: Vec<TextSpan>) -> Vec<TextSpan> {
+///
+/// `pub(crate)`: also used by `pdf_parser`'s low-confidence table-row fallback,
+/// which builds paragraph text directly from spans without going through
+/// `TextLine`.
+pub(crate) fn normalize_dot_leaders(spans: Vec<TextSpan>) -> Vec<TextSpan> {
     let mut out: Vec<TextSpan> = Vec::with_capacity(spans.len());
     let mut i = 0;
     while i < spans.len() {

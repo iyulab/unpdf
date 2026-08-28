@@ -445,6 +445,20 @@ fn merge_same_row_paragraphs(elements: Vec<(f32, Block)>) -> Vec<(f32, Block)> {
     out
 }
 
+/// Render a table row detected with low confidence as plain paragraph text.
+///
+/// A row misdetected as a low-confidence table can still be a TOC line (title/
+/// leader/page-number spans look table-row-ish to the detector) — dot leaders
+/// are normalized the same way the `TextLine` path does, so this fallback
+/// doesn't leak raw dot runs into paragraph text.
+fn low_confidence_row_text(row: &super::table_detector::TableRowData) -> String {
+    super::layout::normalize_dot_leaders(row.spans.clone())
+        .iter()
+        .map(|s| s.text.as_str())
+        .collect::<Vec<_>>()
+        .join("  ")
+}
+
 fn extract_page_with_tables_fn(
     analyzer: &mut super::layout::LayoutAnalyzer,
     page_num: u32,
@@ -482,12 +496,7 @@ fn extract_page_with_tables_fn(
                     detected.confidence
                 );
                 for row in &detected.rows {
-                    let text = row
-                        .spans
-                        .iter()
-                        .map(|s| s.text.as_str())
-                        .collect::<Vec<_>>()
-                        .join("  ");
+                    let text = low_confidence_row_text(row);
                     if !text.trim().is_empty() {
                         elements.push((row.y, Block::Paragraph(Paragraph::with_text(text))));
                     }
@@ -646,5 +655,42 @@ mod tests {
         assert_eq!(date.year(), 2024);
         assert_eq!(date.month(), 1);
         assert_eq!(date.day(), 1);
+    }
+
+    use crate::parser::layout::TextSpan;
+    use crate::parser::table_detector::TableRowData;
+
+    fn span_at(text: &str, x: f32, width: f32) -> TextSpan {
+        TextSpan {
+            width,
+            ..TextSpan::new(text.to_string(), x, 500.0, 12.0, "Helvetica".into())
+        }
+    }
+
+    #[test]
+    fn test_low_confidence_row_text_normalizes_toc_dot_leader() {
+        // A TOC line ("Chapter 1 .......... 6") is exactly the multi-span shape
+        // that can make a table detector misclassify it as a low-confidence
+        // table row — the fallback join must still normalize its dot leader.
+        let row = TableRowData {
+            y: 500.0,
+            spans: vec![
+                span_at("Chapter 1", 100.0, 54.0),
+                span_at("....................", 160.0, 120.0),
+                span_at("6", 290.0, 6.0),
+            ],
+        };
+
+        assert_eq!(low_confidence_row_text(&row), "Chapter 1  (p.6)");
+    }
+
+    #[test]
+    fn test_low_confidence_row_text_leaves_ordinary_rows_untouched() {
+        let row = TableRowData {
+            y: 500.0,
+            spans: vec![span_at("Name", 100.0, 30.0), span_at("Value", 200.0, 30.0)],
+        };
+
+        assert_eq!(low_confidence_row_text(&row), "Name  Value");
     }
 }

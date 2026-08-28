@@ -15,7 +15,11 @@
   fragments the text-level regex pass could produce when leader runs were split
   across multiple fragments. The existing opt-in cleanup pass is unchanged and
   still applies when a table-of-contents line is extracted as a single merged
-  fragment rather than separate title/leader/number fragments.
+  fragment rather than separate title/leader/number fragments. The same
+  normalization also now applies to a table-of-contents line that a page's
+  table detector mistakes for a low-confidence table row (its title/leader/
+  number fragments look table-row-shaped) and converts to plain text as a
+  fallback — that fallback previously bypassed the normalization entirely.
 
 ## 0.15.0 — 2026-08-28
 
