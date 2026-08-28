@@ -110,7 +110,9 @@ fn flatedecode_devicergb_image_is_reencoded_as_png() {
     assert_eq!(resource.mime_type, "image/png");
 
     let decoder = png::Decoder::new(resource.data.as_slice());
-    let mut reader = decoder.read_info().expect("valid PNG produced by the re-encoder");
+    let mut reader = decoder
+        .read_info()
+        .expect("valid PNG produced by the re-encoder");
     let mut buf = vec![0u8; reader.output_buffer_size()];
     let info = reader.next_frame(&mut buf).unwrap();
     buf.truncate(info.buffer_size());
@@ -149,7 +151,10 @@ fn flatedecode_iccbased_rgb_image_resolves_component_count_and_reencodes() {
         1,
         "ICCBased with N=3 is component-count-equivalent to DeviceRGB"
     );
-    assert_eq!(doc.resources.values().next().unwrap().mime_type, "image/png");
+    assert_eq!(
+        doc.resources.values().next().unwrap().mime_type,
+        "image/png"
+    );
 }
 
 #[test]

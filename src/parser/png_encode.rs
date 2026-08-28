@@ -39,7 +39,12 @@ impl PngColorType {
 /// sample, row-major, no filter bytes, no padding. Returns `None` if the length doesn't match
 /// (the caller has no reliable recovery for a malformed source, so it falls back to reporting
 /// the image as unsupported rather than emitting a corrupt PNG).
-pub(crate) fn encode(width: u32, height: u32, color_type: PngColorType, pixel_data: &[u8]) -> Option<Vec<u8>> {
+pub(crate) fn encode(
+    width: u32,
+    height: u32,
+    color_type: PngColorType,
+    pixel_data: &[u8],
+) -> Option<Vec<u8>> {
     if width == 0 || height == 0 {
         return None;
     }
@@ -120,7 +125,10 @@ mod tests {
         ];
         let png_bytes = encode(2, 2, PngColorType::Rgb, &pixels).expect("valid input encodes");
 
-        assert_eq!(&png_bytes[0..8], &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]);
+        assert_eq!(
+            &png_bytes[0..8],
+            &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]
+        );
 
         let (width, height, color_type, decoded) = decode_with_png_crate(&png_bytes);
         assert_eq!((width, height), (2, 2));

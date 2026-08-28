@@ -286,8 +286,13 @@ pub(crate) fn convert_xobject_pub(xobj: RawXObject) -> Option<Resource> {
         Some("DCTDecode") => (data, "image/jpeg"),
         Some("JPXDecode") => (data, "image/jp2"),
         Some("FlateDecode") => {
-            match reencode_flate_image_as_png(&data, width, height, bits_per_component, color_space.as_deref())
-            {
+            match reencode_flate_image_as_png(
+                &data,
+                width,
+                height,
+                bits_per_component,
+                color_space.as_deref(),
+            ) {
                 Some(png) => (png, "image/png"),
                 None => (data, "application/octet-stream"),
             }
@@ -349,7 +354,10 @@ fn reencode_flate_image_as_png(
 /// recognized image that couldn't be materialized (raw/undecoded) — not for a non-image or a
 /// below-`min_image_dimension` drop, neither of which is a format-support gap worth a quality
 /// warning.
-fn convert_resource_xobject(xobj: RawXObject, min_image_dimension: u32) -> (Option<Resource>, bool) {
+fn convert_resource_xobject(
+    xobj: RawXObject,
+    min_image_dimension: u32,
+) -> (Option<Resource>, bool) {
     let resource = match convert_xobject_pub(xobj) {
         Some(r) => r,
         None => return (None, false),

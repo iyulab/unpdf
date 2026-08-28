@@ -132,7 +132,11 @@ fn min_image_dimension_still_drops_small_decodable_images_by_default() {
     unsafe {
         let doc = unpdf_parse_bytes_with_options(bytes.as_ptr(), bytes.len(), options.as_ptr());
         assert!(!doc.is_null());
-        assert_eq!(unpdf_resource_count(doc), 0, "10x10 is below the default 64px cutoff");
+        assert_eq!(
+            unpdf_resource_count(doc),
+            0,
+            "10x10 is below the default 64px cutoff"
+        );
         unpdf_free_document(doc);
     }
 }
