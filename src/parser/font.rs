@@ -364,7 +364,11 @@ pub(crate) fn parse_truetype_cmap_table(data: &[u8]) -> Option<ToUnicodeMap> {
     // cmap header: version (u16), numTables (u16)
     let num_subtables = u16::from_be_bytes([cmap[2], cmap[3]]) as usize;
 
-    // Find the best subtable: prefer (3,1) Windows Unicode BMP, fallback to (0,3) Unicode BMP
+    // Find the best subtable. (3,10)/(0,4) carry the full Unicode repertoire
+    // (BMP + supplementary planes, format 12) and are preferred over a sibling
+    // (3,1)/(0,3) BMP-only subtable (format 4) per the OpenType spec's own guidance —
+    // a font missing supplementary-plane coverage would otherwise silently lose any
+    // character above U+FFFF even when a format-12 subtable is right there.
     let mut best_offset: Option<u32> = None;
     let mut best_priority = 0u8;
 
@@ -379,9 +383,11 @@ pub(crate) fn parse_truetype_cmap_table(data: &[u8]) -> Option<ToUnicodeMap> {
             u32::from_be_bytes([cmap[rec + 4], cmap[rec + 5], cmap[rec + 6], cmap[rec + 7]]);
 
         let priority = match (platform_id, encoding_id) {
-            (3, 1) => 3, // Windows Unicode BMP — best
-            (0, 3) => 2, // Unicode BMP
-            (0, _) => 1, // Any Unicode
+            (3, 10) => 4, // Windows Unicode full repertoire (BMP + supplementary) — best
+            (3, 1) => 3,  // Windows Unicode BMP
+            (0, 4) => 2,  // Unicode full repertoire
+            (0, 3) => 2,  // Unicode BMP
+            (0, _) => 1,  // Any Unicode
             _ => 0,
         };
 
@@ -552,8 +558,10 @@ fn parse_cmap_format12(data: &[u8]) -> Option<HashMap<u32, u16>> {
             data[offset + 11],
         ]);
 
-        // Limit range to prevent excessive memory usage
-        if end_char - start_char > 0x10000 {
+        // Reject an inverted range (end < start — malformed/adversarial input)
+        // before the subtraction below, which would otherwise underflow. Also
+        // limits range size to prevent excessive memory usage.
+        if end_char < start_char || end_char - start_char > 0x10000 {
             continue;
         }
 
@@ -735,5 +743,327 @@ endbfchar";
         // Range 2: <0030>-<0039> starting at U+0030 → 0..9
         assert_eq!(map.mappings.get(&0x0030), Some(&"0".to_string()));
         assert_eq!(map.mappings.get(&0x0039), Some(&"9".to_string()));
+    }
+
+    // ---------------------------------------------------------------------------
+    // Hancom PUA / noncharacter sentinel stripping (a3c834e regression coverage)
+    // ---------------------------------------------------------------------------
+    //
+    // `sanitize_unicode` fixed a real defect observed against a 27-page Hancom PDF
+    // (U+FFFF/PUA tofu 1000 -> 0), but shipped with no dedicated test — a refactor of
+    // `hex_to_unicode` or the TrueType cmap reversal could silently reintroduce it.
+    // These tests lock in both call sites the original fix touched.
+
+    #[test]
+    fn test_sanitize_unicode_strips_uffff_sentinel() {
+        assert_eq!(sanitize_unicode("\u{FFFF}".to_string()), None);
+    }
+
+    #[test]
+    fn test_sanitize_unicode_strips_pua_codepoint() {
+        // Hancom maps bullet/custom glyphs into the PUA (U+E000..U+F8FF).
+        assert_eq!(sanitize_unicode("\u{E000}".to_string()), None);
+        assert_eq!(sanitize_unicode("\u{F8FF}".to_string()), None);
+    }
+
+    #[test]
+    fn test_sanitize_unicode_keeps_ordinary_text() {
+        assert_eq!(sanitize_unicode("A".to_string()), Some("A".to_string()));
+    }
+
+    #[test]
+    fn test_sanitize_unicode_drops_sentinel_chars_from_mixed_string_without_emptying_it() {
+        // A string with both a real character and an embedded sentinel keeps the real
+        // one — `filter` drops chars individually, it does not reject the whole string.
+        let mixed = format!("A{}B", '\u{FFFF}');
+        assert_eq!(sanitize_unicode(mixed), Some("AB".to_string()));
+    }
+
+    #[test]
+    fn test_parse_to_unicode_cmap_bfchar_drops_uffff_sentinel() {
+        // Hancom ToUnicode CMaps use <FFFF> as an explicit "no mapping" marker.
+        // char::from_u32(0xFFFF) is a valid Rust char, so without sanitize_unicode
+        // this sentinel leaks into the decoded text as literal U+FFFF tofu.
+        let cmap = b"1 begincodespacerange
+<0000> <FFFF>
+endcodespacerange
+2 beginbfchar
+<0001> <FFFF>
+<0002> <0041>
+endbfchar";
+        let map = parse_to_unicode_cmap(cmap).unwrap();
+        assert_eq!(
+            map.mappings.get(&0x0001),
+            None,
+            "sentinel must not be registered"
+        );
+        assert_eq!(map.mappings.get(&0x0002), Some(&"A".to_string()));
+    }
+
+    #[test]
+    fn test_parse_to_unicode_cmap_bfchar_drops_pua_codepoint() {
+        // Hancom maps bullet/custom glyphs to PUA codepoints via ToUnicode too, not
+        // only via the embedded TrueType cmap.
+        let cmap = b"1 begincodespacerange
+<0000> <FFFF>
+endcodespacerange
+2 beginbfchar
+<0001> <E000>
+<0002> <0041>
+endbfchar";
+        let map = parse_to_unicode_cmap(cmap).unwrap();
+        assert_eq!(
+            map.mappings.get(&0x0001),
+            None,
+            "PUA mapping must not be registered"
+        );
+        assert_eq!(map.mappings.get(&0x0002), Some(&"A".to_string()));
+    }
+
+    #[test]
+    fn test_parse_to_unicode_cmap_bfrange_drops_pua_codepoints_mid_range() {
+        // A dst_start range landing entirely in the PUA must drop every code in it
+        // (bfrange expands one char::from_u32 at a time) without affecting an
+        // unrelated bfchar entry — proves the drop is per-code, not "whole map empty".
+        let cmap = b"1 begincodespacerange
+<0000> <FFFF>
+endcodespacerange
+1 beginbfchar
+<0000> <0041>
+endbfchar
+1 beginbfrange
+<0001> <0003> <E000>
+endbfrange";
+        let map = parse_to_unicode_cmap(cmap).unwrap();
+        assert_eq!(map.mappings.get(&0x0000), Some(&"A".to_string()));
+        assert_eq!(map.mappings.get(&0x0001), None);
+        assert_eq!(map.mappings.get(&0x0002), None);
+        assert_eq!(map.mappings.get(&0x0003), None);
+    }
+
+    #[test]
+    fn test_to_unicode_map_decode_silently_skips_sentinel_codes() {
+        let cmap = b"1 begincodespacerange
+<0000> <FFFF>
+endcodespacerange
+3 beginbfchar
+<0001> <0041>
+<0002> <FFFF>
+<0003> <0042>
+endbfchar";
+        let map = parse_to_unicode_cmap(cmap).unwrap();
+        let result = map.decode(&[0x00, 0x01, 0x00, 0x02, 0x00, 0x03]);
+        assert_eq!(
+            result, "AB",
+            "the unmapped sentinel code must be skipped, not tofu'd"
+        );
+    }
+
+    /// Builds a format-4 `cmap` subtable body (what `parse_cmap_format4` receives,
+    /// starting at its own `format` field). Four segments: 'A'..'C' -> GID 5..7 and
+    /// 'D' -> GID 10 via idDelta, the PUA codepoint U+E000 -> GID 9 via idRangeOffset
+    /// (the shape a real embedded Hancom subset font uses for its custom glyphs), and
+    /// the mandatory 0xFFFF terminator segment.
+    fn format4_subtable_ascii_and_pua() -> Vec<u8> {
+        let seg_count: u16 = 4; // 'A'..'C', 'D', U+E000, terminator
+        let seg_count_x2 = seg_count * 2;
+        let mut subtable = Vec::new();
+        subtable.extend_from_slice(&4u16.to_be_bytes()); // format
+        subtable.extend_from_slice(&0u16.to_be_bytes()); // length (unused by parser)
+        subtable.extend_from_slice(&0u16.to_be_bytes()); // language
+        subtable.extend_from_slice(&seg_count_x2.to_be_bytes());
+        subtable.extend_from_slice(&0u16.to_be_bytes()); // searchRange (unused)
+        subtable.extend_from_slice(&0u16.to_be_bytes()); // entrySelector (unused)
+        subtable.extend_from_slice(&0u16.to_be_bytes()); // rangeShift (unused)
+                                                         // endCode[4]
+        for end in [0x0043u16, 0x0044, 0xE000, 0xFFFF] {
+            subtable.extend_from_slice(&end.to_be_bytes());
+        }
+        subtable.extend_from_slice(&0u16.to_be_bytes()); // reservedPad
+                                                         // startCode[4]
+        for start in [0x0041u16, 0x0044, 0xE000, 0xFFFF] {
+            subtable.extend_from_slice(&start.to_be_bytes());
+        }
+        // idDelta[4]: seg0 maps 'A'/'B'/'C' -> GID 5/6/7 (5 - 0x41 = -60); seg1 maps
+        // 'D' -> GID 10 (10 - 0x44 = -58); seg2 (PUA) uses idRangeOffset instead, so
+        // its own delta is 0; terminator unused.
+        for delta in [-60i16, -58, 0, 1] {
+            subtable.extend_from_slice(&delta.to_be_bytes());
+        }
+        // idRangeOffset[4]: seg2 (index 2) points past its own slot to a 1-entry
+        // glyphIdArray appended right after this array — distance = seg_count_x2 -
+        // (2 * seg_index) = 8 - 4 = 4.
+        for range_offset in [0u16, 0, 4, 0] {
+            subtable.extend_from_slice(&range_offset.to_be_bytes());
+        }
+        subtable.extend_from_slice(&9u16.to_be_bytes()); // glyphIdArray[0] = GID 9
+        subtable
+    }
+
+    /// Builds a format-12 `cmap` subtable body: one group maps ASCII 'A'..'C' to GIDs
+    /// 5..7 (mirroring the format-4 fixture), a second maps the *supplementary-plane*
+    /// PUA codepoint U+F0000 — a range format-4 cannot even represent, since its
+    /// 16-bit segments are BMP-only — to GID 9. Deliberately does not mention GID 10
+    /// (format-4's 'D'), so a test can tell the two subtables apart by whether GID 10
+    /// resolves at all.
+    fn format12_subtable_ascii_and_supplementary_pua() -> Vec<u8> {
+        let mut subtable = Vec::new();
+        subtable.extend_from_slice(&12u16.to_be_bytes()); // format
+        subtable.extend_from_slice(&0u16.to_be_bytes()); // reserved
+        subtable.extend_from_slice(&0u32.to_be_bytes()); // length (unused by parser)
+        subtable.extend_from_slice(&0u32.to_be_bytes()); // language (unused)
+        subtable.extend_from_slice(&2u32.to_be_bytes()); // nGroups
+                                                         // group 0: 'A'..'C' -> GID 5..7
+        subtable.extend_from_slice(&0x0041u32.to_be_bytes());
+        subtable.extend_from_slice(&0x0043u32.to_be_bytes());
+        subtable.extend_from_slice(&5u32.to_be_bytes());
+        // group 1: U+F0000 (supplementary-plane PUA) -> GID 9
+        subtable.extend_from_slice(&0xF0000u32.to_be_bytes());
+        subtable.extend_from_slice(&0xF0000u32.to_be_bytes());
+        subtable.extend_from_slice(&9u32.to_be_bytes());
+        subtable
+    }
+
+    /// Wraps one or more `(platformID, encodingID, subtable bytes)` `cmap` records in
+    /// a minimal single-table sfnt font: an sfnt header (12 bytes) + one
+    /// table-directory record for `cmap` (16 bytes) + the `cmap` table itself (a
+    /// version/numTables header, one subtable record per entry, then the subtable
+    /// bodies back to back) — exactly what `parse_truetype_cmap_table` reads.
+    fn wrap_cmap_subtables(records: &[(u16, u16, Vec<u8>)]) -> Vec<u8> {
+        let header_len = 4 + records.len() * 8;
+        let mut cmap_table = Vec::new();
+        cmap_table.extend_from_slice(&0u16.to_be_bytes()); // version
+        cmap_table.extend_from_slice(&(records.len() as u16).to_be_bytes()); // numTables
+        let mut body = Vec::new();
+        let mut offset = header_len as u32;
+        for (platform_id, encoding_id, subtable) in records {
+            cmap_table.extend_from_slice(&platform_id.to_be_bytes());
+            cmap_table.extend_from_slice(&encoding_id.to_be_bytes());
+            cmap_table.extend_from_slice(&offset.to_be_bytes());
+            offset += subtable.len() as u32;
+            body.extend_from_slice(subtable);
+        }
+        cmap_table.extend_from_slice(&body);
+
+        // -- sfnt wrapper: header + one 'cmap' table-directory record --
+        let cmap_offset: u32 = 12 + 16; // sfnt header + one directory record
+        let mut font = Vec::new();
+        font.extend_from_slice(&0x0001_0000u32.to_be_bytes()); // sfnt version
+        font.extend_from_slice(&1u16.to_be_bytes()); // numTables
+        font.extend_from_slice(&0u16.to_be_bytes()); // searchRange (unused)
+        font.extend_from_slice(&0u16.to_be_bytes()); // entrySelector (unused)
+        font.extend_from_slice(&0u16.to_be_bytes()); // rangeShift (unused)
+        font.extend_from_slice(b"cmap");
+        font.extend_from_slice(&0u32.to_be_bytes()); // checksum (unused)
+        font.extend_from_slice(&cmap_offset.to_be_bytes());
+        font.extend_from_slice(&(cmap_table.len() as u32).to_be_bytes());
+        font.extend_from_slice(&cmap_table);
+        font
+    }
+
+    fn minimal_truetype_font_with_format4_cmap() -> Vec<u8> {
+        wrap_cmap_subtables(&[(3, 1, format4_subtable_ascii_and_pua())])
+    }
+
+    #[test]
+    fn test_parse_truetype_cmap_table_reverses_format4_segments() {
+        let font = minimal_truetype_font_with_format4_cmap();
+        let map = parse_truetype_cmap_table(&font).expect("must parse the synthetic font");
+        assert_eq!(map.mappings.get(&5), Some(&"A".to_string()));
+        assert_eq!(map.mappings.get(&6), Some(&"B".to_string()));
+        assert_eq!(map.mappings.get(&7), Some(&"C".to_string()));
+    }
+
+    #[test]
+    fn test_parse_truetype_cmap_table_drops_pua_gid() {
+        // Hancom subset fonts map custom/bullet glyphs to PUA codepoints in their own
+        // embedded cmap. GID 9 exists in the font (mapped from U+E000) but must not
+        // surface in the reversed table — the PUA source codepoint is filtered by
+        // sanitize_unicode before the GID->Unicode entry is ever inserted.
+        let font = minimal_truetype_font_with_format4_cmap();
+        let map = parse_truetype_cmap_table(&font).expect("must parse the synthetic font");
+        assert_eq!(
+            map.mappings.get(&9),
+            None,
+            "PUA-sourced GID must be dropped, not surfaced as tofu"
+        );
+    }
+
+    #[test]
+    fn test_parse_truetype_cmap_table_format12_sole_subtable_is_selected() {
+        // (3,10) is the standard real-world platform/encoding pairing for a format-12
+        // subtable (Windows Unicode full repertoire, BMP + supplementary planes) — a
+        // font is free to carry only this one subtable, with no (3,1)/(0,x) sibling.
+        let font = wrap_cmap_subtables(&[(3, 10, format12_subtable_ascii_and_supplementary_pua())]);
+        let map = parse_truetype_cmap_table(&font)
+            .expect("a sole (3,10) format-12 subtable must be selectable, not skipped");
+        assert_eq!(map.mappings.get(&5), Some(&"A".to_string()));
+        assert_eq!(map.mappings.get(&6), Some(&"B".to_string()));
+        assert_eq!(map.mappings.get(&7), Some(&"C".to_string()));
+    }
+
+    #[test]
+    fn test_parse_truetype_cmap_table_format12_platform0_sole_subtable_is_selected() {
+        // (0,4) is the non-Windows pairing for the same full-repertoire format-12
+        // subtable — the (3,10)-only fix must not have been platform-3-specific.
+        let font = wrap_cmap_subtables(&[(0, 4, format12_subtable_ascii_and_supplementary_pua())]);
+        let map = parse_truetype_cmap_table(&font)
+            .expect("a sole (0,4) format-12 subtable must be selectable, not skipped");
+        assert_eq!(map.mappings.get(&5), Some(&"A".to_string()));
+    }
+
+    #[test]
+    fn test_parse_truetype_cmap_table_format12_drops_supplementary_plane_pua() {
+        // U+F0000 is a supplementary-plane PUA codepoint format-4 cannot even encode —
+        // only format-12's 32-bit groups reach it. GID 9 must still be dropped by
+        // sanitize_unicode's plane-specific PUA filter, same as the BMP PUA case.
+        let font = wrap_cmap_subtables(&[(3, 10, format12_subtable_ascii_and_supplementary_pua())]);
+        let map = parse_truetype_cmap_table(&font).expect("must parse the synthetic font");
+        assert_eq!(map.mappings.get(&9), None);
+    }
+
+    #[test]
+    fn test_parse_truetype_cmap_table_prefers_format12_over_format4() {
+        // Per the OpenType spec, a (3,10) subtable is the full-repertoire superset and
+        // should be preferred over a sibling (3,1) BMP-only subtable when both exist —
+        // the common shape for a font that also needs supplementary-plane coverage.
+        // GID 10 ('D') exists only in the format-4 subtable, so its absence here
+        // proves format-12 — not format-4 — was the one actually selected.
+        let font = wrap_cmap_subtables(&[
+            (3, 1, format4_subtable_ascii_and_pua()),
+            (3, 10, format12_subtable_ascii_and_supplementary_pua()),
+        ]);
+        let map = parse_truetype_cmap_table(&font).expect("must parse the synthetic font");
+        assert_eq!(map.mappings.get(&5), Some(&"A".to_string()));
+        assert_eq!(
+            map.mappings.get(&10),
+            None,
+            "format-4's GID 10 must not leak in — format-12 should have won selection"
+        );
+    }
+
+    #[test]
+    fn test_parse_cmap_format12_rejects_inverted_range_without_panicking() {
+        // A malformed/adversarial embedded font can declare a group whose
+        // endCharCode is less than its startCharCode. `end_char - start_char`
+        // underflows on that pair (panics in a debug build, wraps to a huge value
+        // in release) unless the inverted case is rejected before the subtraction
+        // runs — untrusted PDF input reaches this function directly.
+        let mut subtable = Vec::new();
+        subtable.extend_from_slice(&12u16.to_be_bytes()); // format
+        subtable.extend_from_slice(&0u16.to_be_bytes()); // reserved
+        subtable.extend_from_slice(&0u32.to_be_bytes()); // length (unused)
+        subtable.extend_from_slice(&0u32.to_be_bytes()); // language (unused)
+        subtable.extend_from_slice(&1u32.to_be_bytes()); // nGroups
+        subtable.extend_from_slice(&0x100u32.to_be_bytes()); // startCharCode
+        subtable.extend_from_slice(&0x50u32.to_be_bytes()); // endCharCode < startCharCode
+        subtable.extend_from_slice(&1u32.to_be_bytes()); // startGlyphID
+
+        let result = parse_cmap_format12(&subtable);
+        assert_eq!(
+            result,
+            Some(HashMap::new()),
+            "an inverted group must be skipped, not panic or fabricate mappings"
+        );
     }
 }
