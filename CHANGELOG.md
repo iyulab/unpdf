@@ -1,6 +1,16 @@
 # Changelog
 
-## 0.16.1 — 2026-08-29
+## 0.17.0 — 2026-08-30
+
+### Added
+
+- **List detection** — bulleted and numbered lines are now recognized as list
+  items and rendered as real Markdown list syntax (`- item`, `1. item`)
+  instead of plain paragraph text. Previously documented but unimplemented:
+  the block type existed but was never produced by the parser, so every
+  bullet or numbered line fell through to an ordinary paragraph. An ordered
+  marker's number is read as printed on the page, not inferred or
+  renumbered. Nesting is not detected — every item lands at the top level.
 
 ### Fixed
 
