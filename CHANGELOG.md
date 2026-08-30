@@ -4,34 +4,6 @@
 
 ### Added
 
-- **List detection** — bulleted and numbered lines are now recognized as list
-  items and rendered as real Markdown list syntax (`- item`, `1. item`)
-  instead of plain paragraph text. Previously documented but unimplemented:
-  the block type existed but was never produced by the parser, so every
-  bullet or numbered line fell through to an ordinary paragraph. An ordered
-  marker's number is read as printed on the page, not inferred or
-  renumbered. Nesting is not detected — every item lands at the top level.
-
-### Fixed
-
-- **A font whose embedded TrueType `cmap` table advertises only a (3,10) or (0,4)
-  subtable — the standard pairing for full Unicode repertoire, including
-  supplementary-plane characters — is now decoded correctly.** Subtable selection
-  previously only recognized (3,1)/(0,3)/(0,x) pairings, so a lone (3,10)/(0,4)
-  subtable was skipped entirely and its text fell through to suppression. Worse,
-  when a font shipped both a BMP-only (3,1) subtable and a full-repertoire (3,10)
-  one — common for fonts that need to cover characters above U+FFFF — the BMP-only
-  subtable was always chosen, silently dropping any supplementary-plane character.
-  (3,10)/(0,4) now take priority, per the OpenType spec's own recommendation.
-- **A malformed embedded TrueType `cmap` format-12 subtable with an inverted
-  character range (`endCharCode < startCharCode`) could crash the process** via an
-  integer underflow instead of being skipped as invalid. Such a subtable is now
-  rejected before the arithmetic that previously panicked.
-
-## 0.16.0 — 2026-08-28
-
-### Added
-
 - **Lattice-mode table detection** — tables with explicit ruling lines (drawn
   cell borders, not just aligned text) are now detected directly from the
   page's own vector graphics, complementing the existing text-alignment-based
@@ -43,8 +15,13 @@
   the rest of the page is still processed by the existing detector unchanged.
   No new option is introduced — this runs automatically, the same as the
   existing table detection it complements.
-
-## 0.15.1 — 2026-08-28
+- **List detection** — bulleted and numbered lines are now recognized as list
+  items and rendered as real Markdown list syntax (`- item`, `1. item`)
+  instead of plain paragraph text. Previously documented but unimplemented:
+  the block type existed but was never produced by the parser, so every
+  bullet or numbered line fell through to an ordinary paragraph. An ordered
+  marker's number is read as printed on the page, not inferred or
+  renumbered. Nesting is not detected — every item lands at the top level.
 
 ### Fixed
 
@@ -64,6 +41,19 @@
   table detector mistakes for a low-confidence table row (its title/leader/
   number fragments look table-row-shaped) and converts to plain text as a
   fallback — that fallback previously bypassed the normalization entirely.
+- **A font whose embedded TrueType `cmap` table advertises only a (3,10) or (0,4)
+  subtable — the standard pairing for full Unicode repertoire, including
+  supplementary-plane characters — is now decoded correctly.** Subtable selection
+  previously only recognized (3,1)/(0,3)/(0,x) pairings, so a lone (3,10)/(0,4)
+  subtable was skipped entirely and its text fell through to suppression. Worse,
+  when a font shipped both a BMP-only (3,1) subtable and a full-repertoire (3,10)
+  one — common for fonts that need to cover characters above U+FFFF — the BMP-only
+  subtable was always chosen, silently dropping any supplementary-plane character.
+  (3,10)/(0,4) now take priority, per the OpenType spec's own recommendation.
+- **A malformed embedded TrueType `cmap` format-12 subtable with an inverted
+  character range (`endCharCode < startCharCode`) could crash the process** via an
+  integer underflow instead of being skipped as invalid. Such a subtable is now
+  rejected before the arithmetic that previously panicked.
 
 ## 0.15.0 — 2026-08-28
 
