@@ -2,11 +2,10 @@
 
 use crate::error::Result;
 use crate::model::{
-    Block, Document, InlineContent, ListInfo, ListStyle, NumberStyle, Page, Paragraph, Table,
-    TextRun, TextStyle,
+    Block, Document, InlineContent, ListInfo, ListStyle, Page, Paragraph, Table, TextRun, TextStyle,
 };
 
-use super::syntax::{escape_markdown, format_link_destination, render_table, to_roman};
+use super::syntax::{escape_markdown, format_link_destination, render_table};
 use super::{CleanupPipeline, ExtractionStats, PageMarkerStyle, RenderOptions, RenderResult};
 
 /// Convert a document to Markdown.
@@ -207,17 +206,7 @@ impl MarkdownRenderer {
             }
             ListStyle::Ordered { number_style, .. } => {
                 let num = list_info.item_number.unwrap_or(1);
-                match number_style {
-                    NumberStyle::Decimal => format!("{}.", num),
-                    NumberStyle::LowerAlpha => {
-                        format!("{}.", char::from_u32('a' as u32 + num - 1).unwrap_or('a'))
-                    }
-                    NumberStyle::UpperAlpha => {
-                        format!("{}.", char::from_u32('A' as u32 + num - 1).unwrap_or('A'))
-                    }
-                    NumberStyle::LowerRoman => format!("{}.", to_roman(num).to_lowercase()),
-                    NumberStyle::UpperRoman => format!("{}.", to_roman(num)),
-                }
+                format!("{}.", number_style.format_number(num))
             }
         };
 
@@ -321,15 +310,6 @@ mod tests {
     fn test_escape_markdown() {
         assert_eq!(escape_markdown("Hello *world*"), "Hello \\*world\\*");
         assert_eq!(escape_markdown("[link]"), "\\[link\\]");
-    }
-
-    #[test]
-    fn test_to_roman() {
-        assert_eq!(to_roman(1), "I");
-        assert_eq!(to_roman(4), "IV");
-        assert_eq!(to_roman(9), "IX");
-        assert_eq!(to_roman(14), "XIV");
-        assert_eq!(to_roman(2024), "MMXXIV");
     }
 
     #[test]

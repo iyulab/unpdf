@@ -305,6 +305,12 @@ pub struct TextBlock {
     pub block_type: BlockType,
     /// Heading level (1-6 for headings, 0 otherwise)
     pub heading_level: u8,
+    /// For `BlockType::ListItem`: the item's printed number, or `None` for an
+    /// unordered (bullet/enclosed-enumeration) item. Meaningless otherwise.
+    pub list_item_number: Option<u32>,
+    /// For `BlockType::ListItem`: bytes of `text()` that are the marker and its
+    /// trailing whitespace — stripped by [`TextBlock::list_item_text`].
+    list_marker_len: usize,
 }
 
 /// A detected column in the page layout.
@@ -353,6 +359,8 @@ impl TextBlock {
             lines,
             block_type,
             heading_level: 0,
+            list_item_number: None,
+            list_marker_len: 0,
         }
     }
 
@@ -363,6 +371,17 @@ impl TextBlock {
             .map(|l| l.text())
             .collect::<Vec<_>>()
             .join(" ")
+    }
+
+    /// The list item's visible text with its marker (bullet or `N.`/`N)`) and
+    /// the whitespace after it stripped from the front. Meaningless when
+    /// `block_type` isn't `ListItem` (returns the same as [`Self::text`]).
+    pub fn list_item_text(&self) -> String {
+        let full = self.text();
+        full.get(self.list_marker_len..)
+            .unwrap_or(&full)
+            .trim_start()
+            .to_string()
     }
 
     /// Check if the block is empty.
@@ -439,6 +458,64 @@ fn starts_a_list_item(c: char) -> bool {
             // Enclosed CJK: parenthesized hangul ㈀-㈜, circled hangul ㉠-㉻
             | '\u{3200}'..='\u{32FF}'
         )
+}
+
+/// A list marker recognized at the very start of a line's text.
+struct ListMarkerMatch {
+    /// `Some(n)` for an ordered item's printed number; `None` for a bullet or
+    /// enclosed-enumeration glyph ([`starts_a_list_item`]).
+    ordered_number: Option<u32>,
+    /// Bytes of the line's text — the marker plus the whitespace right after
+    /// it — to strip before treating the rest as the item's visible content.
+    prefix_len: usize,
+}
+
+/// Recognize a list marker opening `text`, if any.
+///
+/// The unordered case reuses [`starts_a_list_item`]'s bullet/enclosed-enumeration
+/// glyphs. The ordered case is a literal `"<1-3 digits>."` or `"<1-3 digits>)"`
+/// prefix — the number is read off the page as printed, not inferred: unpdf
+/// analyzes one page at a time and has no cross-line state to detect a
+/// *continuing* sequence the way undoc/unhwp's two-pass IR can (see the
+/// umbrella ROADMAP's U-3 notes on why that logic doesn't port). The 3-digit
+/// cap keeps a 4+ digit prefix (a year, in "2024. 01. 15") from being read as
+/// an implausible ordered-list start.
+fn detect_list_marker(text: &str) -> Option<ListMarkerMatch> {
+    let leading_ws = text.len() - text.trim_start().len();
+    let trimmed = &text[leading_ws..];
+    let first = trimmed.chars().next()?;
+
+    if starts_a_list_item(first) {
+        let marker_len = first.len_utf8();
+        let after = &trimmed[marker_len..];
+        let ws_len = after.len() - after.trim_start().len();
+        return Some(ListMarkerMatch {
+            ordered_number: None,
+            prefix_len: leading_ws + marker_len + ws_len,
+        });
+    }
+
+    let digits_len = trimmed
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(trimmed.len());
+    if digits_len == 0 || digits_len > 3 {
+        return None;
+    }
+    let after_digits = &trimmed[digits_len..];
+    let delim = after_digits.chars().next()?;
+    if delim != '.' && delim != ')' {
+        return None;
+    }
+    let after_delim = &after_digits[delim.len_utf8()..];
+    if !after_delim.is_empty() && !after_delim.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let number: u32 = trimmed[..digits_len].parse().ok()?;
+    let ws_len = after_delim.len() - after_delim.trim_start().len();
+    Some(ListMarkerMatch {
+        ordered_number: Some(number),
+        prefix_len: leading_ws + digits_len + delim.len_utf8() + ws_len,
+    })
 }
 
 /// Font statistics for heading detection.
@@ -1415,23 +1492,7 @@ impl<'a> LayoutAnalyzer<'a> {
             if should_break {
                 // Create block from current lines
                 if !current_block_lines.is_empty() {
-                    let block_type = if current_block_lines.iter().any(|l| l.is_heading) {
-                        BlockType::Heading
-                    } else {
-                        BlockType::Paragraph
-                    };
-                    let mut block =
-                        TextBlock::new(std::mem::take(&mut current_block_lines), block_type);
-                    if block_type == BlockType::Heading {
-                        block.heading_level = block
-                            .lines
-                            .iter()
-                            .filter(|l| l.is_heading)
-                            .map(|l| l.heading_level)
-                            .min()
-                            .unwrap_or(0);
-                    }
-                    blocks.push(block);
+                    blocks.push(Self::finish_block(std::mem::take(&mut current_block_lines)));
                 }
             }
 
@@ -1440,25 +1501,43 @@ impl<'a> LayoutAnalyzer<'a> {
 
         // Don't forget the last block
         if !current_block_lines.is_empty() {
-            let block_type = if current_block_lines.iter().any(|l| l.is_heading) {
-                BlockType::Heading
-            } else {
-                BlockType::Paragraph
-            };
-            let mut block = TextBlock::new(current_block_lines, block_type);
-            if block_type == BlockType::Heading {
-                block.heading_level = block
-                    .lines
-                    .iter()
-                    .filter(|l| l.is_heading)
-                    .map(|l| l.heading_level)
-                    .min()
-                    .unwrap_or(0);
-            }
-            blocks.push(block);
+            blocks.push(Self::finish_block(current_block_lines));
         }
 
         blocks
+    }
+
+    /// Classify a finished run of lines into a [`TextBlock`], deriving the
+    /// heading level or list-item marker each type carries.
+    ///
+    /// Heading takes precedence over list-marker detection: `detect_headings`
+    /// already declines to promote a bullet/enclosed-enumeration line (see
+    /// `starts_a_list_item`), so a line that still reaches here `is_heading`
+    /// is never itself an unordered marker — but an ordered numeral prefix
+    /// (`"1. "`) isn't excluded there, since a numbered *heading*
+    /// ("1. Introduction") is common and must stay a heading when the
+    /// font-size heuristic already caught it.
+    fn finish_block(lines: Vec<TextLine>) -> TextBlock {
+        if lines.iter().any(|l| l.is_heading) {
+            let heading_level = lines
+                .iter()
+                .filter(|l| l.is_heading)
+                .map(|l| l.heading_level)
+                .min()
+                .unwrap_or(0);
+            let mut block = TextBlock::new(lines, BlockType::Heading);
+            block.heading_level = heading_level;
+            return block;
+        }
+
+        if let Some(marker) = lines.first().and_then(|l| detect_list_marker(&l.text())) {
+            let mut block = TextBlock::new(lines, BlockType::ListItem);
+            block.list_item_number = marker.ordered_number;
+            block.list_marker_len = marker.prefix_len;
+            return block;
+        }
+
+        TextBlock::new(lines, BlockType::Paragraph)
     }
 
     /// Calculate average line spacing.
@@ -1510,6 +1589,16 @@ impl<'a> LayoutAnalyzer<'a> {
 
         // After a heading, start new block
         if prev_line.is_heading {
+            return true;
+        }
+
+        // A list marker (bullet or "N."/"N)") always opens a new item — never
+        // silently merge it into whatever block precedes it, the way the
+        // indentation tolerance below deliberately merges a wrapped item's
+        // own continuation lines (no marker) into the same block. Neither
+        // `curr_line` nor `prev_line` can be a heading here (both cases
+        // returned above), so a numbered *heading* never reaches this check.
+        if detect_list_marker(&curr_line.text()).is_some() {
             return true;
         }
 
@@ -1982,6 +2071,66 @@ mod tests {
                 "{marker:?} opens a list item, not a heading"
             );
         }
+    }
+
+    #[test]
+    fn test_detect_list_marker_bullet() {
+        let m = detect_list_marker("- first item").expect("bullet should match");
+        assert_eq!(m.ordered_number, None);
+        assert_eq!(&"- first item"[m.prefix_len..], "first item");
+    }
+
+    #[test]
+    fn test_detect_list_marker_ordered() {
+        let m = detect_list_marker("12) twelfth item").expect("ordered marker should match");
+        assert_eq!(m.ordered_number, Some(12));
+        assert_eq!(&"12) twelfth item"[m.prefix_len..], "twelfth item");
+    }
+
+    #[test]
+    fn test_detect_list_marker_rejects_a_decimal_number() {
+        assert!(detect_list_marker("1.5cm gap").is_none());
+    }
+
+    #[test]
+    fn test_detect_list_marker_rejects_a_four_digit_year() {
+        assert!(detect_list_marker("2024. 01. 15").is_none());
+    }
+
+    #[test]
+    fn test_detect_list_marker_rejects_plain_prose() {
+        assert!(detect_list_marker("Regular paragraph text.").is_none());
+    }
+
+    #[test]
+    fn test_finish_block_classifies_bullet_as_list_item_with_marker_stripped() {
+        let lines = vec![line_at("• Buy milk", 100.0, 12.0, "Helvetica")];
+        let block = LayoutAnalyzer::finish_block(lines);
+        assert_eq!(block.block_type, BlockType::ListItem);
+        assert_eq!(block.list_item_number, None);
+        assert_eq!(block.list_item_text(), "Buy milk");
+    }
+
+    #[test]
+    fn test_finish_block_classifies_ordered_marker_as_list_item_with_number() {
+        let lines = vec![line_at("3. Third step", 100.0, 12.0, "Helvetica")];
+        let block = LayoutAnalyzer::finish_block(lines);
+        assert_eq!(block.block_type, BlockType::ListItem);
+        assert_eq!(block.list_item_number, Some(3));
+        assert_eq!(block.list_item_text(), "Third step");
+    }
+
+    /// A numbered *heading* ("1. Introduction", large font) must stay a heading —
+    /// `detect_headings` already decided that before `finish_block` ever runs, and an
+    /// ordered-marker line isn't excluded there the way a bullet line is (see the doc
+    /// comment on `finish_block`).
+    #[test]
+    fn test_finish_block_a_numbered_heading_stays_a_heading() {
+        let mut line = line_at("1. Introduction", 100.0, 20.0, "Helvetica");
+        line.is_heading = true;
+        line.heading_level = 1;
+        let block = LayoutAnalyzer::finish_block(vec![line]);
+        assert_eq!(block.block_type, BlockType::Heading);
     }
 
     /// Sibling lines of the same size are a run — a table column, a list, a paragraph whose

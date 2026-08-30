@@ -54,8 +54,15 @@ impl Paragraph {
     }
 
     /// Get plain text content of the paragraph.
+    ///
+    /// A list item's marker is re-attached here (`"- "`, `"3. "`) rather than
+    /// kept inside `content` — the parser strips it from the source text once,
+    /// and every renderer that cares (this one, Markdown) re-derives its own
+    /// marker spelling from `style.list_info` instead of carrying two
+    /// independently-formatted copies of the same fact.
     pub fn plain_text(&self) -> String {
-        self.content
+        let text: String = self
+            .content
             .iter()
             .map(|c| match c {
                 InlineContent::Text(run) => run.text.clone(),
@@ -63,7 +70,23 @@ impl Paragraph {
                 InlineContent::Link { text, .. } => text.clone(),
                 InlineContent::Image { alt_text, .. } => alt_text.clone().unwrap_or_default(),
             })
-            .collect()
+            .collect();
+
+        match &self.style.list_info {
+            Some(info) => {
+                let marker = match &info.style {
+                    ListStyle::Unordered { marker } => format!("{marker} "),
+                    ListStyle::Ordered { number_style, .. } => {
+                        format!(
+                            "{}. ",
+                            number_style.format_number(info.item_number.unwrap_or(1))
+                        )
+                    }
+                };
+                format!("{marker}{text}")
+            }
+            None => text,
+        }
     }
 
     /// Check if the paragraph is empty.
@@ -329,6 +352,52 @@ pub enum NumberStyle {
     UpperRoman,
 }
 
+impl NumberStyle {
+    /// Render `num` (1-based) as this style's label, with no trailing
+    /// punctuation — `"3"`, `"c"`, `"iii"`. Shared by every renderer that
+    /// needs an ordered-list label so Decimal/Alpha/Roman formatting can't
+    /// drift between them.
+    pub(crate) fn format_number(&self, num: u32) -> String {
+        match self {
+            NumberStyle::Decimal => num.to_string(),
+            NumberStyle::LowerAlpha => char::from_u32('a' as u32 + num.saturating_sub(1))
+                .map_or_else(|| num.to_string(), |c| c.to_string()),
+            NumberStyle::UpperAlpha => char::from_u32('A' as u32 + num.saturating_sub(1))
+                .map_or_else(|| num.to_string(), |c| c.to_string()),
+            NumberStyle::LowerRoman => to_roman(num).to_lowercase(),
+            NumberStyle::UpperRoman => to_roman(num),
+        }
+    }
+}
+
+/// Spell a number as an uppercase Roman numeral, for Roman-numbered list markers.
+pub(crate) fn to_roman(mut num: u32) -> String {
+    let numerals = [
+        (1000, "M"),
+        (900, "CM"),
+        (500, "D"),
+        (400, "CD"),
+        (100, "C"),
+        (90, "XC"),
+        (50, "L"),
+        (40, "XL"),
+        (10, "X"),
+        (9, "IX"),
+        (5, "V"),
+        (4, "IV"),
+        (1, "I"),
+    ];
+
+    let mut result = String::new();
+    for (value, symbol) in numerals {
+        while num >= value {
+            result.push_str(symbol);
+            num -= value;
+        }
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -341,6 +410,54 @@ mod tests {
         p.add_text("!");
 
         assert_eq!(p.plain_text(), "Hello world!");
+    }
+
+    #[test]
+    fn test_plain_text_reattaches_a_bullet_marker() {
+        let mut p = Paragraph::with_text("Buy milk");
+        p.style.list_info = Some(ListInfo::bullet(0));
+        assert_eq!(p.plain_text(), "• Buy milk");
+    }
+
+    #[test]
+    fn test_plain_text_reattaches_an_ordered_marker() {
+        let mut p = Paragraph::with_text("Third step");
+        p.style.list_info = Some(ListInfo::numbered(0, 3));
+        assert_eq!(p.plain_text(), "3. Third step");
+    }
+
+    #[test]
+    fn test_format_number_decimal_alpha_and_roman() {
+        assert_eq!(NumberStyle::Decimal.format_number(3), "3");
+        assert_eq!(NumberStyle::LowerAlpha.format_number(3), "c");
+        assert_eq!(NumberStyle::UpperAlpha.format_number(3), "C");
+        assert_eq!(NumberStyle::LowerRoman.format_number(14), "xiv");
+        assert_eq!(NumberStyle::UpperRoman.format_number(14), "XIV");
+    }
+
+    /// A malformed `item_number` of 0 must not panic — `format_number` is
+    /// reachable from parsed (untrusted) PDF content via `detect_list_marker`,
+    /// which accepts a printed "0." marker. `num - 1` would underflow a u32
+    /// there; saturating instead just reuses the first letter.
+    #[test]
+    fn test_format_number_alpha_does_not_underflow_on_zero() {
+        assert_eq!(NumberStyle::LowerAlpha.format_number(0), "a");
+        assert_eq!(NumberStyle::UpperAlpha.format_number(0), "A");
+    }
+
+    #[test]
+    fn test_to_roman() {
+        assert_eq!(to_roman(1), "I");
+        assert_eq!(to_roman(4), "IV");
+        assert_eq!(to_roman(9), "IX");
+        assert_eq!(to_roman(14), "XIV");
+        assert_eq!(to_roman(2024), "MMXXIV");
+    }
+
+    #[test]
+    fn test_to_roman_zero_is_empty() {
+        // No Roman numeral exists for zero; the caller numbers list items from one.
+        assert_eq!(to_roman(0), "");
     }
 
     #[test]

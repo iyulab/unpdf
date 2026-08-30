@@ -152,34 +152,6 @@ pub(super) fn escape_markdown(text: &str) -> String {
     result
 }
 
-/// Spell a number as an uppercase Roman numeral, for Roman-numbered list markers.
-pub(super) fn to_roman(mut num: u32) -> String {
-    let numerals = [
-        (1000, "M"),
-        (900, "CM"),
-        (500, "D"),
-        (400, "CD"),
-        (100, "C"),
-        (90, "XC"),
-        (50, "L"),
-        (40, "XL"),
-        (10, "X"),
-        (9, "IX"),
-        (5, "V"),
-        (4, "IV"),
-        (1, "I"),
-    ];
-
-    let mut result = String::new();
-    for (value, symbol) in numerals {
-        while num >= value {
-            result.push_str(symbol);
-            num -= value;
-        }
-    }
-    result
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -254,20 +226,5 @@ mod tests {
         // These are only special in a position the renderer controls, and escaping them
         // mid-sentence would put backslashes into ordinary prose.
         assert_eq!(escape_markdown("1. 2 - 3 # 4 > 5"), "1. 2 - 3 # 4 > 5");
-    }
-
-    #[test]
-    fn test_to_roman() {
-        assert_eq!(to_roman(1), "I");
-        assert_eq!(to_roman(4), "IV");
-        assert_eq!(to_roman(9), "IX");
-        assert_eq!(to_roman(14), "XIV");
-        assert_eq!(to_roman(2024), "MMXXIV");
-    }
-
-    #[test]
-    fn test_to_roman_zero_is_empty() {
-        // No Roman numeral exists for zero; the caller numbers list items from one.
-        assert_eq!(to_roman(0), "");
     }
 }

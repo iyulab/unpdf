@@ -7,7 +7,9 @@ use std::path::Path;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::detect::detect_format_from_path;
 use crate::error::{Error, Result};
-use crate::model::{Block, Document, OutlineItem, Page, Paragraph, Resource, ResourceType};
+use crate::model::{
+    Block, Document, ListInfo, OutlineItem, Page, Paragraph, Resource, ResourceType,
+};
 
 use super::backend::{PdfBackend, RawBackend, RawXObject};
 use super::options::{ErrorMode, ExtractMode, ParseOptions};
@@ -401,6 +403,19 @@ fn get_page_dimensions_fn(backend: &dyn PdfBackend, page_num: u32) -> Result<(f3
     Ok(backend.page_dimensions(*page_id))
 }
 
+/// Build the `Paragraph` for a `BlockType::ListItem` block: the marker-stripped
+/// text, carrying an ordered or unordered `ListInfo` per the block's detected
+/// marker. Nesting level is always 0 — `layout::detect_list_marker` reads a
+/// single line's text and has no indentation model to derive one from.
+fn list_item_paragraph(block: &super::layout::TextBlock) -> Paragraph {
+    let mut para = Paragraph::with_text(block.list_item_text());
+    para.style.list_info = Some(match block.list_item_number {
+        Some(n) => ListInfo::numbered(0, n),
+        None => ListInfo::bullet(0),
+    });
+    para
+}
+
 /// Merge consecutive paragraph blocks that share the same visual row
 /// (Y within 1.5pt of each other) into a single paragraph. Recovers
 /// table-row structure that XY-Cut over-segmented into per-cell blocks.
@@ -563,7 +578,7 @@ fn extract_page_with_tables_fn(
                             Block::Paragraph(Paragraph::with_text(text))
                         }
                         super::layout::BlockType::ListItem => {
-                            Block::Paragraph(Paragraph::with_text(format!("• {}", text)))
+                            Block::Paragraph(list_item_paragraph(&block))
                         }
                     };
                     elements.push((y_pos, para_block));
@@ -600,7 +615,7 @@ fn extract_page_with_tables_fn(
                         Block::Paragraph(Paragraph::with_text(text))
                     }
                     super::layout::BlockType::ListItem => {
-                        Block::Paragraph(Paragraph::with_text(format!("• {}", text)))
+                        Block::Paragraph(list_item_paragraph(&block))
                     }
                 };
                 blocks.push(para_block);

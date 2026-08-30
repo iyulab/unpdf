@@ -32,7 +32,7 @@
 
 use crate::model::{Block, Document, Metadata};
 
-use super::syntax::{escape_markdown, format_link_destination, render_table, to_roman};
+use super::syntax::{escape_markdown, format_link_destination, render_table};
 use super::{PageMarkerStyle, RenderOptions};
 
 /// Events emitted during streaming rendering.
@@ -309,19 +309,7 @@ impl<'a> StreamingRenderer<'a> {
             }
             crate::model::ListStyle::Ordered { number_style, .. } => {
                 let num = list_info.item_number.unwrap_or(1);
-                match number_style {
-                    crate::model::NumberStyle::Decimal => format!("{}.", num),
-                    crate::model::NumberStyle::LowerAlpha => {
-                        format!("{}.", char::from_u32('a' as u32 + num - 1).unwrap_or('a'))
-                    }
-                    crate::model::NumberStyle::UpperAlpha => {
-                        format!("{}.", char::from_u32('A' as u32 + num - 1).unwrap_or('A'))
-                    }
-                    crate::model::NumberStyle::LowerRoman => {
-                        format!("{}.", to_roman(num).to_lowercase())
-                    }
-                    crate::model::NumberStyle::UpperRoman => format!("{}.", to_roman(num)),
-                }
+                format!("{}.", number_style.format_number(num))
             }
         };
 

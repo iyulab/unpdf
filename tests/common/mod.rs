@@ -82,6 +82,27 @@ pub fn heading_paragraph_pdf() -> Vec<u8> {
     assemble(objects)
 }
 
+/// One page: two bullet items followed by two numbered items, all at the same
+/// line spacing as ordinary body text (15pt, single font size) — proving that
+/// list-item detection breaks a block at each marker line on its own, not by
+/// riding an incidental spacing gap the way paragraph breaks do.
+pub fn list_items_pdf() -> Vec<u8> {
+    let content = b"BT /F1 12 Tf 72 750 Td (- First bullet item) Tj ET \
+        BT /F1 12 Tf 72 735 Td (- Second bullet item) Tj ET \
+        BT /F1 12 Tf 72 720 Td (1. First numbered item) Tj ET \
+        BT /F1 12 Tf 72 705 Td (2. Second numbered item) Tj ET\n";
+    let objects: Vec<Vec<u8>> = vec![
+        b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+        b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]\
+          /Resources<</Font<</F1 5 0 R>>>>/Contents 4 0 R>>"
+            .to_vec(),
+        stream_object(&format!("<</Length {}>>", content.len()), content),
+        HELVETICA.to_vec(),
+    ];
+    assemble(objects)
+}
+
 /// One page with two side-by-side single-line text columns, emitted
 /// **right column first** in the content stream and at a **higher y** than
 /// the left column — so a pipeline that merely preserved content-stream/span
