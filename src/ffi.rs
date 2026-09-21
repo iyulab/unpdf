@@ -21,7 +21,7 @@ use unparser_shared::ffi::{self, invalid_argument, FfiError, LastErrorSlot};
 
 use crate::error::ErrorKind;
 use crate::model::Document;
-use crate::parser::{ErrorMode, ExtractMode, ParseOptions};
+use crate::parser::{ErrorMode, ParseOptions};
 use crate::render::{JsonFormat, PageMarkerStyle, PageSelection, RenderOptions};
 
 // Thread-local storage for the last error message and its classification. Declared
@@ -359,7 +359,7 @@ pub unsafe extern "C" fn unpdf_parse_bytes(data: *const u8, len: usize) -> *mut 
 /// ```json
 /// {
 ///   "error_mode": "strict" | "lenient",
-///   "extract_mode": "full" | "text_only" | "structure_only",
+///   "extract_text": bool,
 ///   "extract_resources": bool,
 ///   "min_image_dimension": number,
 ///   "parallel": bool,
@@ -381,7 +381,7 @@ pub unsafe extern "C" fn unpdf_parse_bytes(data: *const u8, len: usize) -> *mut 
 #[serde(rename_all = "snake_case")]
 struct FfiParseOptions {
     error_mode: Option<FfiErrorMode>,
-    extract_mode: Option<FfiExtractMode>,
+    extract_text: Option<bool>,
     extract_resources: Option<bool>,
     min_image_dimension: Option<u32>,
     parallel: Option<bool>,
@@ -425,14 +425,6 @@ enum FfiErrorMode {
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum FfiExtractMode {
-    Full,
-    TextOnly,
-    StructureOnly,
-}
-
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
 enum FfiPageSelection {
     All,
     Range { from: u32, to: u32 },
@@ -450,12 +442,8 @@ impl TryFrom<FfiParseOptions> for ParseOptions {
                 FfiErrorMode::Lenient => ErrorMode::Lenient,
             };
         }
-        if let Some(mode) = ffi.extract_mode {
-            options.extract_mode = match mode {
-                FfiExtractMode::Full => ExtractMode::Full,
-                FfiExtractMode::TextOnly => ExtractMode::TextOnly,
-                FfiExtractMode::StructureOnly => ExtractMode::StructureOnly,
-            };
+        if let Some(v) = ffi.extract_text {
+            options.extract_text = v;
         }
         if let Some(v) = ffi.extract_resources {
             options.extract_resources = v;

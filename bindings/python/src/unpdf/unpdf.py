@@ -113,8 +113,9 @@ def _native_error(lib: ctypes.CDLL) -> "UnpdfError":
 #: Parsing options accepted by every function below, passed straight through to the
 #: native library as JSON. Every key is optional; an absent key keeps unpdf's own
 #: default for that setting. Known keys: ``error_mode`` (``"strict"`` |
-#: ``"lenient"``), ``extract_mode`` (``"full"`` | ``"text_only"`` |
-#: ``"structure_only"``), ``extract_resources`` (bool — off by default; enable to
+#: ``"lenient"``), ``extract_text`` (bool — on by default; ``False`` is structure only:
+#: every page is still produced with none of its content blocks),
+#: ``extract_resources`` (bool — off by default; enable to
 #: populate the resource inventory :func:`get_resource_ids`/:func:`get_resource_info`/
 #: :func:`get_resource_data` read from), ``min_image_dimension`` (int, default 64 —
 #: images below this on either axis are dropped as decorative; 0 keeps every image),

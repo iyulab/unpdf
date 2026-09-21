@@ -8,8 +8,13 @@ pub struct ParseOptions {
     /// Error handling mode
     pub error_mode: ErrorMode,
 
-    /// What to extract from the document
-    pub extract_mode: ExtractMode,
+    /// Whether to extract the text content of each page.
+    ///
+    /// `true` by default. Setting it to `false` is "structure only": every page is still
+    /// produced, carrying its number and dimensions, and none of its content blocks are
+    /// built. It is an axis of its own -- orthogonal to [`Self::extract_resources`], so
+    /// asking for structure does not decide anything about images.
+    pub extract_text: bool,
 
     /// Whether to extract embedded resources (images, fonts).
     ///
@@ -77,15 +82,9 @@ impl ParseOptions {
         self
     }
 
-    /// Set extract mode.
-    pub fn with_extract_mode(mut self, mode: ExtractMode) -> Self {
-        self.extract_mode = mode;
-        self
-    }
-
-    /// Extract text only.
-    pub fn text_only(mut self) -> Self {
-        self.extract_mode = ExtractMode::TextOnly;
+    /// Extract the text content of each page, or leave it out ("structure only").
+    pub fn with_text(mut self, extract: bool) -> Self {
+        self.extract_text = extract;
         self
     }
 
@@ -152,7 +151,7 @@ impl Default for ParseOptions {
     fn default() -> Self {
         Self {
             error_mode: ErrorMode::Lenient,
-            extract_mode: ExtractMode::Full,
+            extract_text: true,
             extract_resources: false,
             min_image_dimension: 64,
             parallel: true,
@@ -175,31 +174,16 @@ pub enum ErrorMode {
     Lenient,
 }
 
-/// What content to extract from the document.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ExtractMode {
-    /// Extract everything (text, structure, resources)
-    #[default]
-    Full,
-    /// Extract text content only.
-    ///
-    /// **Behaves exactly like [`Full`](Self::Full) today**: nothing branches on this
-    /// variant. Only [`StructureOnly`](Self::StructureOnly) gates anything.
-    TextOnly,
-    /// Extract structure only (no text content)
-    StructureOnly,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_parse_options_builder() {
-        let options = ParseOptions::new().lenient().text_only().sequential();
+        let options = ParseOptions::new().lenient().with_text(false).sequential();
 
         assert_eq!(options.error_mode, ErrorMode::Lenient);
-        assert_eq!(options.extract_mode, ExtractMode::TextOnly);
+        assert!(!options.extract_text);
         assert!(!options.parallel);
     }
 

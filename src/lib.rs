@@ -57,7 +57,7 @@ pub use model::{
     ListInfo, Metadata, Outline, Page, Paragraph, ParagraphStyle, QualityAccumulator, Resource,
     ResourceType, Table, TableCell, TableRow, TextRun, TextStyle,
 };
-pub use parser::{ErrorMode, ExtractMode, PageStreamOptions, ParseEvent, ParseOptions, PdfParser};
+pub use parser::{ErrorMode, PageStreamOptions, ParseEvent, ParseOptions, PdfParser};
 #[cfg(feature = "ai")]
 pub use render::AiRefineOptions;
 pub use render::{
@@ -113,7 +113,7 @@ pub fn parse_file<P: AsRef<Path>>(path: P) -> Result<Document> {
 ///
 /// let options = ParseOptions::new()
 ///     .lenient()
-///     .text_only();
+///     .with_resources(false);
 /// let doc = parse_file_with_options("document.pdf", options).unwrap();
 /// ```
 #[cfg(not(target_arch = "wasm32"))]
@@ -324,12 +324,6 @@ impl Unpdf {
         self
     }
 
-    /// Extract text only (no structure).
-    pub fn text_only(mut self) -> Self {
-        self.parse_options = self.parse_options.text_only();
-        self
-    }
-
     /// Disable parallel processing.
     pub fn sequential(mut self) -> Self {
         self.parse_options = self.parse_options.sequential();
@@ -537,15 +531,6 @@ mod tests {
     fn test_unpdf_builder_default() {
         let builder = Unpdf::default();
         assert!(!builder.render_options.include_frontmatter);
-    }
-
-    #[test]
-    fn test_unpdf_builder_text_only() {
-        let builder = Unpdf::new().text_only();
-        assert!(matches!(
-            builder.parse_options.extract_mode,
-            parser::ExtractMode::TextOnly
-        ));
     }
 
     #[test]

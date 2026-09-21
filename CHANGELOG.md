@@ -2,19 +2,52 @@
 
 ## Unreleased
 
-### Security
+### Changed
 
-- The lockfile moves `rustls` to 0.23.45 (RUSTSEC-2026-0285: TLS 1.3 handshake messages accepted
-  across encryption level boundaries, medium). It reaches this crate through `ureq` behind the
-  `ai` feature, so the released CLI binaries and any build with that feature carried it; a
-  library consumer resolving their own dependencies was never bound by this lockfile.
+- **`ExtractMode` is replaced by `ParseOptions::extract_text: bool`** (builder `with_text`),
+  and the enum is gone from every surface: the crate root re-export, the streaming options,
+  the C ABI (`"extract_mode": "full" | "structure_only"` becomes `"extract_text": <bool>`),
+  the .NET binding (`ExtractMode` enum and `ParseOptions.ExtractMode` become
+  `ParseOptions.ExtractText`), and the Python options table. With `TextOnly` removed the
+  enum had two variants, one of which meant "not the other" — that is a boolean, and naming
+  it one makes it symmetric with the `extract_resources` flag beside it.
+- **Structure-only no longer suppresses resource extraction.** `extract_text` and
+  `extract_resources` are independent axes now; previously `StructureOnly` turned resources
+  off as a side effect, so "structure, but keep the images" could not be expressed. Callers
+  who relied on that coupling set `extract_resources` to `false` explicitly — which is what
+  the default already is.
+- `tests/structure_only.rs` pins the contract the parser already followed and nothing
+  asserted: **the page survives with its number and dimensions, and its content blocks are
+  not built.** No test anywhere exercised the mode before, which is how the sibling variant
+  stayed dead through several releases.
 
-### Documentation
+- The built-in backend's `page_content` now fails when none of a page's content streams can
+  be decoded. A page whose content array failed entirely used to return empty content, while
+  a page with a single failed stream already failed — both now behave the same.
 
-- `ExtractMode::TextOnly` is documented as behaving exactly like `Full`: nothing branches on
-  that variant, and only `StructureOnly` gates anything.
+### Removed
+
+- **`ExtractMode::TextOnly`**, and with it `ParseOptions::text_only()`, the `Unpdf::text_only()`
+  builder, the WebAssembly `ParseOptions.textOnly()`, the C ABI's `"text_only"` value for
+  `extract_mode`, and `Unpdf.ExtractMode.TextOnly` in the .NET binding. **No code ever
+  compared against the variant** — a document parsed with it was byte-for-byte a document
+  parsed with `Full`, on every surface that advertised it. Selecting text without resources
+  is `extract_resources` (`ParseOptions::with_resources(false)`, `"extract_resources": false`
+  over the C ABI), which is a separate axis and always was. `Full` and `StructureOnly` keep
+  their meanings, and `StructureOnly` remains the only variant that gates anything.
+
+  Passing `"text_only"` in the C ABI's options JSON is now rejected rather than silently
+  treated as `Full`. The .NET `ExtractMode` enum loses a member, so `StructureOnly`'s
+  ordinal shifts; the value crosses the boundary as a string, so only code depending on the
+  numeric value is affected.
 
 ### Fixed
+
+- `--image-dir` is reflected in the rendered image links. The images were written to the
+  directory given, while the markdown kept pointing at `images/`, so choosing a directory
+  produced a document whose every image link resolved to nothing. The prefix is now
+  derived from the directory actually used -- relative to the output directory when it
+  sits inside it, and as given when it does not.
 
 - `ErrorMode::Strict` now fails a page whose content is split across several streams when
   one of those streams cannot be decoded. The undecodable stream was left out and the rest
@@ -26,8 +59,6 @@
   damaged — but it was reported as a parse error, and lenient parsing logged it as a
   failed page.
 
-### Fixed
-
 - A password given to `ParseOptions::with_password` (or `ConvertOptions::with_password`, or the
   C ABI's `password` field) is now offered to the document. It was carried through every
   options struct and stopped one call short of decryption, which only ever tried the empty
@@ -36,6 +67,21 @@
   `ErrorKind::InvalidPassword` (7), a discriminant published on every binding surface that
   nothing had ever produced; `Encrypted` (6) keeps its meaning of "no password was offered".
   The empty password is still tried first, so every document that opened before opens unchanged.
+
+### Security
+
+- The lockfile moves `rustls` to 0.23.45 (RUSTSEC-2026-0285: TLS 1.3 handshake messages accepted
+  across encryption level boundaries, medium). It reaches this crate through `ureq` behind the
+  `ai` feature, so the released CLI binaries and any build with that feature carried it; a
+  library consumer resolving their own dependencies was never bound by this lockfile.
+
+### Documentation
+
+- The README states the default error mode and what a lenient default costs. Parsing has
+  always been lenient by default, and a successful call can therefore return less than the
+  document held; that was only discoverable from the source. The section also points at the
+  `extraction_quality` fields that count each kind of loss, and notes that the sibling
+  parsers default differently.
 
 ### Added
 
@@ -52,20 +98,6 @@
   back empty — and nothing in the output said so. The count reaches the C ABI
   (`unpdf_get_extraction_quality`, `unpdf_page_stats`), C# (`ExtractionQuality` /
   `PageStats.UndecodableContentStreams`), Python, `warning_message()` and `unpdf info`.
-
-### Changed
-
-- The built-in backend's `page_content` now fails when none of a page's content streams can
-  be decoded. A page whose content array failed entirely used to return empty content, while
-  a page with a single failed stream already failed — both now behave the same.
-
-### Documentation
-
-- The README states the default error mode and what a lenient default costs. Parsing has
-  always been lenient by default, and a successful call can therefore return less than the
-  document held; that was only discoverable from the source. The section also points at the
-  `extraction_quality` fields that count each kind of loss, and notes that the sibling
-  parsers default differently.
 
 ## 0.19.0 — 2026-09-11
 

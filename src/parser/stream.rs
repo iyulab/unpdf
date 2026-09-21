@@ -8,7 +8,7 @@ use crate::error::Error;
 use crate::model::{ExtractionQuality, FormField, Metadata, Outline, Page};
 use crate::render::PageSelection;
 
-use super::options::{ErrorMode, ExtractMode, ParseOptions};
+use super::options::{ErrorMode, ParseOptions};
 
 /// 페이지 단위 스트리밍 파싱 이벤트.
 ///
@@ -45,7 +45,7 @@ pub enum ParseEvent {
 #[derive(Debug, Clone)]
 pub struct PageStreamOptions {
     pub error_mode: ErrorMode,
-    pub extract_mode: ExtractMode,
+    pub extract_text: bool,
     pub extract_resources: bool,
     /// 장식용 작은 이미지를 걸러내는 픽셀 임계값. `ParseOptions` 참고.
     pub min_image_dimension: u32,
@@ -66,7 +66,7 @@ impl Default for PageStreamOptions {
     fn default() -> Self {
         Self {
             error_mode: ErrorMode::Lenient,
-            extract_mode: ExtractMode::Full,
+            extract_text: true,
             extract_resources: false,
             min_image_dimension: 64,
             pages: PageSelection::All,
@@ -87,7 +87,7 @@ impl From<&ParseOptions> for PageStreamOptions {
     fn from(o: &ParseOptions) -> Self {
         Self {
             error_mode: o.error_mode,
-            extract_mode: o.extract_mode,
+            extract_text: o.extract_text,
             extract_resources: o.effective_extract_resources(),
             min_image_dimension: o.min_image_dimension,
             pages: o.pages.clone(),
@@ -312,7 +312,7 @@ where
     // ParseOptions 재구성
     let parse_opts = ParseOptions {
         error_mode: opts.error_mode,
-        extract_mode: opts.extract_mode,
+        extract_text: opts.extract_text,
         extract_resources: opts.extract_resources,
         min_image_dimension: opts.min_image_dimension,
         pages: opts.pages.clone(),

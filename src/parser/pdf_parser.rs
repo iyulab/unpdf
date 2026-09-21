@@ -12,7 +12,7 @@ use crate::model::{
 };
 
 use super::backend::{PdfBackend, RawBackend, RawXObject};
-use super::options::{ErrorMode, ExtractMode, ParseOptions};
+use super::options::{ErrorMode, ParseOptions};
 
 /// PDF document parser.
 pub struct PdfParser {
@@ -104,9 +104,7 @@ impl PdfParser {
                 ControlFlow::Continue(())
             }
             ParseEvent::PageParsed(page) => {
-                if self.options.extract_resources
-                    && self.options.extract_mode != ExtractMode::StructureOnly
-                {
+                if self.options.extract_resources {
                     if let Some(page_id) = page_ids.get(&page.number) {
                         if let Ok(xobjects) = self.backend.page_xobjects(*page_id) {
                             for xobj in xobjects {
@@ -152,8 +150,7 @@ impl PdfParser {
         // Before anything else looks at the resources -- the AI pass below most of all, since
         // it bills per image -- collapse entries whose bytes are identical. A shared logo would
         // otherwise be captioned once per page it appears on.
-        if self.options.extract_resources || self.options.extract_mode != ExtractMode::StructureOnly
-        {
+        if self.options.extract_resources {
             super::dedup::collapse_identical_resources(&mut document);
         }
 
@@ -241,7 +238,7 @@ pub(crate) fn parse_single_page(
     let (width, height) = get_page_dimensions_fn(backend, page_num)?;
     let mut page = Page::new(page_num, width, height);
 
-    if options.extract_mode != ExtractMode::StructureOnly {
+    if options.extract_text {
         // One analyzer per page: the text paths below share its font statistics and
         // its record of whether an unreadable OCR layer was dropped.
         let mut analyzer = super::layout::LayoutAnalyzer::new(backend)
@@ -284,7 +281,7 @@ pub(crate) fn parse_single_page(
     // 향후 Phase 2 에서 content-stream 의 Do 연산자 위치 해석으로 interleave 예정.
     // id 는 확장자 포함: `page{N}_{name}.{ext}`. 이 id 를 곧 이미지의
     // 파일명으로도 사용하므로 writer 측에서 별도 suggested_filename 호출 불필요.
-    if options.extract_resources && options.extract_mode != ExtractMode::StructureOnly {
+    if options.extract_resources {
         let pages = backend.pages();
         if let Some(page_id) = pages.get(&page_num) {
             if let Ok(xobjects) = backend.page_xobjects(*page_id) {

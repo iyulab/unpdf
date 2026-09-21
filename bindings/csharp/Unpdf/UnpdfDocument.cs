@@ -44,21 +44,6 @@ public class MarkdownOptions
 }
 
 /// <summary>
-/// What to extract from a document. Mirrors the Rust <c>ExtractMode</c>.
-/// </summary>
-public enum ExtractMode
-{
-    /// <summary>Extract everything (text, structure, resources). The default.</summary>
-    Full,
-
-    /// <summary>Extract text content only.</summary>
-    TextOnly,
-
-    /// <summary>Extract structure only (no text content).</summary>
-    StructureOnly,
-}
-
-/// <summary>
 /// Options for parsing a document.
 /// </summary>
 /// <remarks>
@@ -71,8 +56,13 @@ public class ParseOptions
     /// <summary>Fail on any parse error instead of skipping invalid content and continuing. Default: lenient (<see langword="false"/>).</summary>
     public bool? Strict { get; set; }
 
-    /// <summary>What to extract. Default: <see cref="Unpdf.ExtractMode.Full"/>.</summary>
-    public ExtractMode? ExtractMode { get; set; }
+    /// <summary>
+    /// Extract the text content of each page. Default: <see langword="true"/>. Set it to
+    /// <see langword="false"/> for structure only — every page is still produced, carrying
+    /// its number and dimensions, with none of its content blocks. It is independent of
+    /// <see cref="ExtractResources"/>.
+    /// </summary>
+    public bool? ExtractText { get; set; }
 
     /// <summary>
     /// Extract embedded resources (images) so <see cref="UnpdfDocument.ResourceCount"/>,
@@ -103,22 +93,14 @@ public class ParseOptions
 
     internal string? ToJson()
     {
-        var set = Strict.HasValue || ExtractMode.HasValue || ExtractResources.HasValue
+        var set = Strict.HasValue || ExtractText.HasValue || ExtractResources.HasValue
             || MinImageDimension.HasValue || Parallel.HasValue || Password is not null
             || SuppressLowConfidenceOcr.HasValue;
         if (!set) return null;
 
         var payload = new Dictionary<string, object?>();
         if (Strict.HasValue) payload["error_mode"] = Strict.Value ? "strict" : "lenient";
-        if (ExtractMode.HasValue)
-        {
-            payload["extract_mode"] = ExtractMode.Value switch
-            {
-                Unpdf.ExtractMode.TextOnly => "text_only",
-                Unpdf.ExtractMode.StructureOnly => "structure_only",
-                _ => "full",
-            };
-        }
+        if (ExtractText.HasValue) payload["extract_text"] = ExtractText.Value;
         if (ExtractResources.HasValue) payload["extract_resources"] = ExtractResources.Value;
         if (MinImageDimension.HasValue) payload["min_image_dimension"] = MinImageDimension.Value;
         if (Parallel.HasValue) payload["parallel"] = Parallel.Value;

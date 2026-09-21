@@ -20,12 +20,6 @@ impl ParseOptions {
         self
     }
 
-    #[wasm_bindgen(js_name = textOnly)]
-    pub fn text_only(mut self) -> Self {
-        self.inner = self.inner.text_only();
-        self
-    }
-
     #[wasm_bindgen(js_name = withPassword)]
     pub fn with_password(mut self, password: &str) -> Self {
         self.inner = self.inner.with_password(password);

@@ -593,8 +593,11 @@ fn cmd_convert(args: &ConvertArgs) -> Result<bool, Box<dyn std::error::Error>> {
 
     // Build render options
     let mut render_opts = RenderOptions::new().with_frontmatter(true);
-    if image_dir.is_some() {
-        render_opts = render_opts.with_image_prefix("images/");
+    if let Some(dir) = &image_dir {
+        // Derived from the directory images are actually written to, not written out a
+        // second time: `--image-dir` moves the files, and a hardcoded prefix would keep
+        // pointing at `images/` where nothing had been written.
+        render_opts = render_opts.with_image_prefix(image_link_prefix(&out_dir, dir));
     }
     if let Some(level) = args.cleanup {
         render_opts = render_opts.with_cleanup_preset(level.into());
@@ -1097,6 +1100,25 @@ fn cmd_version() {
     println!("License: MIT");
 }
 
+/// The markdown link prefix for images, derived from where they are actually written.
+///
+/// A link is resolved relative to the document that carries it, so an image directory
+/// inside the output directory becomes a relative prefix (`images/`). One outside it --
+/// `--image-dir` pointing elsewhere -- is emitted as given, which is the only form that
+/// can still resolve. Separators are normalised to `/`: a Windows path is a valid link
+/// destination only in that form.
+fn image_link_prefix(out_dir: &Path, image_dir: &Path) -> String {
+    let rel = image_dir.strip_prefix(out_dir).unwrap_or(image_dir);
+    let text = rel.to_string_lossy().replace('\\', "/");
+    if text.is_empty() {
+        String::new()
+    } else if text.ends_with('/') {
+        text
+    } else {
+        format!("{}/", text)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1107,6 +1129,44 @@ mod tests {
     #[test]
     fn cli_definition_is_valid() {
         Cli::command().debug_assert();
+    }
+
+    /// The default layout: images land in `<out>/images`, so the link carries exactly
+    /// that one segment and nothing more.
+    #[test]
+    fn image_link_prefix_is_relative_for_the_default_layout() {
+        let out = Path::new("/tmp/doc_output");
+        assert_eq!(image_link_prefix(out, &out.join("images")), "images/");
+    }
+
+    /// `--image-dir` pointing deeper inside the output directory keeps the whole
+    /// relative path -- the link is resolved from the markdown file, not from the leaf.
+    #[test]
+    fn image_link_prefix_keeps_nested_relative_paths() {
+        let out = Path::new("/tmp/doc_output");
+        assert_eq!(
+            image_link_prefix(out, &out.join("assets").join("img")),
+            "assets/img/"
+        );
+    }
+
+    /// `--image-dir` pointing outside the output directory cannot be expressed relative
+    /// to it, so the path is emitted as given. A hardcoded `images/` here was the defect:
+    /// the files went one place and the links pointed at another.
+    #[test]
+    fn image_link_prefix_falls_back_to_the_path_as_given_when_outside() {
+        let out = Path::new("/tmp/doc_output");
+        assert_eq!(
+            image_link_prefix(out, Path::new("/var/shared/pics")),
+            "/var/shared/pics/"
+        );
+    }
+
+    /// Images written beside the markdown need no prefix at all.
+    #[test]
+    fn image_link_prefix_is_empty_when_images_sit_in_the_output_root() {
+        let out = Path::new("/tmp/doc_output");
+        assert_eq!(image_link_prefix(out, out), "");
     }
 
     fn args(base_url: Option<&str>, api_key: Option<&str>, model: Option<&str>) -> AiArgs {
