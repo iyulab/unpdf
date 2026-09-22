@@ -1,5 +1,65 @@
 # Changelog
 
+## 0.21.0 — 2026-09-22
+
+### Fixed
+
+Real-world single-column documents were extracted as one glued run with their section
+structure lost. Six separate causes, each of which alone produced visible damage:
+
+- **Word spaces were dropped.** TJ kerning adjustments below a font's nominal space width
+  were ignored, concatenating words — `Some Road, Somewhere` came out as
+  `SomeRoad,Somewhere`. The Latin threshold drops from 200 to 120 thousandths of text
+  space: measured word gaps sit at 167-200, while intra-word kerning and display-header
+  letterspacing stay at or below 95. The Hangul (500) and CJK (never) rules are unchanged.
+- **Reading order broke on right-aligned content.** `TextSpan.width` was always zero, so
+  XY-Cut treated every span as a zero-width point and split single-column pages on any
+  horizontal gap — a right-aligned date was pushed to the end of the page, away from the
+  row it belongs to. Span width is now estimated per script from the font size.
+- **Mixed line heights produced phantom headings.** Line grouping scaled its Y tolerance
+  by the incoming span's font size, so a large-font line could absorb a small-font
+  neighbour a few points away and the two averaged into a mid-size pseudo-heading.
+  Tolerance now scales with the smaller of the two sizes.
+- **Bold ALL-CAPS section headers were never promoted.** Classification looked only at
+  font size, so a header set at body size stayed body text. A style-based rule promotes a
+  short bold all-capitals line; mixed-case bold lines are deliberately excluded so job
+  titles and names-in-bold stay body text.
+- **Hard hyphens were deleted.** De-hyphenation joined any hyphen followed by a lowercase
+  letter, so `Self-teaching` became `Selfteaching`. It now requires whitespace after the
+  hyphen, which only line-break hyphenation has.
+- **Inline emphasis was discarded.** Per-span bold/italic was flattened to plain text.
+  The parser now emits styled runs and preserves them through same-row merges.
+
+Markdown assembly, found while fixing the above:
+
+- Emphasis markers wrapped surrounding whitespace (`**word **`), which abuts an adjacent
+  emphasis run as `***` and is read as one bold-italic opener. Whitespace is kept outside
+  the markers.
+- A list was not separated from the paragraph or heading that follows it, and a
+  sentence-ending newline before a list marker was doubled, turning every tight list
+  loose.
+
+### Changed
+
+- `apply_text_style` moves to the shared `render::syntax` module. The batch and streaming
+  renderers had a copy each; they can no longer drift on the rule.
+
+### Known limitations
+
+- The span width is a per-script average advance, not a glyph metric, so a wide estimate
+  can still swallow the gap between two columns of one row. Where that happens to a bold
+  cell beside an italic one, the markers abut as `***`.
+- Label/value row layouts are not reconstructed as tables or definition lists.
+- Styled runs fall back to plain text for blocks containing right-to-left text: BiDi
+  reordering operates on the joined string and cannot be represented as independent runs.
+
+### Internal
+
+- Five tests were reported green without running: three CLI tests returned early on a
+  fixture that has never been committed, and both streaming-equivalence tests looped over
+  an empty corpus. All five now build their input in the test, and assert the parsed page
+  count and non-empty text so an empty result cannot satisfy them either.
+
 ## 0.20.0 — 2026-09-22
 
 ### Changed
