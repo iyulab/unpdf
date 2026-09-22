@@ -7,9 +7,11 @@ fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_unpdf")
 }
 
-/// A single-page PDF built here rather than read from `tests/fixtures/`, so the
-/// tests that use it run everywhere instead of skipping when the fixture is
-/// absent.
+/// A single-page PDF built here rather than read from disk, so every test in
+/// this file runs everywhere. Three of them used to read
+/// `tests/fixtures/arxiv-2502.21142.pdf` behind an `if !exists { return; }`
+/// guard — a file never committed to the repo, so those three reported green
+/// without spawning the binary even once.
 fn minimal_pdf() -> Vec<u8> {
     let stream = b"BT /F1 12 Tf 20 100 Td (Hello unpdf) Tj ET";
     let bodies: Vec<Vec<u8>> = vec![
@@ -60,21 +62,11 @@ fn closed_port() -> u16 {
     listener.local_addr().unwrap().port()
 }
 
-fn fixture() -> std::path::PathBuf {
-    // CARGO_MANIFEST_DIR is the cli/ directory; fixture lives at repo root/tests/fixtures/
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .join("tests/fixtures/arxiv-2502.21142.pdf")
-}
-
 #[test]
 fn convert_default_outputs_md_only() {
-    let fixture = fixture();
-    if !fixture.exists() {
-        return;
-    }
     let tmp = tempfile::tempdir().unwrap();
+    let fixture = tmp.path().join("input.pdf");
+    std::fs::write(&fixture, minimal_pdf()).unwrap();
     let out = tmp.path().join("out");
     let status = Command::new(bin())
         .args([
@@ -100,11 +92,9 @@ fn convert_default_outputs_md_only() {
 
 #[test]
 fn convert_all_flag_produces_three_files() {
-    let fixture = fixture();
-    if !fixture.exists() {
-        return;
-    }
     let tmp = tempfile::tempdir().unwrap();
+    let fixture = tmp.path().join("input.pdf");
+    std::fs::write(&fixture, minimal_pdf()).unwrap();
     let out = tmp.path().join("out");
     let status = Command::new(bin())
         .args([
@@ -125,11 +115,9 @@ fn convert_all_flag_produces_three_files() {
 
 #[test]
 fn convert_formats_flag_selects_subset() {
-    let fixture = fixture();
-    if !fixture.exists() {
-        return;
-    }
     let tmp = tempfile::tempdir().unwrap();
+    let fixture = tmp.path().join("input.pdf");
+    std::fs::write(&fixture, minimal_pdf()).unwrap();
     let out = tmp.path().join("out");
     let status = Command::new(bin())
         .args([
