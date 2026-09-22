@@ -8,7 +8,8 @@ use std::path::Path;
 use crate::detect::detect_format_from_path;
 use crate::error::{Error, Result};
 use crate::model::{
-    Block, Document, ListInfo, OutlineItem, Page, Paragraph, Resource, ResourceType,
+    Block, Document, InlineContent, ListInfo, OutlineItem, Page, Paragraph, Resource, ResourceType,
+    TextRun, TextStyle,
 };
 
 use super::backend::{PdfBackend, RawBackend, RawXObject};
@@ -451,7 +452,8 @@ fn get_page_dimensions_fn(backend: &dyn PdfBackend, page_num: u32) -> Result<(f3
 /// marker. Nesting level is always 0 — `layout::detect_list_marker` reads a
 /// single line's text and has no indentation model to derive one from.
 fn list_item_paragraph(block: &super::layout::TextBlock) -> Paragraph {
-    let mut para = Paragraph::with_text(block.list_item_text());
+    let mut para = styled_paragraph(block);
+    strip_prefix_bytes(&mut para.content, block_list_marker_len(block));
     para.style.list_info = Some(match block.list_item_number {
         Some(n) => ListInfo::numbered(0, n),
         None => ListInfo::bullet(0),
@@ -459,10 +461,103 @@ fn list_item_paragraph(block: &super::layout::TextBlock) -> Paragraph {
     para
 }
 
+/// Byte length of the list marker prefix at the start of a `ListItem` block's
+/// plain text. Mirrors `TextBlock::list_item_text`, which is what the marker
+/// length is defined against; recomputed here so the styled-run builder can
+/// strip the same prefix without re-deriving the block's joined text twice.
+fn block_list_marker_len(block: &super::layout::TextBlock) -> usize {
+    let full = block.text();
+    let stripped = block.list_item_text();
+    full.len() - stripped.len()
+}
+
+/// Build a `Paragraph` whose inline content preserves per-span bold/italic
+/// styling, joining spans and lines with the same spacing the plain-text
+/// `TextBlock::text` path would produce. Adjacent runs sharing a style are
+/// merged so emphasis markers don't fragment. Falls back to plain text for
+/// blocks containing RTL characters: BiDi reordering works on the joined
+/// string and can't be represented as independently-styled runs.
+fn styled_paragraph(block: &super::layout::TextBlock) -> Paragraph {
+    let plain = block.text();
+    if super::bidi::contains_rtl(&plain) {
+        return Paragraph::with_text(plain);
+    }
+
+    let mut runs: Vec<TextRun> = Vec::new();
+    for (line_idx, line) in block.lines.iter().enumerate() {
+        if line_idx > 0 {
+            push_run(&mut runs, " ", false, false);
+        }
+        for (piece, span_idx) in line.styled_segments() {
+            let span = &line.spans[span_idx];
+            push_run(&mut runs, &piece, span.is_bold, span.is_italic);
+        }
+    }
+
+    let mut para = Paragraph::new();
+    para.content = runs.into_iter().map(InlineContent::Text).collect();
+    para
+}
+
+/// Append `text` as a run with the given emphasis, merging into the previous
+/// run when it carries the same style so consecutive same-style spans don't
+/// produce back-to-back `**a****b**` fragments.
+fn push_run(runs: &mut Vec<TextRun>, text: &str, bold: bool, italic: bool) {
+    if text.is_empty() {
+        return;
+    }
+    if let Some(last) = runs.last_mut() {
+        if last.style.bold == bold && last.style.italic == italic {
+            last.text.push_str(text);
+            return;
+        }
+    }
+    runs.push(TextRun {
+        text: text.to_string(),
+        style: TextStyle {
+            bold,
+            italic,
+            ..Default::default()
+        },
+    });
+}
+
+/// Remove `n` bytes from the front of a run sequence (the list marker prefix),
+/// then trim any whitespace left at the new start. Byte offsets are safe here
+/// because the prefix being removed is the marker plus ASCII whitespace, and
+/// the runs' concatenated text equals the block's plain text the length was
+/// measured against.
+fn strip_prefix_bytes(content: &mut Vec<InlineContent>, mut n: usize) {
+    while n > 0 && !content.is_empty() {
+        let remove_whole = match &content[0] {
+            InlineContent::Text(run) => run.text.len() <= n,
+            _ => false,
+        };
+        if remove_whole {
+            if let InlineContent::Text(run) = content.remove(0) {
+                n -= run.text.len();
+            }
+        } else if let InlineContent::Text(run) = &mut content[0] {
+            run.text = run.text[n..].to_string();
+            n = 0;
+        } else {
+            break;
+        }
+    }
+    if let Some(InlineContent::Text(run)) = content.first_mut() {
+        let trimmed = run.text.trim_start().to_string();
+        run.text = trimmed;
+    }
+}
+
 /// Merge consecutive paragraph blocks that share the same visual row
 /// (Y within 1.5pt of each other) into a single paragraph. Recovers
 /// table-row structure that XY-Cut over-segmented into per-cell blocks.
 /// Headings, tables, images, and rule blocks are never merged.
+///
+/// The merge appends inline content rather than re-joining plain text so any
+/// per-span bold/italic styling survives (a bold row label stays bold next to
+/// its regular-weight value).
 fn merge_same_row_paragraphs(elements: Vec<(f32, Block)>) -> Vec<(f32, Block)> {
     // Tolerance ≈ half of body line height. Table cells in Hancom PDFs
     // frequently sit on slightly offset baselines within the same visual row
@@ -471,34 +566,42 @@ fn merge_same_row_paragraphs(elements: Vec<(f32, Block)>) -> Vec<(f32, Block)> {
     const ROW_Y_TOLERANCE: f32 = 6.0;
     let mut out: Vec<(f32, Block)> = Vec::with_capacity(elements.len());
     for (y, block) in elements {
-        let Block::Paragraph(p) = &block else {
-            out.push((y, block));
-            continue;
-        };
-        if p.style.heading_level.is_some() || p.style.list_info.is_some() {
-            out.push((y, block));
-            continue;
-        }
-        // Can we merge into the previous?
-        if let Some((prev_y, Block::Paragraph(prev_p))) = out.last_mut().map(|(y, b)| (y, b)) {
-            if (*prev_y - y).abs() <= ROW_Y_TOLERANCE
-                && prev_p.style.heading_level.is_none()
-                && prev_p.style.list_info.is_none()
+        // Only plain paragraphs (not headings or list items) are merge candidates.
+        let para = match block {
+            Block::Paragraph(p)
+                if p.style.heading_level.is_none() && p.style.list_info.is_none() =>
             {
-                let prev_text = prev_p.plain_text();
-                let cur_text = p.plain_text();
-                let needs_gap = !prev_text.ends_with(char::is_whitespace)
-                    && !cur_text.starts_with(char::is_whitespace);
-                let mut combined = prev_text;
+                p
+            }
+            other => {
+                out.push((y, other));
+                continue;
+            }
+        };
+
+        if let Some((prev_y, Block::Paragraph(prev_p))) = out.last_mut().map(|(y, b)| (y, b)) {
+            if prev_p.style.heading_level.is_none()
+                && prev_p.style.list_info.is_none()
+                && (*prev_y - y).abs() <= ROW_Y_TOLERANCE
+            {
+                let needs_gap = {
+                    let prev_text = prev_p.plain_text();
+                    let cur_text = para.plain_text();
+                    !prev_text.ends_with(char::is_whitespace)
+                        && !cur_text.starts_with(char::is_whitespace)
+                };
                 if needs_gap {
-                    combined.push(' ');
+                    prev_p.content.push(InlineContent::Text(TextRun {
+                        text: " ".to_string(),
+                        style: TextStyle::default(),
+                    }));
                 }
-                combined.push_str(&cur_text);
-                *prev_p = Paragraph::with_text(combined);
+                prev_p.content.extend(para.content);
                 continue;
             }
         }
-        out.push((y, block));
+
+        out.push((y, Block::Paragraph(para)));
     }
     out
 }
@@ -618,7 +721,7 @@ fn extract_page_with_tables_fn(
                             Block::Paragraph(Paragraph::heading(text, level))
                         }
                         super::layout::BlockType::Paragraph | super::layout::BlockType::Unknown => {
-                            Block::Paragraph(Paragraph::with_text(text))
+                            Block::Paragraph(styled_paragraph(&block))
                         }
                         super::layout::BlockType::ListItem => {
                             Block::Paragraph(list_item_paragraph(&block))
@@ -655,7 +758,7 @@ fn extract_page_with_tables_fn(
                         Block::Paragraph(Paragraph::heading(text, level))
                     }
                     super::layout::BlockType::Paragraph | super::layout::BlockType::Unknown => {
-                        Block::Paragraph(Paragraph::with_text(text))
+                        Block::Paragraph(styled_paragraph(&block))
                     }
                     super::layout::BlockType::ListItem => {
                         Block::Paragraph(list_item_paragraph(&block))

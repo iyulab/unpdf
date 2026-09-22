@@ -271,28 +271,7 @@ impl<'a> StreamingRenderer<'a> {
     }
 
     fn apply_text_style(&self, text: &str, style: &crate::model::TextStyle) -> String {
-        let mut result = text.to_string();
-
-        if style.strikethrough {
-            result = format!("~~{}~~", result);
-        }
-        if style.italic {
-            result = format!("*{}*", result);
-        }
-        if style.bold {
-            result = format!("**{}**", result);
-        }
-        if style.superscript {
-            result = format!("<sup>{}</sup>", result);
-        }
-        if style.subscript {
-            result = format!("<sub>{}</sub>", result);
-        }
-        if style.underline {
-            result = format!("<u>{}</u>", result);
-        }
-
-        result
+        super::syntax::apply_text_style(text, style)
     }
 
     fn render_list_item(
@@ -380,7 +359,22 @@ impl<'a> Iterator for StreamingRenderer<'a> {
 
                     if block_index < page.elements.len() {
                         let block = &page.elements[block_index];
-                        let content = self.render_block(block);
+                        let mut content = self.render_block(block);
+
+                        // Separate a list from the block that follows it with a
+                        // blank line, matching the batch renderer: list items
+                        // render with a single trailing newline (tight list), so
+                        // a following paragraph/heading would otherwise crowd the
+                        // list's last item.
+                        let prev_is_list_item = block_index > 0
+                            && matches!(&page.elements[block_index - 1],
+                                Block::Paragraph(p) if p.style.list_info.is_some());
+                        let is_list_item =
+                            matches!(block, Block::Paragraph(p) if p.style.list_info.is_some());
+                        if prev_is_list_item && !is_list_item && !content.is_empty() {
+                            content.insert(0, '\n');
+                        }
+
                         self.state = StreamState::InPage {
                             page_index,
                             block_index: block_index + 1,

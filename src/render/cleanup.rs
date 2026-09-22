@@ -331,7 +331,12 @@ impl CleanupPipeline {
         // - "infor-\nmation" → "information"
         // - "infor- mation" → "information"
         // - "infor-\n mation" → "information"
-        let re = Regex::new(r"([a-zA-Z])-\s*\n?\s*([a-z])").unwrap();
+        //
+        // The hyphen must be followed by at least one whitespace character
+        // (`\s+`, not `\s*`): a hard hyphen inside a word ("low-level",
+        // "end-to-end") has no whitespace after it and must be preserved, while
+        // the line-break/space artifacts above always do.
+        let re = Regex::new(r"([a-zA-Z])-\s+([a-z])").unwrap();
         re.replace_all(text, "$1$2").to_string()
     }
 
@@ -420,6 +425,14 @@ impl CleanupPipeline {
         // Step 2: Protect paragraph breaks (2+ newlines)
         let re_para = Regex::new(r"\n{2,}").unwrap();
         let protected = re_para.replace_all(&protected, PARA_PLACEHOLDER);
+
+        // Step 2b: A sentence-ending *single* newline directly before a protected
+        // block marker (list item / heading / table row) must not be preserved:
+        // the marker restore in step 7 already re-inserts that newline, so keeping
+        // both turns a tight list into a loose one ("- a.\n- b." → "- a.\n\n- b.").
+        // Drop the newline and let the marker restore supply it.
+        let re_sent_before_block = Regex::new(r"([.。!?！？])\s*\n(\u{0000}[LHT])").unwrap();
+        let protected = re_sent_before_block.replace_all(&protected, "$1$2");
 
         // Step 3: Protect sentence endings followed by newline
         let re_sent = Regex::new(r"([.。!?！？])\s*\n").unwrap();

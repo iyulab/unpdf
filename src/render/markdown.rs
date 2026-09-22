@@ -142,8 +142,22 @@ impl MarkdownRenderer {
         if self.options.collect_stats {
             self.stats.add_page();
         }
+        // Track list items so a block that follows a list is separated from it by
+        // a blank line. List items render with a single trailing newline (tight
+        // list); without the extra newline a following paragraph or heading would
+        // crowd the list's last item.
+        let mut prev_was_list_item = false;
         for block in &page.elements {
+            let is_list_item = matches!(block, Block::Paragraph(p) if p.style.list_info.is_some());
+            if prev_was_list_item
+                && !is_list_item
+                && !output.is_empty()
+                && !output.ends_with("\n\n")
+            {
+                output.push('\n');
+            }
             self.render_block(output, block);
+            prev_was_list_item = is_list_item;
         }
     }
 
@@ -285,29 +299,7 @@ impl MarkdownRenderer {
     }
 
     fn apply_text_style(&self, text: &str, style: &TextStyle) -> String {
-        let mut result = text.to_string();
-
-        // Apply styles (innermost first)
-        if style.strikethrough {
-            result = format!("~~{}~~", result);
-        }
-        if style.italic {
-            result = format!("*{}*", result);
-        }
-        if style.bold {
-            result = format!("**{}**", result);
-        }
-        if style.superscript {
-            result = format!("<sup>{}</sup>", result);
-        }
-        if style.subscript {
-            result = format!("<sub>{}</sub>", result);
-        }
-        if style.underline {
-            result = format!("<u>{}</u>", result);
-        }
-
-        result
+        super::syntax::apply_text_style(text, style)
     }
 
     fn render_table(&self, output: &mut String, table: &Table) {

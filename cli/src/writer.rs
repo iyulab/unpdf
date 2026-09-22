@@ -205,12 +205,22 @@ impl MultiFormatWriter {
             }
             let placeholder = unpdf::model::Document::new();
             let renderer = StreamingRenderer::new(&placeholder, self.render_opts.clone());
+            // Separate a list from the block that follows it with a blank line,
+            // matching the batch renderer: list items render with a single
+            // trailing newline (tight list), so a following paragraph/heading
+            // would otherwise crowd the list's last item.
+            let mut prev_was_list_item = false;
             for block in &page.elements {
+                let is_list_item = matches!(block, unpdf::model::Block::Paragraph(p) if p.style.list_info.is_some());
                 let chunk = renderer.render_block_public(block);
                 if !chunk.is_empty() {
+                    if prev_was_list_item && !is_list_item {
+                        w.write_all(b"\n")?;
+                    }
                     w.write_all(chunk.as_bytes())?;
                     self.md_written = true;
                 }
+                prev_was_list_item = is_list_item;
             }
         }
         if let Some(w) = self.txt.as_mut() {

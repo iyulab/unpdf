@@ -16,7 +16,52 @@
 //! Table block is already fully materialized by the time either renderer sees it.
 
 use super::{RenderOptions, TableFallback};
-use crate::model::{Alignment, Table, TableRow};
+use crate::model::{Alignment, Table, TableRow, TextStyle};
+
+/// Wrap `text` in the Markdown emphasis markers for `style`, keeping any
+/// leading/trailing whitespace *outside* the markers. A run like `"Southampton "`
+/// would otherwise render as `**Southampton **` and, abutting an italic run,
+/// produce the ambiguous `***` sequence — CommonMark reads that as a single
+/// bold+italic opener, corrupting both runs. Kept here so the batch and
+/// streaming renderers can't drift on the rule.
+pub(super) fn apply_text_style(text: &str, style: &TextStyle) -> String {
+    if !style.has_styling() {
+        return text.to_string();
+    }
+
+    let leading_len = text.len() - text.trim_start().len();
+    let core_end = text.len() - (text.len() - text.trim_end().len());
+    if leading_len >= core_end {
+        // All whitespace — nothing to emphasise.
+        return text.to_string();
+    }
+    let leading = &text[..leading_len];
+    let core = &text[leading_len..core_end];
+    let trailing = &text[core_end..];
+
+    // Apply styles (innermost first), matching the historical nesting order.
+    let mut styled = core.to_string();
+    if style.strikethrough {
+        styled = format!("~~{}~~", styled);
+    }
+    if style.italic {
+        styled = format!("*{}*", styled);
+    }
+    if style.bold {
+        styled = format!("**{}**", styled);
+    }
+    if style.superscript {
+        styled = format!("<sup>{}</sup>", styled);
+    }
+    if style.subscript {
+        styled = format!("<sub>{}</sub>", styled);
+    }
+    if style.underline {
+        styled = format!("<u>{}</u>", styled);
+    }
+
+    format!("{leading}{styled}{trailing}")
+}
 
 /// Render a table to Markdown, honoring [`RenderOptions::table_fallback`] for a table
 /// [`Table::has_merged_cells`]. Returns an empty string for an empty table.
