@@ -12,7 +12,6 @@ debug/
 test-files/
 test-output/
 *_output/
-tests/fixtures/*.pdf
 
 # OS files
 .DS_Store
