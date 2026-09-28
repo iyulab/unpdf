@@ -1436,7 +1436,7 @@ impl<'a> LayoutAnalyzer<'a> {
             lines.push(TextLine::from_spans(current_line_spans));
         }
 
-        lines
+        attach_script_lines(lines)
     }
 
     /// Detect headings based on font size hierarchy.
@@ -2163,6 +2163,102 @@ fn attach_word_space(
     }
 }
 
+/// Fold lines that are really subscripts or superscripts back into the line they belong to.
+///
+/// A script is set smaller and shifted off the baseline, often by more than the same-line
+/// tolerance, so baseline grouping gives it a line of its own — which then becomes a
+/// paragraph between two body lines and, for a superscript, comes *before* its own line.
+/// `lines` is in reading order (top to bottom), so a script line's owner is one of its
+/// two neighbours: the line above for a subscript, the line below for a superscript.
+fn attach_script_lines(lines: Vec<TextLine>) -> Vec<TextLine> {
+    let mut out: Vec<TextLine> = Vec::with_capacity(lines.len());
+    let mut pending = lines.into_iter().peekable();
+    while let Some(line) = pending.next() {
+        let above = out.last().filter(|owner| is_script_of(&line, owner));
+        let below = pending.peek().filter(|owner| is_script_of(&line, owner));
+        // Both can qualify only for a script squeezed between two lines; the nearer
+        // baseline is the one it was set against.
+        let into_above = match (above, below) {
+            (Some(a), Some(b)) => (a.y - line.y).abs() <= (b.y - line.y).abs(),
+            (Some(_), None) => true,
+            (None, Some(_)) => false,
+            (None, None) => {
+                out.push(line);
+                continue;
+            }
+        };
+        if into_above {
+            let owner = out.pop().expect("checked above");
+            out.push(owner.with_scripts(line));
+        } else {
+            let owner = pending.next().expect("checked below");
+            out.push(owner.with_scripts(line));
+        }
+    }
+    out
+}
+
+/// Whether every span of `line` reads as a script of `owner`: set clearly smaller,
+/// shifted off `owner`'s baseline by less than a script's usual rise or drop, and sitting
+/// beside `owner`'s text rather than over it.
+///
+/// The last condition is what keeps a genuine small line — a byline under a title, a
+/// caption line — its own: it runs *across* its neighbour's text, a script runs *after*
+/// a word.
+fn is_script_of(line: &TextLine, owner: &TextLine) -> bool {
+    let size = owner.font_size;
+    if line.spans.is_empty() || owner.spans.is_empty() || size <= 0.0 {
+        return false;
+    }
+    let smaller = line.spans.iter().all(|s| s.font_size <= size * 0.9);
+    let near = (line.y - owner.y).abs() <= size * 0.6;
+    if !smaller || !near {
+        return false;
+    }
+    let extent = |s: &TextSpan| {
+        let width = if s.width > 0.0 {
+            s.width
+        } else {
+            estimate_text_width(&s.text, s.font_size)
+        };
+        (s.x, s.x + width)
+    };
+    let left = owner
+        .spans
+        .iter()
+        .map(|s| extent(s).0)
+        .fold(f32::MAX, f32::min);
+    let right = owner
+        .spans
+        .iter()
+        .map(|s| extent(s).1)
+        .fold(f32::MIN, f32::max);
+    // Estimated extents are approximate; a sliver of overlap is not "over the text".
+    let slack = size * 0.25;
+    line.spans.iter().all(|script| {
+        let (x0, x1) = extent(script);
+        let beside_owner = x0 >= left - size && x0 <= right + size;
+        let over_text = owner.spans.iter().any(|s| {
+            let (o0, o1) = extent(s);
+            x0 < o1 - slack && x1 > o0 + slack
+        });
+        beside_owner && !over_text
+    })
+}
+
+impl TextLine {
+    /// This line with `scripts`' spans merged in, keeping this line's baseline.
+    fn with_scripts(self, scripts: TextLine) -> TextLine {
+        let (y, font_size) = (self.y, self.font_size);
+        let mut spans = self.spans;
+        spans.extend(scripts.spans);
+        let mut merged = TextLine::from_spans(spans);
+        merged.y = y;
+        merged.font_size = font_size;
+        merged
+    }
+}
+
 /// Whether `next` continues `prev` on the same line, in the same font, starting where
 /// `prev` ends. Both extents must be measured.
 ///
@@ -2300,6 +2396,51 @@ mod tests {
             font_size,
             font.to_string(),
         )])
+    }
+
+    /// A line of spans with widths assigned, as they are by the time lines are grouped.
+    fn span_line(parts: &[(&str, f32, f32, f32)]) -> TextLine {
+        TextLine::from_spans(
+            parts
+                .iter()
+                .map(|&(text, x, y, size)| TextSpan {
+                    width: estimate_text_width(text, size),
+                    ..TextSpan::new(text.to_string(), x, y, size, "Helvetica".to_string())
+                })
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn a_superscript_line_joins_the_line_below_it() {
+        let body = span_line(&[("own right.", 72.0, 686.0, 12.0)]);
+        let sup = span_line(&[(
+            "[35]",
+            72.0 + estimate_text_width("own right.", 12.0),
+            690.2,
+            9.6,
+        )]);
+        let lines = attach_script_lines(vec![sup, body]);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].text(), "own right.[35]");
+        assert_eq!(lines[0].y, 686.0, "the merged line keeps the body baseline");
+    }
+
+    #[test]
+    fn a_small_line_running_across_its_neighbour_is_not_a_script() {
+        // A byline set smaller just under a title: close enough and small enough, but it
+        // spans the title's text instead of sitting after a word.
+        let title = span_line(&[("A Study of Leaf Anatomy", 72.0, 700.0, 14.0)]);
+        let byline = span_line(&[("by A. Author and B. Author", 72.0, 694.0, 10.0)]);
+        let lines = attach_script_lines(vec![title, byline]);
+        assert_eq!(lines.len(), 2);
+    }
+
+    #[test]
+    fn a_same_size_line_is_never_a_script() {
+        let first = span_line(&[("first line", 72.0, 700.0, 12.0)]);
+        let second = span_line(&[("tail", 200.0, 696.0, 12.0)]);
+        assert_eq!(attach_script_lines(vec![first, second]).len(), 2);
     }
 
     #[test]

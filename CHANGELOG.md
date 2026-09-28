@@ -34,6 +34,13 @@ the text, lost text outright. Browser-printed PDFs hit both on nearly every page
   widths are measured are joined when they abut instead of by estimate. Fonts without
   declared widths keep the previous estimate. `T*` without a `TL` now moves by the
   specified default leading of 0 rather than an assumed 12.
+- **Subscripts and superscripts were split off their lines.** A script set smaller and
+  shifted off the baseline by more than the same-line tolerance became a line — then a
+  paragraph — of its own, and a superscript was emitted before the line it belongs to:
+  `precursor to C` / `4` / `[35]` / `and a useful…`. A smaller line whose runs sit
+  beside a neighbouring line's text, within a script's rise or drop of its baseline, is
+  now folded into that line. A smaller line that runs across its neighbour's text (a
+  byline under a title) stays its own.
 
 ### Added
 

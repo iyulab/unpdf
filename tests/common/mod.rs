@@ -120,6 +120,28 @@ pub fn glyph_per_operator_pdf(line: &str, font_size: f32, space_glyphs: bool) ->
     assemble(objects)
 }
 
+/// One page with two body lines carrying scripts the way typeset text does: a subscript
+/// lowered at the end of the first line (`C` + `4`) and a citation superscript raised at
+/// the end of the second (`right.` + `[35]`), both in a smaller size. Each script sits
+/// closer to the gap between the lines than a same-line tolerance allows.
+pub fn scripted_lines_pdf() -> Vec<u8> {
+    let content = b"BT /F1 12 Tf 72 700 Td (is both an evolutionary precursor to C) Tj ET \
+        BT /F1 9.6 Tf 282 696.8 Td (4) Tj ET \
+        BT /F1 12 Tf 72 686 Td (and a useful mechanism in its own right.) Tj ET \
+        BT /F1 9.6 Tf 291 690.2 Td ([35]) Tj ET \
+        BT /F1 12 Tf 72 672 Td (The next sentence follows.) Tj ET\n";
+    let objects: Vec<Vec<u8>> = vec![
+        b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+        b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]\
+          /Resources<</Font<</F1 5 0 R>>>>/Contents 4 0 R>>"
+            .to_vec(),
+        stream_object(&format!("<</Length {}>>", content.len()), content),
+        HELVETICA.to_vec(),
+    ];
+    assemble(objects)
+}
+
 /// One page with a figure framed twice (a background box and its inset border, as
 /// browsers draw it) on the left, a short separator rule far below it, and a
 /// heading line in between. The frames and the rule never touch, so nothing on the
