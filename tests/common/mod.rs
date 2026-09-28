@@ -60,6 +60,66 @@ pub fn browser_printed_pdf() -> Vec<u8> {
     assemble(objects)
 }
 
+/// Helvetica-Bold with its `/Widths` declared for codes 32..=122 (space and a–z;
+/// everything between is 0). The widths are the font's real advances, so a producer
+/// that positions each glyph by its advance lines them up exactly.
+fn helvetica_bold_with_widths() -> Vec<u8> {
+    let widths: Vec<String> = (32u8..=122)
+        .map(|code| helvetica_bold_advance(char::from(code)).to_string())
+        .collect();
+    format!(
+        "<</Type/Font/Subtype/Type1/BaseFont/Helvetica-Bold/FirstChar 32/LastChar 122/Widths[{}]>>",
+        widths.join(" ")
+    )
+    .into_bytes()
+}
+
+/// Helvetica-Bold advance of a lowercase letter or space, in thousandths of an em.
+pub fn helvetica_bold_advance(c: char) -> f32 {
+    const LOWER: [f32; 26] = [
+        556.0, 611.0, 556.0, 611.0, 556.0, 333.0, 611.0, 611.0, 278.0, 278.0, 556.0, 278.0, 889.0,
+        611.0, 611.0, 611.0, 611.0, 389.0, 556.0, 333.0, 611.0, 556.0, 778.0, 556.0, 556.0, 500.0,
+    ];
+    match c {
+        ' ' => 278.0,
+        'a'..='z' => LOWER[(c as u8 - b'a') as usize],
+        _ => 0.0,
+    }
+}
+
+/// One page whose single line is drawn one glyph per `Tj`, each glyph moved into place
+/// with `Td` by the previous glyph's advance — the way browsers print text.
+///
+/// With `space_glyphs`, a space is drawn as a glyph like any other; without, it is
+/// left out and the word gap exists only as a larger move.
+pub fn glyph_per_operator_pdf(line: &str, font_size: f32, space_glyphs: bool) -> Vec<u8> {
+    let mut content = format!("BT /F1 {font_size} Tf 72 700 Td ");
+    let mut pending_dx: Option<f32> = None;
+    for c in line.chars() {
+        if c == ' ' && !space_glyphs {
+            *pending_dx.get_or_insert(0.0) += helvetica_bold_advance(' ') / 1000.0 * font_size;
+            continue;
+        }
+        if let Some(dx) = pending_dx {
+            content.push_str(&format!("{dx} 0 Td "));
+        }
+        content.push_str(&format!("({c}) Tj "));
+        pending_dx = Some(helvetica_bold_advance(c) / 1000.0 * font_size);
+    }
+    content.push_str("ET\n");
+    let content = content.into_bytes();
+    let objects: Vec<Vec<u8>> = vec![
+        b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+        b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]\
+          /Resources<</Font<</F1 5 0 R>>>>/Contents 4 0 R>>"
+            .to_vec(),
+        stream_object(&format!("<</Length {}>>", content.len()), &content),
+        helvetica_bold_with_widths(),
+    ];
+    assemble(objects)
+}
+
 /// One page with a figure framed twice (a background box and its inset border, as
 /// browsers draw it) on the left, a short separator rule far below it, and a
 /// heading line in between. The frames and the rule never touch, so nothing on the

@@ -783,9 +783,10 @@ impl<'a> LayoutAnalyzer<'a> {
         let mut signals = PageTextLayerSignals::default();
 
         let mut spans = Vec::new();
-        let mut current_font = String::new();
-        let mut current_font_name: Vec<u8> = Vec::new();
-        let mut current_font_size: f32 = 12.0;
+        // Text state (ISO 32000-1 §9.3) is part of the graphics state: `q`/`Q` save and
+        // restore it along with the CTM, and it persists across `BT`/`ET`.
+        let mut text_state = TextState::default();
+        let mut text_state_stack: Vec<TextState> = Vec::new();
         let mut text_matrix = TextMatrix::default();
         let mut in_text_block = false;
         // Current Transformation Matrix (starts as identity [1,0,0,1,0,0])
@@ -800,10 +801,12 @@ impl<'a> LayoutAnalyzer<'a> {
                 "Do" => self.image_op_count.set(self.image_op_count.get() + 1),
                 _ => {}
             }
+            let operand = |i: usize| op.operands.get(i).and_then(get_number_from_value);
             match op.operator.as_str() {
                 "q" => {
                     ctm_stack.push(ctm);
                     render_mode_stack.push(render_mode);
+                    text_state_stack.push(text_state.clone());
                 }
                 "Q" => {
                     if let Some(saved) = ctm_stack.pop() {
@@ -812,9 +815,12 @@ impl<'a> LayoutAnalyzer<'a> {
                     if let Some(saved) = render_mode_stack.pop() {
                         render_mode = saved;
                     }
+                    if let Some(saved) = text_state_stack.pop() {
+                        text_state = saved;
+                    }
                 }
                 "Tr" if !op.operands.is_empty() => {
-                    if let Some(mode) = get_number_from_value(&op.operands[0]) {
+                    if let Some(mode) = operand(0) {
                         render_mode = mode as i64;
                     }
                 }
@@ -829,12 +835,12 @@ impl<'a> LayoutAnalyzer<'a> {
                 }
                 "cm" if op.operands.len() >= 6 => {
                     let cm = [
-                        get_number_from_value(&op.operands[0]).unwrap_or(1.0),
-                        get_number_from_value(&op.operands[1]).unwrap_or(0.0),
-                        get_number_from_value(&op.operands[2]).unwrap_or(0.0),
-                        get_number_from_value(&op.operands[3]).unwrap_or(1.0),
-                        get_number_from_value(&op.operands[4]).unwrap_or(0.0),
-                        get_number_from_value(&op.operands[5]).unwrap_or(0.0),
+                        operand(0).unwrap_or(1.0),
+                        operand(1).unwrap_or(0.0),
+                        operand(2).unwrap_or(0.0),
+                        operand(3).unwrap_or(1.0),
+                        operand(4).unwrap_or(0.0),
+                        operand(5).unwrap_or(0.0),
                     ];
                     ctm = apply_cm(&ctm, &cm);
                 }
@@ -847,84 +853,125 @@ impl<'a> LayoutAnalyzer<'a> {
                 }
                 "Tf" if op.operands.len() >= 2 => {
                     if let PdfValue::Name(font_name) = &op.operands[0] {
-                        current_font_name = font_name.clone();
-                        if let Some(info) = fonts.get(font_name.as_slice()) {
-                            current_font = info.name.clone();
-                        } else {
-                            current_font =
-                                String::from_utf8_lossy(font_name.as_slice()).to_string();
-                        }
+                        text_state.font_resource = font_name.clone();
+                        text_state.font = match fonts.get(font_name.as_slice()) {
+                            Some(info) => info.name.clone(),
+                            None => String::from_utf8_lossy(font_name.as_slice()).to_string(),
+                        };
                     }
-                    current_font_size = get_number_from_value(&op.operands[1]).unwrap_or(12.0);
+                    text_state.font_size = operand(1).unwrap_or(12.0);
+                }
+                "Tc" => {
+                    if let Some(v) = operand(0) {
+                        text_state.char_spacing = v;
+                    }
+                }
+                "Tw" => {
+                    if let Some(v) = operand(0) {
+                        text_state.word_spacing = v;
+                    }
+                }
+                "Tz" => {
+                    if let Some(v) = operand(0) {
+                        text_state.horizontal_scale = v / 100.0;
+                    }
+                }
+                "TL" => {
+                    if let Some(v) = operand(0) {
+                        text_state.leading = v;
+                    }
                 }
                 "Td" | "TD" if op.operands.len() >= 2 => {
-                    let tx = get_number_from_value(&op.operands[0]).unwrap_or(0.0);
-                    let ty = get_number_from_value(&op.operands[1]).unwrap_or(0.0);
+                    let tx = operand(0).unwrap_or(0.0);
+                    let ty = operand(1).unwrap_or(0.0);
+                    if op.operator == "TD" {
+                        text_state.leading = -ty;
+                    }
                     text_matrix.translate(tx, ty);
                 }
                 "Tm" if op.operands.len() >= 6 => {
                     text_matrix.set(
-                        get_number_from_value(&op.operands[0]).unwrap_or(1.0),
-                        get_number_from_value(&op.operands[1]).unwrap_or(0.0),
-                        get_number_from_value(&op.operands[2]).unwrap_or(0.0),
-                        get_number_from_value(&op.operands[3]).unwrap_or(1.0),
-                        get_number_from_value(&op.operands[4]).unwrap_or(0.0),
-                        get_number_from_value(&op.operands[5]).unwrap_or(0.0),
+                        operand(0).unwrap_or(1.0),
+                        operand(1).unwrap_or(0.0),
+                        operand(2).unwrap_or(0.0),
+                        operand(3).unwrap_or(1.0),
+                        operand(4).unwrap_or(0.0),
+                        operand(5).unwrap_or(0.0),
                     );
                 }
                 "T*" => {
-                    text_matrix.next_line();
+                    text_matrix.next_line(text_state.leading);
                 }
-                "Tj" | "TJ" if in_text_block => {
-                    let text = if op.operator == "TJ" {
-                        // TJ: array of strings and positioning adjustments
-                        // Numbers indicate kerning/spacing adjustments in 1/1000 text space units
-                        // Large negative values (like -200 to -300) often indicate word spaces
-                        if let Some(PdfValue::Array(arr)) = op.operands.first() {
-                            let mut combined = String::new();
+                "Tj" | "TJ" | "'" | "\"" => {
+                    // `'` and `"` move to the next line before showing; `"` also sets the
+                    // word and character spacing it is given.
+                    if op.operator == "\"" {
+                        if let (Some(aw), Some(ac)) = (operand(0), operand(1)) {
+                            text_state.word_spacing = aw;
+                            text_state.char_spacing = ac;
+                        }
+                    }
+                    if op.operator == "'" || op.operator == "\"" {
+                        text_matrix.next_line(text_state.leading);
+                    }
+                    if !in_text_block {
+                        continue;
+                    }
 
-                            for item in arr {
-                                match item {
-                                    PdfValue::Str(bytes) => {
-                                        let decoded = self.backend.decode_text(
-                                            page_id,
-                                            &current_font_name,
-                                            bytes,
-                                        );
-                                        note_suppression(&decoded, &mut suppressed_runs);
-                                        combined.push_str(&decoded.text);
-                                    }
-                                    PdfValue::Integer(n) => {
-                                        let adjustment = -(*n as f32);
-                                        maybe_insert_space_tj(&mut combined, adjustment);
-                                    }
-                                    PdfValue::Real(n) => {
-                                        let adjustment = -n;
-                                        maybe_insert_space_tj(&mut combined, adjustment);
-                                    }
-                                    _ => {}
+                    let items: &[PdfValue] = match op.operator.as_str() {
+                        "TJ" => match op.operands.first() {
+                            Some(PdfValue::Array(arr)) => arr,
+                            _ => &[],
+                        },
+                        "\"" => op.operands.get(2..3).unwrap_or(&[]),
+                        _ => op.operands.get(..1).unwrap_or(&[]),
+                    };
+
+                    // The run's text, and how far it moves the text position in text
+                    // space — `None` as soon as one string's glyph widths are unknown.
+                    let mut text = String::new();
+                    let mut advance: Option<f32> = Some(0.0);
+                    for item in items {
+                        match item {
+                            PdfValue::Str(bytes) => {
+                                let decoded = self.backend.decode_text(
+                                    page_id,
+                                    &text_state.font_resource,
+                                    bytes,
+                                );
+                                note_suppression(&decoded, &mut suppressed_runs);
+                                text.push_str(&decoded.text);
+                                advance = advance.and_then(|sum| {
+                                    self.backend
+                                        .glyph_advances(page_id, &text_state.font_resource, bytes)
+                                        .map(|glyphs| sum + text_state.advance_of(&glyphs))
+                                });
+                            }
+                            // TJ adjustments: thousandths of text space, subtracted.
+                            PdfValue::Integer(_) | PdfValue::Real(_) => {
+                                let n = get_number_from_value(item).unwrap_or(0.0);
+                                maybe_insert_space_tj(&mut text, -n);
+                                if let Some(sum) = advance.as_mut() {
+                                    *sum -= n / 1000.0
+                                        * text_state.font_size
+                                        * text_state.horizontal_scale;
                                 }
                             }
-                            combined
-                        } else {
-                            String::new()
+                            _ => {}
                         }
-                    } else {
-                        // Tj: single string
-                        if let Some(PdfValue::Str(bytes)) = op.operands.first() {
-                            let decoded =
-                                self.backend.decode_text(page_id, &current_font_name, bytes);
-                            note_suppression(&decoded, &mut suppressed_runs);
-                            decoded.text
-                        } else {
-                            String::new()
-                        }
-                    };
+                    }
 
                     let (tx, ty) = text_matrix.get_position();
                     let (x, y) = apply_ctm(&ctm, tx, ty);
                     let effective_size =
-                        current_font_size * text_matrix.get_scale() * ctm_y_scale(&ctm);
+                        text_state.font_size * text_matrix.get_scale() * ctm_y_scale(&ctm);
+                    // The run's extent in device space, from its start to where it left
+                    // the text position.
+                    let measured_width = advance.map(|run| {
+                        let (ex, ey) = text_matrix.position_after(run);
+                        let (dx, dy) = apply_ctm(&ctm, ex, ey);
+                        (dx - x).hypot(dy - y)
+                    });
 
                     if !text.trim().is_empty() {
                         count_render_mode(
@@ -933,45 +980,18 @@ impl<'a> LayoutAnalyzer<'a> {
                             &mut total_chars,
                             &mut invisible_chars,
                         );
-                        let span = TextSpan::new(text, x, y, effective_size, current_font.clone());
+                        let mut span =
+                            TextSpan::new(text, x, y, effective_size, text_state.font.clone());
+                        if let Some(width) = measured_width {
+                            span.width = width;
+                        }
                         spans.push(span);
                     } else if text.chars().any(char::is_whitespace) {
-                        attach_word_space(&mut spans, y, effective_size);
+                        attach_word_space(&mut spans, x, y, effective_size, measured_width);
                     }
-                }
-                "'" | "\"" => {
-                    text_matrix.next_line();
-                    if in_text_block {
-                        let text_idx = if op.operator == "\"" { 2 } else { 0 };
-                        if let Some(PdfValue::Str(bytes)) = op.operands.get(text_idx) {
-                            let decoded =
-                                self.backend.decode_text(page_id, &current_font_name, bytes);
-                            note_suppression(&decoded, &mut suppressed_runs);
-                            let text = decoded.text;
 
-                            let (tx, ty) = text_matrix.get_position();
-                            let (x, y) = apply_ctm(&ctm, tx, ty);
-                            let effective_size =
-                                current_font_size * text_matrix.get_scale() * ctm_y_scale(&ctm);
-
-                            if !text.trim().is_empty() {
-                                count_render_mode(
-                                    &text,
-                                    render_mode,
-                                    &mut total_chars,
-                                    &mut invisible_chars,
-                                );
-                                spans.push(TextSpan::new(
-                                    text,
-                                    x,
-                                    y,
-                                    effective_size,
-                                    current_font.clone(),
-                                ));
-                            } else if text.chars().any(char::is_whitespace) {
-                                attach_word_space(&mut spans, y, effective_size);
-                            }
-                        }
+                    if let Some(run) = advance {
+                        text_matrix.advance(run);
                     }
                 }
                 _ => {}
@@ -1209,7 +1229,11 @@ impl<'a> LayoutAnalyzer<'a> {
             .map(|s| super::xycut::Block {
                 x: s.x,
                 y: s.y,
-                width: estimate_text_width(&s.text, s.font_size),
+                width: if s.width > 0.0 {
+                    s.width
+                } else {
+                    estimate_text_width(&s.text, s.font_size)
+                },
                 height: s.font_size,
             })
             .collect();
@@ -1747,64 +1771,121 @@ struct FontInfo {
     name: String,
 }
 
-/// Text matrix for tracking position in content stream.
+/// The text-related parameters of the graphics state (ISO 32000-1 §9.3).
+#[derive(Debug, Clone)]
+struct TextState {
+    /// Font resource name as `Tf` names it (the key into the page's `/Font`).
+    font_resource: Vec<u8>,
+    /// The font's base name, for bold/italic detection.
+    font: String,
+    /// `Tfs`, in unscaled text space units.
+    font_size: f32,
+    /// `Tc`, in unscaled text space units.
+    char_spacing: f32,
+    /// `Tw`, in unscaled text space units.
+    word_spacing: f32,
+    /// `Th`: `Tz` / 100.
+    horizontal_scale: f32,
+    /// `TL`, in unscaled text space units.
+    leading: f32,
+}
+
+impl Default for TextState {
+    fn default() -> Self {
+        Self {
+            font_resource: Vec::new(),
+            font: String::new(),
+            font_size: 12.0,
+            char_spacing: 0.0,
+            word_spacing: 0.0,
+            horizontal_scale: 1.0,
+            leading: 0.0,
+        }
+    }
+}
+
+impl TextState {
+    /// How far showing `glyphs` moves the text position, in text space (§9.4.4):
+    /// `tx = ((w0 / 1000) × Tfs + Tc + Tw) × Th`, with `Tw` only for a word space.
+    fn advance_of(&self, glyphs: &[super::backend::GlyphAdvance]) -> f32 {
+        glyphs
+            .iter()
+            .map(|g| {
+                let word = if g.is_word_space {
+                    self.word_spacing
+                } else {
+                    0.0
+                };
+                (g.width / 1000.0 * self.font_size + self.char_spacing + word)
+                    * self.horizontal_scale
+            })
+            .sum()
+    }
+}
+
+/// The text matrix `Tm` and the text line matrix `Tlm` (ISO 32000-1 §9.4.2).
+///
+/// Showing text moves `Tm` along the line; `Td`, `TD`, `T*` and friends move to a new
+/// line relative to `Tlm`, the start of the current one. Keeping one matrix for both
+/// is right only while nothing advances `Tm` — which stops being true as soon as glyph
+/// widths are known.
 #[derive(Debug, Clone)]
 struct TextMatrix {
-    a: f32,
-    b: f32,
-    c: f32,
-    d: f32,
-    e: f32, // X translation
-    f: f32, // Y translation
-    line_y: f32,
+    /// `[a, b, c, d, e, f]` of `Tm`.
+    tm: [f32; 6],
+    /// `[a, b, c, d, e, f]` of `Tlm`.
+    tlm: [f32; 6],
 }
 
 impl Default for TextMatrix {
     fn default() -> Self {
+        const IDENTITY: [f32; 6] = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
         Self {
-            a: 1.0,
-            b: 0.0,
-            c: 0.0,
-            d: 1.0,
-            e: 0.0,
-            f: 0.0,
-            line_y: 0.0,
+            tm: IDENTITY,
+            tlm: IDENTITY,
         }
     }
 }
 
 impl TextMatrix {
     fn set(&mut self, a: f32, b: f32, c: f32, d: f32, e: f32, f: f32) {
-        self.a = a;
-        self.b = b;
-        self.c = c;
-        self.d = d;
-        self.e = e;
-        self.f = f;
-        self.line_y = f;
+        self.tm = [a, b, c, d, e, f];
+        self.tlm = self.tm;
     }
 
+    /// `Td`: start a new line offset from the start of the current one.
     fn translate(&mut self, tx: f32, ty: f32) {
-        self.e += tx * self.a + ty * self.c;
-        self.f += tx * self.b + ty * self.d;
-        if ty != 0.0 {
-            self.line_y = self.f;
-        }
+        let [a, b, c, d, e, f] = self.tlm;
+        self.tlm = [a, b, c, d, e + tx * a + ty * c, f + tx * b + ty * d];
+        self.tm = self.tlm;
     }
 
-    fn next_line(&mut self) {
-        // Default line leading (could be set by TL operator)
-        self.f -= 12.0 * self.d;
-        self.line_y = self.f;
+    /// `T*`: start the next line, `leading` below the current one.
+    fn next_line(&mut self, leading: f32) {
+        self.translate(0.0, -leading);
+    }
+
+    /// Move the text position `tx` along the line, as showing text does.
+    fn advance(&mut self, tx: f32) {
+        let (e, f) = self.position_after(tx);
+        self.tm[4] = e;
+        self.tm[5] = f;
+    }
+
+    /// Where the text position would be after moving `tx` along the line.
+    fn position_after(&self, tx: f32) -> (f32, f32) {
+        let [a, b, _, _, e, f] = self.tm;
+        (e + tx * a, f + tx * b)
     }
 
     fn get_position(&self) -> (f32, f32) {
-        (self.e, self.f)
+        (self.tm[4], self.tm[5])
     }
 
     fn get_scale(&self) -> f32 {
         // Return the vertical scale factor
-        (self.a * self.a + self.c * self.c).sqrt()
+        let [a, _, c, ..] = self.tm;
+        (a * a + c * c).sqrt()
     }
 }
 
@@ -2042,7 +2123,16 @@ fn estimate_text_width(text: &str, font_size: f32) -> f32 {
 /// their own, but they are the only in-band evidence of the gap: `span.width`
 /// is an estimate and cannot reliably recover it. Append a single space to the
 /// preceding run on the same baseline instead of dropping the whitespace run.
-fn attach_word_space(spans: &mut [TextSpan], y: f32, font_size: f32) {
+///
+/// `x` and `measured_width` place the whitespace run itself: when the font's widths
+/// are known, the preceding run's extent grows to cover it exactly.
+fn attach_word_space(
+    spans: &mut [TextSpan],
+    x: f32,
+    y: f32,
+    font_size: f32,
+    measured_width: Option<f32>,
+) {
     let Some(prev) = spans.last_mut() else {
         return;
     };
@@ -2059,11 +2149,31 @@ fn attach_word_space(spans: &mut [TextSpan], y: f32, font_size: f32) {
     }
 
     prev.text.push(' ');
-    // Keep the estimated extent consistent with the appended glyph. Under
-    // Fix 2 parse-time widths are 0, so this is a no-op until after merging.
-    if prev.width > 0.0 {
-        prev.width += estimate_text_width(" ", prev.font_size);
+    // Keep the extent consistent with the appended glyph: measured when both runs
+    // were, otherwise estimated (a no-op for unmeasured runs, whose width is 0 until
+    // after merging).
+    match measured_width {
+        Some(width) if prev.width > 0.0 => {
+            prev.width = prev.width.max(x + width - prev.x);
+        }
+        _ if prev.width > 0.0 => {
+            prev.width += estimate_text_width(" ", prev.font_size);
+        }
+        _ => {}
     }
+}
+
+/// Whether `next` continues `prev` on the same line, in the same font, starting where
+/// `prev` ends. Both extents must be measured.
+///
+/// The tolerance is a tenth of an em: kerning moves a glyph by a few hundredths, while
+/// the narrowest word space in common fonts is about a fifth of an em.
+fn abuts(prev: &TextSpan, next: &TextSpan) -> bool {
+    let size = prev.font_size;
+    let same_line = (prev.y - next.y).abs() <= size.min(next.font_size) * 0.3;
+    let same_font = prev.font_name == next.font_name && (size - next.font_size).abs() < 0.1;
+    let gap = next.x - (prev.x + prev.width);
+    same_line && same_font && gap <= size * 0.1 && gap >= -size * 0.3
 }
 
 /// Merge adjacent fragmented spans that likely form words.
@@ -2088,6 +2198,19 @@ fn merge_fragmented_spans(spans: Vec<TextSpan>) -> Vec<TextSpan> {
     let mut was_fragment: Vec<bool> = Vec::with_capacity(spans.len());
 
     for span in spans {
+        // Runs whose extent was measured from the font's widths abut exactly when they
+        // belong to one word, so they need no guess: join them when the next one starts
+        // where the previous one ends. A word gap drawn as whitespace is already part of
+        // the previous run (`attach_word_space`); a gap drawn as a move is left for the
+        // line's spacing rule to turn into a space.
+        if let Some(prev) = result.last_mut() {
+            if prev.width > 0.0 && span.width > 0.0 && abuts(prev, &span) {
+                prev.width = prev.width.max(span.x + span.width - prev.x);
+                prev.text.push_str(&span.text);
+                continue;
+            }
+        }
+
         let is_fragment = span.text.chars().count() <= 3 && span.width <= 0.0;
 
         let should_merge =
@@ -2480,10 +2603,10 @@ mod tests {
             "Helvetica".to_string(),
         )];
 
-        attach_word_space(&mut spans, 500.0, 12.0);
+        attach_word_space(&mut spans, 0.0, 500.0, 12.0, None);
         assert_eq!(spans[0].text, "Hello ");
 
-        attach_word_space(&mut spans, 500.0, 12.0);
+        attach_word_space(&mut spans, 0.0, 500.0, 12.0, None);
         assert_eq!(spans[0].text, "Hello ", "must not accumulate spaces");
     }
 
@@ -2497,7 +2620,7 @@ mod tests {
             "Helvetica".to_string(),
         )];
 
-        attach_word_space(&mut spans, 400.0, 12.0);
+        attach_word_space(&mut spans, 0.0, 400.0, 12.0, None);
         assert_eq!(spans[0].text, "Hello", "indentation is not a word gap");
     }
 

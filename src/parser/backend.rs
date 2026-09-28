@@ -13,6 +13,7 @@ use super::encoding::{build_encoding_map, decode_with_encoding_map, BaseEncoding
 use super::font::{
     is_likely_binary, parse_to_unicode_cmap, parse_truetype_cmap_table, ToUnicodeMap,
 };
+use super::glyph_metrics::{expand_w_array, FontMetrics, WEntry};
 use super::sanitize::sanitize_extracted_text;
 
 /// Page identifier: (object number, generation number).
@@ -198,6 +199,17 @@ impl DecodedText {
     }
 }
 
+/// One glyph's contribution to the text position, as the font declares it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GlyphAdvance {
+    /// Horizontal displacement in thousandths of text space (the `w0` of
+    /// ISO 32000-1 §9.4.4).
+    pub width: f32,
+    /// Whether word spacing (`Tw`) applies: only a single-byte code 32 qualifies,
+    /// never a multi-byte code, whatever it maps to.
+    pub is_word_space: bool,
+}
+
 /// Abstract interface for PDF document access.
 ///
 /// Implementations provide page enumeration, font info, content stream
@@ -243,6 +255,21 @@ pub trait PdfBackend: Send + Sync {
     /// "this run was discarded" and "this run held no text" look identical to the
     /// caller otherwise, and the difference is the whole of the caller's diagnostic.
     fn decode_text(&self, page: PageId, font_name: &[u8], bytes: &[u8]) -> DecodedText;
+
+    /// The advance of each code in `bytes`, as the font on the given page declares it.
+    ///
+    /// `None` when the font's widths are not available to this backend (no `/Widths`,
+    /// a CMap other than Identity, a font it cannot resolve): the caller then has no
+    /// measured extent for the run and falls back to estimating one. Defaults to
+    /// `None` so a backend that cannot read widths never claims a measurement.
+    fn glyph_advances(
+        &self,
+        _page: PageId,
+        _font_name: &[u8],
+        _bytes: &[u8],
+    ) -> Option<Vec<GlyphAdvance>> {
+        None
+    }
 
     /// Return raw metadata (version, info dict fields, encryption status).
     fn metadata(&self) -> PdfMetadataRaw;
@@ -474,6 +501,16 @@ impl PdfBackend for RawBackend {
             text: sanitize_extracted_text(decoded.text),
             suppressed: decoded.suppressed,
         }
+    }
+
+    fn glyph_advances(
+        &self,
+        page: PageId,
+        font_name: &[u8],
+        bytes: &[u8],
+    ) -> Option<Vec<GlyphAdvance>> {
+        self.font_resolver
+            .glyph_advances(&self.doc, page, font_name, bytes)
     }
 
     fn metadata(&self) -> PdfMetadataRaw {
@@ -991,6 +1028,7 @@ struct RawFontResolver {
     cmap_cache: RwLock<HashMap<PageId, Option<ToUnicodeMap>>>,
     encoding_cache: RwLock<HashMap<PageId, Option<HashMap<u8, char>>>>,
     cid_system_info_cache: RwLock<HashMap<PageId, Option<(String, String)>>>,
+    metrics_cache: RwLock<HashMap<PageId, Option<FontMetrics>>>,
 }
 
 impl RawFontResolver {
@@ -999,7 +1037,104 @@ impl RawFontResolver {
             cmap_cache: RwLock::new(HashMap::new()),
             encoding_cache: RwLock::new(HashMap::new()),
             cid_system_info_cache: RwLock::new(HashMap::new()),
+            metrics_cache: RwLock::new(HashMap::new()),
         }
+    }
+
+    fn glyph_advances(
+        &self,
+        doc: &RawDocument,
+        page: PageId,
+        font_name: &[u8],
+        bytes: &[u8],
+    ) -> Option<Vec<GlyphAdvance>> {
+        let fid = self.find_font_dict(doc, page, font_name)?;
+        {
+            let cache = self.metrics_cache.read().unwrap();
+            if let Some(cached) = cache.get(&fid) {
+                return cached.as_ref().map(|m| m.advances(bytes));
+            }
+        }
+        let metrics = self.parse_font_metrics(doc, fid);
+        let advances = metrics.as_ref().map(|m| m.advances(bytes));
+        self.metrics_cache.write().unwrap().insert(fid, metrics);
+        advances
+    }
+
+    /// Read the advance widths a font dictionary declares (ISO 32000-1 §9.2.4, §9.7.4.3).
+    ///
+    /// Only fonts whose code-to-glyph mapping is unambiguous without a CMap parser are
+    /// measured: simple fonts (one byte per code) and composite fonts under Identity-H
+    /// (two-byte code = CID). Anything else returns `None` rather than a width tied to
+    /// the wrong code.
+    fn parse_font_metrics(&self, doc: &RawDocument, font_obj_id: PageId) -> Option<FontMetrics> {
+        let font_dict = doc.get_dict(font_obj_id).ok()?;
+        let number = |obj: &RawPdfObject| doc.resolve(obj).as_f32();
+
+        if self.is_composite_font(doc, font_obj_id) {
+            let horizontal_identity = raw_dict_get(font_dict, b"Encoding")
+                .and_then(|e| e.as_name())
+                .is_some_and(|n| n == b"Identity-H");
+            if !horizontal_identity {
+                return None;
+            }
+            let cid_font = doc.get_dict(self.get_cid_font_id(doc, font_obj_id)?).ok()?;
+            let default_width = raw_dict_get(cid_font, b"DW")
+                .and_then(number)
+                .unwrap_or(1000.0);
+            let entries: Vec<WEntry> = raw_dict_get(cid_font, b"W")
+                .and_then(|w| doc.resolve(w).as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .map_while(|item| match doc.resolve(item) {
+                            RawPdfObject::Array(list) => {
+                                Some(WEntry::Array(list.iter().filter_map(number).collect()))
+                            }
+                            other => other.as_f32().map(WEntry::Number),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            return Some(FontMetrics::Cid {
+                widths: expand_w_array(&entries),
+                default_width,
+            });
+        }
+
+        let first_char = raw_dict_get(font_dict, b"FirstChar").and_then(number)? as u32;
+        let widths: Vec<f32> = doc
+            .resolve(raw_dict_get(font_dict, b"Widths")?)
+            .as_array()?
+            .iter()
+            .map(|w| number(w).unwrap_or(0.0))
+            .collect();
+        let missing_width = raw_dict_get(font_dict, b"FontDescriptor")
+            .and_then(|d| raw_resolve_dict(doc, d))
+            .and_then(|d| raw_dict_get(d, b"MissingWidth"))
+            .and_then(number)
+            .unwrap_or(0.0);
+
+        // Type 3 glyph widths are in glyph space; FontMatrix maps them to text space.
+        // Every other simple font is already in thousandths of text space.
+        let is_type3 = raw_dict_get(font_dict, b"Subtype")
+            .and_then(|s| s.as_name())
+            .is_some_and(|n| n == b"Type3");
+        let scale = if is_type3 {
+            raw_dict_get(font_dict, b"FontMatrix")
+                .and_then(|m| doc.resolve(m).as_array())
+                .and_then(|m| m.first())
+                .and_then(number)
+                .map(|a| a * 1000.0)?
+        } else {
+            1.0
+        };
+
+        Some(FontMetrics::Simple {
+            first_char,
+            widths: widths.into_iter().map(|w| w * scale).collect(),
+            missing_width: missing_width * scale,
+        })
     }
 
     fn decode_text(

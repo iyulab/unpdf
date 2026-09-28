@@ -22,6 +22,24 @@ the text, lost text outright. Browser-printed PDFs hit both on nearly every page
   tables. Grids are now inferred per cluster of lines that touch, and a border drawn twice
   a couple of points apart (a background box and its inset frame) snaps to one line at a
   3 pt tolerance instead of producing a sliver column.
+- **Words drawn one glyph at a time were split after wide letters.** Glyph advance widths
+  were never read, so where one glyph ended was a per-character guess; after a wide glyph
+  (`m`, `W`) the guess fell short and the gap read as a word break —
+  `Carbon concentrating m echanism s`, `W arburg`, table cells spelled out as `S t a g e`.
+  The font's declared widths are now used (`/Widths` and `/MissingWidth` for simple
+  fonts, `/W` and `/DW` for Identity-H composite fonts, `/FontMatrix` for Type 3), and
+  the text state follows the specification: showing text advances the text matrix,
+  line moves are relative to the start of the line, and `Tc`, `Tw`, `Tz`, `TL`, `TD`,
+  `'` and `"` take effect and are saved and restored with the graphics state. Runs whose
+  widths are measured are joined when they abut instead of by estimate. Fonts without
+  declared widths keep the previous estimate. `T*` without a `TL` now moves by the
+  specified default leading of 0 rather than an assumed 12.
+
+### Added
+
+- `PdfBackend::glyph_advances` — a backend can report each code's advance as the font
+  declares it. Defaults to `None`, so existing backends keep compiling and keep the
+  estimated extent.
 
 ## 0.21.0 — 2026-09-22
 

@@ -6,6 +6,7 @@ pub mod cmap_table;
 mod dedup;
 pub(crate) mod encoding;
 pub(crate) mod font;
+pub(crate) mod glyph_metrics;
 mod lattice;
 mod layout;
 mod ocr_gate;
