@@ -178,6 +178,22 @@ impl<'a> StreamingRenderer<'a> {
         self.render_block(block)
     }
 
+    /// Render `block` as it appears after `previous` on the same page, including the
+    /// blank line that separates a list from the block that follows it. A consumer
+    /// driving its own loop gets the same output as the renderer's iterator without
+    /// having to know the rule.
+    pub fn render_block_after(
+        &self,
+        previous: Option<&crate::model::Block>,
+        block: &crate::model::Block,
+    ) -> String {
+        let mut content = self.render_block(block);
+        if !content.is_empty() && super::syntax::ends_a_list(previous, block) {
+            content.insert(0, '\n');
+        }
+        content
+    }
+
     /// Render a single block to string.
     pub(crate) fn render_block(&self, block: &Block) -> String {
         match block {
@@ -359,21 +375,8 @@ impl<'a> Iterator for StreamingRenderer<'a> {
 
                     if block_index < page.elements.len() {
                         let block = &page.elements[block_index];
-                        let mut content = self.render_block(block);
-
-                        // Separate a list from the block that follows it with a
-                        // blank line, matching the batch renderer: list items
-                        // render with a single trailing newline (tight list), so
-                        // a following paragraph/heading would otherwise crowd the
-                        // list's last item.
-                        let prev_is_list_item = block_index > 0
-                            && matches!(&page.elements[block_index - 1],
-                                Block::Paragraph(p) if p.style.list_info.is_some());
-                        let is_list_item =
-                            matches!(block, Block::Paragraph(p) if p.style.list_info.is_some());
-                        if prev_is_list_item && !is_list_item && !content.is_empty() {
-                            content.insert(0, '\n');
-                        }
+                        let previous = block_index.checked_sub(1).map(|i| &page.elements[i]);
+                        let content = self.render_block_after(previous, block);
 
                         self.state = StreamState::InPage {
                             page_index,

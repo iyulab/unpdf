@@ -142,22 +142,16 @@ impl MarkdownRenderer {
         if self.options.collect_stats {
             self.stats.add_page();
         }
-        // Track list items so a block that follows a list is separated from it by
-        // a blank line. List items render with a single trailing newline (tight
-        // list); without the extra newline a following paragraph or heading would
-        // crowd the list's last item.
-        let mut prev_was_list_item = false;
+        let mut previous: Option<&Block> = None;
         for block in &page.elements {
-            let is_list_item = matches!(block, Block::Paragraph(p) if p.style.list_info.is_some());
-            if prev_was_list_item
-                && !is_list_item
+            if super::syntax::ends_a_list(previous, block)
                 && !output.is_empty()
                 && !output.ends_with("\n\n")
             {
                 output.push('\n');
             }
             self.render_block(output, block);
-            prev_was_list_item = is_list_item;
+            previous = Some(block);
         }
     }
 

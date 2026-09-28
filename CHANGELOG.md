@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `StreamingRenderer::render_block_after(previous, block)` — renders a block as it appears
+  after `previous` on the same page, including the blank line that separates a list from
+  what follows it. A consumer driving its own page loop no longer has to reimplement that
+  rule; the batch renderer, the streaming iterator and the CLI now share one definition of
+  it instead of three.
+
 ## 0.22.0 — 2026-09-28
 
 ### Changed

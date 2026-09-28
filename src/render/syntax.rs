@@ -16,7 +16,21 @@
 //! Table block is already fully materialized by the time either renderer sees it.
 
 use super::{RenderOptions, TableFallback};
-use crate::model::{Alignment, Table, TableRow, TextStyle};
+use crate::model::{Alignment, Block, Table, TableRow, TextStyle};
+
+/// Whether `block` is a list item.
+fn is_list_item(block: &Block) -> bool {
+    matches!(block, Block::Paragraph(p) if p.style.list_info.is_some())
+}
+
+/// Whether `block` closes a list and so needs a blank line before it.
+///
+/// List items render with a single trailing newline (a tight list); a paragraph or heading
+/// right after the last item would otherwise be read as part of it. Every Markdown writer
+/// asks this one question, so the rule cannot drift between them.
+pub(super) fn ends_a_list(previous: Option<&Block>, block: &Block) -> bool {
+    previous.is_some_and(is_list_item) && !is_list_item(block)
+}
 
 /// Wrap `text` in the Markdown emphasis markers for `style`, keeping any
 /// leading/trailing whitespace *outside* the markers. A run like `"Southampton "`
