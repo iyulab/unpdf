@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Changed
+
+- **Breaking — the CLI's default output directory now carries the input's extension and
+  sits next to the input:** `document.pdf` converts into `document_pdf_output/` instead of `document_output/`.
+  With the stem alone, two inputs differing only in extension (`report.pdf` beside a `report.docx` converted by a sibling tool) shared one
+  directory and the second conversion silently overwrote the first one's `extract.md`
+  and images. The extension is lowercased, since `report.PDF` and `report.pdf` are
+  the same file where case is ignored. Pass `-o` to choose the directory explicitly, as
+  before. The directory also moves from the current working directory to beside the
+  input, matching the other two extractors in this family.
+
 ### Fixed
 
 Pages whose content stream nests coordinate transforms, and pages with figures beside

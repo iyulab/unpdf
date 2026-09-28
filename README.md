@@ -165,7 +165,7 @@ unpdf document.pdf --cleanup aggressive
 ### Output Structure
 
 ```
-document_output/
+document_pdf_output/
 ├── extract.md      # Markdown output with frontmatter
 └── images/         # Extracted images (if any)
     ├── page1_img1.png
@@ -175,7 +175,7 @@ document_output/
 Use `unpdf convert <file> --all` to produce all three formats at once:
 
 ```
-document_output/
+document_pdf_output/
 ├── extract.md      # Markdown output with frontmatter
 ├── extract.txt     # Plain text output
 ├── content.json    # Full structured JSON
@@ -225,7 +225,7 @@ unpdf convert document.pdf --window 4
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `-o, --output` | Output directory | `<stem>_output/` |
+| `-o, --output` | Output directory | `<stem>_<ext>_output/` next to the input |
 | `--formats` | Comma-separated formats: `md,txt,json` | `md` |
 | `--all` | Output all formats (MD + TXT + JSON) | false |
 | `--no-images` | Skip image extraction | false |

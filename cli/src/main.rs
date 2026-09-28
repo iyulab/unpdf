@@ -107,7 +107,7 @@ pub struct ConvertArgs {
     #[arg(value_name = "FILE")]
     pub input: PathBuf,
 
-    /// Output directory
+    /// Output directory (default: <stem>_<ext>_output next to the input)
     #[arg(short, long, value_name = "DIR")]
     pub output: Option<PathBuf>,
 
@@ -176,7 +176,7 @@ struct Cli {
     #[arg(value_name = "FILE")]
     input: Option<PathBuf>,
 
-    /// Output directory
+    /// Output directory (default: <stem>_<ext>_output next to the input)
     #[arg(value_name = "OUTPUT")]
     output: Option<PathBuf>,
 
@@ -544,10 +544,10 @@ fn main() {
 fn cmd_convert(args: &ConvertArgs) -> Result<bool, Box<dyn std::error::Error>> {
     use std::ops::ControlFlow;
 
-    let out_dir = args.output.clone().unwrap_or_else(|| {
-        let stem = args.input.file_stem().unwrap_or_default().to_string_lossy();
-        PathBuf::from(format!("{}_output", stem))
-    });
+    let out_dir = args
+        .output
+        .clone()
+        .unwrap_or_else(|| default_output_dir(&args.input));
     fs::create_dir_all(&out_dir)?;
 
     // Determine output formats
@@ -1119,9 +1119,48 @@ fn image_link_prefix(out_dir: &Path, image_dir: &Path) -> String {
     }
 }
 
+/// The directory a conversion writes to when no `--output` is given: next to the input,
+/// named after its stem *and* its extension.
+///
+/// The extension is what tells `report.docx` and `report.pptx` apart; a directory named
+/// after the stem alone sends both to the same place, where the second conversion
+/// silently overwrites the first one's files. Lowercased, because on the file systems
+/// that ignore case `report.PDF` and `report.pdf` are the same file.
+fn default_output_dir(input: &std::path::Path) -> PathBuf {
+    let stem = input.file_stem().unwrap_or_default().to_string_lossy();
+    let name = match input.extension() {
+        Some(ext) => format!("{}_{}_output", stem, ext.to_string_lossy().to_lowercase()),
+        None => format!("{}_output", stem),
+    };
+    input
+        .parent()
+        .unwrap_or(std::path::Path::new("."))
+        .join(name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_output_dirs_differ_for_inputs_differing_only_in_extension() {
+        let a = default_output_dir(std::path::Path::new("dir/A2.pdf"));
+        let b = default_output_dir(std::path::Path::new("dir/A2.docx"));
+        assert_ne!(a, b);
+        assert_eq!(a, std::path::Path::new("dir").join("A2_pdf_output"));
+    }
+
+    #[test]
+    fn default_output_dir_lowercases_the_extension_and_handles_none() {
+        assert_eq!(
+            default_output_dir(std::path::Path::new("Report.PDF")),
+            std::path::Path::new("").join("Report_pdf_output")
+        );
+        assert_eq!(
+            default_output_dir(std::path::Path::new("README")),
+            std::path::Path::new("").join("README_output")
+        );
+    }
     use clap::CommandFactory;
 
     /// Catches flag collisions introduced by flattening `AiArgs` into several

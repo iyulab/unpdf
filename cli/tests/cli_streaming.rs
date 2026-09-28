@@ -223,3 +223,26 @@ fn partial_ai_configuration_is_rejected_on_every_command() {
         );
     }
 }
+
+#[test]
+fn convert_without_output_writes_next_to_the_input_named_by_its_extension() {
+    // The default directory carries the extension: `report.pdf` and a sibling tool's
+    // `report.docx` must not share one directory and overwrite each other.
+    let tmp = tempfile::tempdir().unwrap();
+    let input = tmp.path().join("report.pdf");
+    std::fs::write(&input, minimal_pdf()).unwrap();
+    let status = Command::new(bin())
+        .args(["convert", input.to_str().unwrap(), "--quiet"])
+        .current_dir(std::env::temp_dir())
+        .status()
+        .unwrap();
+    assert!(status.success());
+    assert!(
+        tmp.path()
+            .join("report_pdf_output")
+            .join("extract.md")
+            .exists(),
+        "default output must sit beside the input as report_pdf_output/"
+    );
+    assert!(!tmp.path().join("report_output").exists());
+}
