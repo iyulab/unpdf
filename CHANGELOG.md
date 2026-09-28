@@ -45,6 +45,12 @@ the text, lost text outright. Browser-printed PDFs hit both on nearly every page
   widths are measured are joined when they abut instead of by estimate. Fonts without
   declared widths keep the previous estimate. `T*` without a `TL` now moves by the
   specified default leading of 0 rather than an assumed 12.
+- **A right-aligned run was glued to the text before it.** A TJ that opens with a large
+  offset — how TeX sets `\hfill`, and how many producers place a right-aligned date or a
+  tab stop — draws its first glyph far from the text origin, but the run was placed at the
+  origin, right where the previous run ended: `**University of Somewhere***October 2022*`.
+  Offsets before a TJ's first string now move where the run starts. They depend only on
+  the font size, so this holds for fonts without declared widths too.
 - **Subscripts and superscripts were split off their lines.** A script set smaller and
   shifted off the baseline by more than the same-line tolerance became a line — then a
   paragraph — of its own, and a superscript was emitted before the line it belongs to:

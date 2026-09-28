@@ -174,6 +174,33 @@ pub fn fragmented_body_lines_pdf() -> Vec<u8> {
     assemble(objects)
 }
 
+/// One page whose single row holds a left run and a right-aligned run, the way TeX sets
+/// `\hfill`: the second text object starts at the text origin right where the first run
+/// ends and opens its TJ with a large offset, so its first glyph is drawn near the right
+/// margin.
+pub fn tj_offset_row_pdf() -> Vec<u8> {
+    let left = "university of somewhere";
+    let left_width: f32 = left.chars().map(helvetica_bold_advance).sum::<f32>() / 1000.0 * 10.0;
+    // A full-width body line below keeps the page from reading as two columns.
+    let content = format!(
+        "BT /F1 10 Tf 60 600 Td ({left}) Tj ET \
+         BT /F1 10 Tf {x} 600 Td [-30000 (october)] TJ ET \
+         BT /F1 10 Tf 60 586 Td (a body line of plain prose that runs across the full width of the text block and on to the margin) Tj ET\n",
+        x = 60.0 + left_width
+    )
+    .into_bytes();
+    let objects: Vec<Vec<u8>> = vec![
+        b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+        b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]\
+          /Resources<</Font<</F1 5 0 R>>>>/Contents 4 0 R>>"
+            .to_vec(),
+        stream_object(&format!("<</Length {}>>", content.len()), &content),
+        helvetica_bold_with_widths(),
+    ];
+    assemble(objects)
+}
+
 /// One page with a figure framed twice (a background box and its inset border, as
 /// browsers draw it) on the left, a short separator rule far below it, and a
 /// heading line in between. The frames and the rule never touch, so nothing on the

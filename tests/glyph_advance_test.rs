@@ -34,6 +34,18 @@ fn a_word_drawn_one_glyph_at_a_time_stays_whole() {
 }
 
 #[test]
+fn a_tj_that_opens_with_an_offset_starts_where_its_first_glyph_is_drawn() {
+    // The right-aligned run's text origin is exactly where the left run ends; only the
+    // TJ's leading offset puts `october` near the right margin. Taking the origin as the
+    // run's start glues the two together.
+    let text = text_of(&common::tj_offset_row_pdf());
+    assert!(
+        text.contains("university of somewhere october"),
+        "the right-aligned run must be separated from the left one, got {text:?}"
+    );
+}
+
+#[test]
 fn a_word_gap_drawn_as_a_move_still_separates_words() {
     // No space glyph: the gap between words exists only as a longer `Td`. Joining
     // glyphs that abut must not also join glyphs a word space apart.

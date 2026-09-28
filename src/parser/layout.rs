@@ -931,9 +931,16 @@ impl<'a> LayoutAnalyzer<'a> {
                     // space — `None` as soon as one string's glyph widths are unknown.
                     let mut text = String::new();
                     let mut advance: Option<f32> = Some(0.0);
+                    // Adjustments before the first string move where the run *starts*, not
+                    // how long it is: a TJ that opens with a large offset draws its first
+                    // glyph far to the right of the text origin (a right-aligned date, a
+                    // tab stop). They depend on the font size only, never on glyph widths.
+                    let mut lead: f32 = 0.0;
+                    let mut drawn = false;
                     for item in items {
                         match item {
                             PdfValue::Str(bytes) => {
+                                drawn = true;
                                 let decoded = self.backend.decode_text(
                                     page_id,
                                     &text_state.font_resource,
@@ -950,23 +957,27 @@ impl<'a> LayoutAnalyzer<'a> {
                             // TJ adjustments: thousandths of text space, subtracted.
                             PdfValue::Integer(_) | PdfValue::Real(_) => {
                                 let n = get_number_from_value(item).unwrap_or(0.0);
+                                let shift = -n / 1000.0
+                                    * text_state.font_size
+                                    * text_state.horizontal_scale;
+                                if !drawn {
+                                    lead += shift;
+                                }
                                 maybe_insert_space_tj(&mut text, -n);
                                 if let Some(sum) = advance.as_mut() {
-                                    *sum -= n / 1000.0
-                                        * text_state.font_size
-                                        * text_state.horizontal_scale;
+                                    *sum += shift;
                                 }
                             }
                             _ => {}
                         }
                     }
 
-                    let (tx, ty) = text_matrix.get_position();
+                    let (tx, ty) = text_matrix.position_after(lead);
                     let (x, y) = apply_ctm(&ctm, tx, ty);
                     let effective_size =
                         text_state.font_size * text_matrix.get_scale() * ctm_y_scale(&ctm);
-                    // The run's extent in device space, from its start to where it left
-                    // the text position.
+                    // The run's extent in device space, from its first glyph to where it
+                    // left the text position.
                     let measured_width = advance.map(|run| {
                         let (ex, ey) = text_matrix.position_after(run);
                         let (dx, dy) = apply_ctm(&ctm, ex, ey);
@@ -1862,10 +1873,6 @@ impl TextMatrix {
     fn position_after(&self, tx: f32) -> (f32, f32) {
         let [a, b, _, _, e, f] = self.tm;
         (e + tx * a, f + tx * b)
-    }
-
-    fn get_position(&self) -> (f32, f32) {
-        (self.tm[4], self.tm[5])
     }
 
     fn get_scale(&self) -> f32 {
