@@ -40,3 +40,21 @@ fn bordered_grid_is_extracted_as_a_table() {
     assert_eq!(table.rows[1].cells[0].plain_text(), "Alice");
     assert_eq!(table.rows[1].cells[1].plain_text(), "30");
 }
+
+#[test]
+fn text_between_unrelated_ruling_lines_is_not_a_table() {
+    let doc = PdfParser::from_bytes(&common::figure_frame_and_rule_pdf())
+        .and_then(|p| p.parse())
+        .expect("synthetic figure-and-rule PDF should parse");
+
+    let elements = &doc.pages[0].elements;
+    assert!(
+        !elements.iter().any(|b| matches!(b, Block::Table(_))),
+        "a figure frame and a distant rule are not a table: {elements:?}"
+    );
+    let text = doc.plain_text();
+    assert!(
+        text.contains("Development of the concept"),
+        "the heading must come through whole, got: {text:?}"
+    );
+}

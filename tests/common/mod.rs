@@ -60,6 +60,28 @@ pub fn browser_printed_pdf() -> Vec<u8> {
     assemble(objects)
 }
 
+/// One page with a figure framed twice (a background box and its inset border, as
+/// browsers draw it) on the left, a short separator rule far below it, and a
+/// heading line in between. The frames and the rule never touch, so nothing on the
+/// page is a bordered table.
+pub fn figure_frame_and_rule_pdf() -> Vec<u8> {
+    let content = b"1 w \
+        44 465 m 177 465 l 177 636 l 44 636 l h S \
+        46 467 m 174 467 l 174 633 l 46 633 l h S \
+        179 100 m 356 100 l S \
+        BT /F1 14 Tf 44 300 Td (Development of the concept) Tj ET\n";
+    let objects: Vec<Vec<u8>> = vec![
+        b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+        b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]\
+          /Resources<</Font<</F1 5 0 R>>>>/Contents 4 0 R>>"
+            .to_vec(),
+        stream_object(&format!("<</Length {}>>", content.len()), content),
+        HELVETICA.to_vec(),
+    ];
+    assemble(objects)
+}
+
 /// One page with a bordered 2x2 grid (ruling lines drawn via `m`/`l`/`S`) and
 /// real text in each cell — a lattice-mode table, not just aligned text.
 pub fn bordered_table_pdf() -> Vec<u8> {

@@ -26,7 +26,11 @@ pub struct LatticeConfig {
     pub axis_tolerance: f32,
     /// Lines shorter than this (points) are discarded as noise (tick marks, underlines).
     pub min_line_length: f32,
-    /// Two lines within this distance (points) on their axis are clustered into one boundary.
+    /// Two lines within this distance (points) on their axis are clustered into one
+    /// boundary, and lines whose ends come this close count as touching. 3pt is
+    /// pdfplumber's `snap_tolerance`: a border drawn twice (a background box and the
+    /// frame inset inside it) lands a couple of points off, and no real table column
+    /// is that narrow.
     pub cluster_tolerance: f32,
 }
 
@@ -37,7 +41,7 @@ impl Default for LatticeConfig {
             min_columns: 2,
             axis_tolerance: 1.0,
             min_line_length: 5.0,
-            cluster_tolerance: 2.0,
+            cluster_tolerance: 3.0,
         }
     }
 }
@@ -73,44 +77,98 @@ impl LatticeGrid {
 ///
 /// A page can contain more than one bordered table, so this returns every
 /// grid found — each built from a connected cluster of horizontal/vertical
-/// lines whose bounding boxes overlap.
+/// lines that touch or cross one another. Lines that never meet are not
+/// evidence of a shared table: a figure frame, a separator rule and a
+/// bordered table elsewhere on the page each stay their own cluster, and a
+/// cluster that doesn't form at least `min_rows` x `min_columns` cells is
+/// dropped. Merging them into one page-spanning grid would turn every span
+/// that happens to fall between them into a table cell.
+///
+/// Grids are returned top-down (highest `top_y` first).
 pub fn infer_grids(lines: &[GraphicsLine], config: &LatticeConfig) -> Vec<LatticeGrid> {
-    let (horizontals, verticals) = classify_lines(lines, config);
-    if horizontals.is_empty() || verticals.is_empty() {
-        return vec![];
-    }
+    let segments = classify_lines(lines, config);
+    let mut grids: Vec<LatticeGrid> = connected_components(&segments, config.cluster_tolerance)
+        .into_iter()
+        .filter_map(|component| grid_from_component(&component, config))
+        .collect();
+    grids.sort_by(|a, b| {
+        b.top_y
+            .partial_cmp(&a.top_y)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    grids
+}
+
+/// Build a grid from one connected cluster of ruling lines, or `None` if the
+/// cluster is too sparse to describe a table (e.g. a single frame rectangle).
+fn grid_from_component(component: &[AxisSegment], config: &LatticeConfig) -> Option<LatticeGrid> {
+    let horizontal = |s: &&AxisSegment| s.axis == Axis::Horizontal;
 
     // Cluster into candidate row/column boundary positions.
-    let mut row_positions =
-        cluster_positions(horizontals.iter().map(|l| l.0), config.cluster_tolerance);
+    let mut row_positions = cluster_positions(
+        component.iter().filter(horizontal).map(|s| s.pos),
+        config.cluster_tolerance,
+    );
     // Descending: PDF y increases upward, and reading order is top (high y) to bottom.
     row_positions.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
 
-    let mut col_positions =
-        cluster_positions(verticals.iter().map(|l| l.0), config.cluster_tolerance);
+    let mut col_positions = cluster_positions(
+        component.iter().filter(|s| !horizontal(s)).map(|s| s.pos),
+        config.cluster_tolerance,
+    );
     col_positions.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
     if row_positions.len() < config.min_rows + 1 || col_positions.len() < config.min_columns + 1 {
-        return vec![];
+        return None;
     }
 
-    // Single-grid MVP: one page is (for now) treated as at most one lattice
-    // region, spanning the full extent of its ruling lines. Splitting
-    // disjoint clusters into separate grids is deferred until a real
-    // multi-table-per-page fixture demonstrates it's needed (YAGNI).
-    let top_y = row_positions.first().copied().unwrap_or(0.0);
-    let bottom_y = row_positions.last().copied().unwrap_or(0.0);
-    let left_x = col_positions.first().copied().unwrap_or(0.0);
-    let right_x = col_positions.last().copied().unwrap_or(0.0);
-
-    vec![LatticeGrid {
-        top_y,
-        bottom_y,
-        left_x,
-        right_x,
+    Some(LatticeGrid {
+        top_y: *row_positions.first()?,
+        bottom_y: *row_positions.last()?,
+        left_x: *col_positions.first()?,
+        right_x: *col_positions.last()?,
         row_bounds: row_positions,
         col_bounds: col_positions,
-    }]
+    })
+}
+
+/// Group segments into clusters of lines that touch or cross (within
+/// `tolerance`), following the same "edges that intersect form one table"
+/// rule pdfplumber's lattice finder uses.
+fn connected_components(segments: &[AxisSegment], tolerance: f32) -> Vec<Vec<AxisSegment>> {
+    fn find(parent: &mut [usize], i: usize) -> usize {
+        let mut root = i;
+        while parent[root] != root {
+            root = parent[root];
+        }
+        let mut node = i;
+        while parent[node] != root {
+            let next = parent[node];
+            parent[node] = root;
+            node = next;
+        }
+        root
+    }
+
+    let mut parent: Vec<usize> = (0..segments.len()).collect();
+    for i in 0..segments.len() {
+        for j in (i + 1)..segments.len() {
+            if segments[i].touches(&segments[j], tolerance) {
+                let (a, b) = (find(&mut parent, i), find(&mut parent, j));
+                if a != b {
+                    parent[a] = b;
+                }
+            }
+        }
+    }
+
+    let mut groups: std::collections::BTreeMap<usize, Vec<AxisSegment>> =
+        std::collections::BTreeMap::new();
+    for (i, segment) in segments.iter().enumerate() {
+        let root = find(&mut parent, i);
+        groups.entry(root).or_default().push(*segment);
+    }
+    groups.into_values().collect()
 }
 
 /// A cell is considered real content, not a decorative frame, once at least
@@ -222,33 +280,65 @@ fn bin_index(boundaries: &[f32], value: f32) -> Option<usize> {
     None
 }
 
-/// A line reduced to (position on its perpendicular axis, length along its own axis).
-type AxisLine = (f32, f32);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Axis {
+    Horizontal,
+    Vertical,
+}
 
-/// Split lines into (horizontal, vertical) axis lines, discarding diagonal and
-/// too-short lines.
-fn classify_lines(
-    lines: &[GraphicsLine],
-    config: &LatticeConfig,
-) -> (Vec<AxisLine>, Vec<AxisLine>) {
-    let mut horizontals = Vec::new();
-    let mut verticals = Vec::new();
+/// An axis-aligned ruling line: its position on the perpendicular axis and
+/// its extent `[lo, hi]` along its own axis.
+#[derive(Debug, Clone, Copy)]
+struct AxisSegment {
+    axis: Axis,
+    pos: f32,
+    lo: f32,
+    hi: f32,
+}
+
+impl AxisSegment {
+    /// Whether two segments meet: a horizontal and a vertical line that cross
+    /// or end on each other, or two collinear lines that overlap or abut
+    /// (a border drawn in pieces).
+    fn touches(&self, other: &AxisSegment, tolerance: f32) -> bool {
+        let within = |v: f32, lo: f32, hi: f32| v >= lo - tolerance && v <= hi + tolerance;
+        if self.axis == other.axis {
+            (self.pos - other.pos).abs() <= tolerance
+                && self.lo <= other.hi + tolerance
+                && other.lo <= self.hi + tolerance
+        } else {
+            within(other.pos, self.lo, self.hi) && within(self.pos, other.lo, other.hi)
+        }
+    }
+}
+
+/// Reduce lines to axis-aligned segments, discarding diagonal and too-short lines.
+fn classify_lines(lines: &[GraphicsLine], config: &LatticeConfig) -> Vec<AxisSegment> {
+    let mut segments = Vec::new();
 
     for line in lines {
         let dx = (line.x1 - line.x0).abs();
         let dy = (line.y1 - line.y0).abs();
 
         if dy <= config.axis_tolerance && dx >= config.min_line_length {
-            let y = (line.y0 + line.y1) / 2.0;
-            horizontals.push((y, dx));
+            segments.push(AxisSegment {
+                axis: Axis::Horizontal,
+                pos: (line.y0 + line.y1) / 2.0,
+                lo: line.x0.min(line.x1),
+                hi: line.x0.max(line.x1),
+            });
         } else if dx <= config.axis_tolerance && dy >= config.min_line_length {
-            let x = (line.x0 + line.x1) / 2.0;
-            verticals.push((x, dy));
+            segments.push(AxisSegment {
+                axis: Axis::Vertical,
+                pos: (line.x0 + line.x1) / 2.0,
+                lo: line.y0.min(line.y1),
+                hi: line.y0.max(line.y1),
+            });
         }
         // Diagonal or too-short lines are not ruling-line evidence — ignored.
     }
 
-    (horizontals, verticals)
+    segments
 }
 
 /// Cluster axis positions within `tolerance` of each other into single
@@ -381,7 +471,7 @@ mod tests {
     #[test]
     fn clustering_does_not_chain_drift_across_distinct_boundaries() {
         // A chain of horizontal lines each 1.9pt from its neighbor (within the
-        // default 2.0pt cluster_tolerance) must not collapse into a single row
+        // default 3.0pt cluster_tolerance) must not collapse into a single row
         // boundary just because consecutive gaps are individually small — the
         // total span (100.0 to 105.7) is clearly two distinct table regions'
         // worth of drift, not one double-drawn border.
@@ -400,7 +490,7 @@ mod tests {
 
     #[test]
     fn near_duplicate_lines_cluster_into_one_boundary() {
-        // Two lines 0.5pt apart (within cluster_tolerance=2.0) at each of 3 row
+        // Two lines 0.5pt apart (within cluster_tolerance=3.0) at each of 3 row
         // positions and 3 column positions — should still resolve to a 2x2 grid,
         // not spurious extra rows/columns from double-drawn borders.
         let lines = vec![
@@ -415,6 +505,76 @@ mod tests {
         let grids = infer_grids(&lines, &LatticeConfig::default());
         assert_eq!(grids.len(), 1);
         assert_eq!(grids[0].row_count(), 2);
+    }
+
+    /// The four edges of a rectangle, as `re … f`/`re … S` produces them.
+    fn rect(x0: f32, y0: f32, x1: f32, y1: f32) -> Vec<GraphicsLine> {
+        vec![h(y0, x0, x1), h(y1, x0, x1), v(x0, y0, y1), v(x1, y0, y1)]
+    }
+
+    #[test]
+    fn disjoint_line_clusters_are_not_merged_into_one_grid() {
+        // A figure frame on the left and a separator rule far below it. The two
+        // never touch, so they cannot be borders of the same table — merged, their
+        // extents would span every line of text between them.
+        let mut lines = rect(46.0, 467.0, 174.0, 633.0);
+        lines.push(h(100.0, 179.0, 356.0));
+        assert!(infer_grids(&lines, &LatticeConfig::default()).is_empty());
+    }
+
+    #[test]
+    fn a_figure_frame_drawn_as_nested_rectangles_is_not_a_grid() {
+        // A thumbnail container as a browser prints it: a background box, a
+        // caption box stacked under it, and the image border inset by ~2pt. The
+        // near-coincident edges are one border drawn several times, not
+        // 2pt-wide table columns.
+        let mut lines = rect(44.0, 465.0, 177.0, 636.0);
+        lines.extend(rect(44.0, 418.0, 177.0, 465.0));
+        lines.extend(rect(46.0, 467.0, 175.0, 634.0));
+        lines.extend(rect(46.0, 467.0, 174.0, 633.0));
+        assert!(infer_grids(&lines, &LatticeConfig::default()).is_empty());
+    }
+
+    #[test]
+    fn two_separate_tables_yield_two_grids_top_down() {
+        let mut lines = clean_grid_lines();
+        // A second 2x2 table well below the first one.
+        lines.extend([
+            h(100.0, 50.0, 250.0),
+            h(80.0, 50.0, 250.0),
+            h(60.0, 50.0, 250.0),
+            v(50.0, 60.0, 100.0),
+            v(150.0, 60.0, 100.0),
+            v(250.0, 60.0, 100.0),
+        ]);
+        let grids = infer_grids(&lines, &LatticeConfig::default());
+        assert_eq!(grids.len(), 2);
+        assert_eq!(grids[0].row_bounds, vec![300.0, 280.0, 260.0, 240.0]);
+        assert_eq!(grids[1].row_bounds, vec![100.0, 80.0, 60.0]);
+    }
+
+    #[test]
+    fn a_table_border_drawn_in_pieces_is_one_grid() {
+        // Each cell stroked separately: collinear pieces that abut end to end
+        // still belong to the same ruling line.
+        let lines = vec![
+            h(300.0, 50.0, 150.0),
+            h(300.0, 150.0, 250.0),
+            h(270.0, 50.0, 150.0),
+            h(270.0, 150.0, 250.0),
+            h(240.0, 50.0, 150.0),
+            h(240.0, 150.0, 250.0),
+            v(50.0, 270.0, 300.0),
+            v(50.0, 240.0, 270.0),
+            v(150.0, 270.0, 300.0),
+            v(150.0, 240.0, 270.0),
+            v(250.0, 270.0, 300.0),
+            v(250.0, 240.0, 270.0),
+        ];
+        let grids = infer_grids(&lines, &LatticeConfig::default());
+        assert_eq!(grids.len(), 1);
+        assert_eq!(grids[0].row_count(), 2);
+        assert_eq!(grids[0].column_count(), 2);
     }
 
     #[test]

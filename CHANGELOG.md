@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+Pages whose content stream nests coordinate transforms, and pages with figures beside
+the text, lost text outright. Browser-printed PDFs hit both on nearly every page.
+
+- **Nested `cm` transforms were concatenated in the wrong order.** The new matrix must be
+  applied before the current one (`cm × CTM`); the reverse agrees only while the CTM is
+  the identity or a pure scale. A page that opens with a flipped, scaled CTM and then
+  translates into a tall canvas placed every run far off the page, and a run holding only
+  a number was then removed as a margin page number — table volumes, citation numbers and
+  the digits inside headings (`C3`) went missing. Text and ruling lines share the one
+  corrected transform.
+- **Unrelated ruling lines were merged into one page-wide table.** Lattice detection
+  treated every horizontal and vertical line on a page as a single grid, so a figure frame
+  and a separator rule far below it spanned all the text between them, and every run
+  whose left edge fell inside that span became a table cell. Headings lost their first or
+  last words (`# oncept`) and lines beside figures were cut and reassembled as spurious
+  tables. Grids are now inferred per cluster of lines that touch, and a border drawn twice
+  a couple of points apart (a background box and its inset frame) snaps to one line at a
+  3 pt tolerance instead of producing a sliver column.
+
 ## 0.21.0 — 2026-09-22
 
 ### Fixed
