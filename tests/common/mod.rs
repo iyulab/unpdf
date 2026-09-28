@@ -142,6 +142,38 @@ pub fn scripted_lines_pdf() -> Vec<u8> {
     assemble(objects)
 }
 
+/// One page of five body lines, each drawn as three runs that abut exactly — the way a
+/// producer breaks a line at link or style boundaries — with the run boundaries falling
+/// at the same x on every line. The runs are one paragraph, not three table columns.
+pub fn fragmented_body_lines_pdf() -> Vec<u8> {
+    // Every line is a rotation of the same three chunks, so the chunk widths — and so the
+    // run boundaries — line up from row to row.
+    const CHUNKS: [&str; 3] = ["carbon fix", "ation uses ", "light energy"];
+    let width = |s: &str| s.chars().map(helvetica_bold_advance).sum::<f32>() / 1000.0 * 12.0;
+    let mut content = String::new();
+    for row in 0..5 {
+        let y = 700 - row * 14;
+        let mut x = 72.0;
+        for chunk in CHUNKS {
+            let text: String = chunk.chars().cycle().skip(row).take(chunk.len()).collect();
+            content.push_str(&format!("BT /F1 12 Tf {x} {y} Td ({text}) Tj ET "));
+            x += width(&text);
+        }
+    }
+    content.push('\n');
+    let content = content.into_bytes();
+    let objects: Vec<Vec<u8>> = vec![
+        b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+        b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]\
+          /Resources<</Font<</F1 5 0 R>>>>/Contents 4 0 R>>"
+            .to_vec(),
+        stream_object(&format!("<</Length {}>>", content.len()), &content),
+        helvetica_bold_with_widths(),
+    ];
+    assemble(objects)
+}
+
 /// One page with a figure framed twice (a background box and its inset border, as
 /// browsers draw it) on the left, a short separator rule far below it, and a
 /// heading line in between. The frames and the rule never touch, so nothing on the

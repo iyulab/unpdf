@@ -41,6 +41,14 @@ the text, lost text outright. Browser-printed PDFs hit both on nearly every page
   beside a neighbouring line's text, within a script's rise or drop of its baseline, is
   now folded into that line. A smaller line that runs across its neighbour's text (a
   byline under a title) stays its own.
+- **Prose beside figures was detected as a table, and table cells were spelled out.**
+  Table detection looked at runs exactly as the content stream drew them, so a column
+  edge could fall at the start of a fragment in the middle of a word
+  (`captures ener | gy from`), and a cell assembled from one-glyph runs read `S t a g e`.
+  Both detectors now see coalesced runs, the same ones line grouping uses. Text-aligned
+  (stream) detection also requires a column edge to be a channel of whitespace: an edge
+  that runs of text cross on more than one row in ten is not a column, so justified prose
+  whose word boundaries line up by chance is no longer split into cells.
 
 ### Added
 

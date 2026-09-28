@@ -58,3 +58,17 @@ fn text_between_unrelated_ruling_lines_is_not_a_table() {
         "the heading must come through whole, got: {text:?}"
     );
 }
+
+#[test]
+fn body_lines_drawn_in_aligned_runs_are_not_a_table() {
+    // Run boundaries that happen to line up from row to row are not column edges when
+    // the runs abut: a column starts after a gap, not in the middle of a word.
+    let doc = PdfParser::from_bytes(&common::fragmented_body_lines_pdf())
+        .and_then(|p| p.parse())
+        .expect("synthetic fragmented-lines PDF should parse");
+    let elements = &doc.pages[0].elements;
+    assert!(
+        !elements.iter().any(|b| matches!(b, Block::Table(_))),
+        "abutting runs must not be split into table columns: {elements:?}"
+    );
+}

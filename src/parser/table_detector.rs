@@ -421,7 +421,7 @@ impl TableDetector {
 
         log::debug!("TableDetector: merged column edges = {:?}", merged_edges);
 
-        merged_edges
+        Self::keep_whitespace_channels(rows, merged_edges)
     }
 
     /// Simpler column detection for when few rows have multiple spans.
@@ -465,7 +465,37 @@ impl TableDetector {
             }
         }
 
-        merged_edges
+        Self::keep_whitespace_channels(rows, merged_edges)
+    }
+
+    /// Keep only the edges no row's text runs across.
+    ///
+    /// Text starting at the same x on several rows is not yet a column: in justified
+    /// prose, runs broken at word or style boundaries line up by chance. A column
+    /// boundary is a vertical channel of whitespace — the stream-mode criterion of
+    /// Tabula and Camelot — so an edge that a row's run crosses is not one. A single
+    /// crossing row is tolerated (a spanning title or a merged cell); prose, where
+    /// nearly every row runs through, is not. Runs without a measured or estimated
+    /// width cannot cross anything, which keeps the previous behaviour for them.
+    fn keep_whitespace_channels(rows: &[TableRowData], edges: Vec<f32>) -> Vec<f32> {
+        // Edges are bucketed to 5 pt, so a run starting at an edge may sit up to 2.5 pt
+        // either side of it; only a run clearly through the edge counts as crossing.
+        const MARGIN: f32 = 3.0;
+        let allowed = (rows.len() / 10).max(1);
+        edges
+            .into_iter()
+            .filter(|&edge| {
+                let crossing = rows
+                    .iter()
+                    .filter(|row| {
+                        row.spans.iter().any(|s| {
+                            s.width > 0.0 && s.x < edge - MARGIN && s.x + s.width > edge + MARGIN
+                        })
+                    })
+                    .count();
+                crossing <= allowed
+            })
+            .collect()
     }
 
     /// Find contiguous row regions that form tables.
@@ -1139,6 +1169,76 @@ mod tests {
             is_bold: false,
             is_italic: false,
         }
+    }
+
+    fn measured(text: &str, x: f32, y: f32, width: f32) -> TextSpan {
+        TextSpan {
+            width,
+            ..make_span_w(text, x, y, 12.0)
+        }
+    }
+
+    #[test]
+    fn justified_prose_whose_runs_line_up_by_chance_is_not_a_table() {
+        // Six justified lines, each broken into runs at word boundaries. Three rows
+        // happen to start a run at x=200 and three at x=320 — but on every other row a
+        // run passes straight through those x positions, so there is no whitespace
+        // channel there and no column.
+        let detector = TableDetector::new();
+        let mut spans = Vec::new();
+        for i in 0..6 {
+            let y = 700.0 - i as f32 * 14.0;
+            if i % 2 == 0 {
+                spans.push(measured("the plastids are surrounded", 72.0, y, 124.0));
+                spans.push(measured("by three membranes and in", 200.0, y, 116.0));
+                spans.push(measured("the remaining lines by four", 320.0, y, 120.0));
+            } else {
+                spans.push(measured(
+                    "a nucleomorph, remnants of the original",
+                    72.0,
+                    y,
+                    180.0,
+                ));
+                spans.push(measured(
+                    "algal nucleus located between the",
+                    256.0,
+                    y,
+                    180.0,
+                ));
+            }
+        }
+        let (tables, remaining) = detector.detect(spans);
+        assert!(
+            tables.is_empty(),
+            "prose must not become a table: {tables:?}"
+        );
+        assert_eq!(remaining.len(), 15);
+    }
+
+    #[test]
+    fn a_table_with_one_spanning_row_keeps_its_columns() {
+        // A real three-column table whose title row spans every column: one crossing
+        // row is tolerated.
+        let detector = TableDetector::new();
+        let mut spans = vec![measured(
+            "Timescale of photosynthesis stages",
+            72.0,
+            720.0,
+            300.0,
+        )];
+        for i in 0..5 {
+            let y = 700.0 - i as f32 * 14.0;
+            spans.push(measured("Stage", 72.0, y, 30.0));
+            spans.push(measured("Event", 200.0, y, 30.0));
+            spans.push(measured("Site", 320.0, y, 24.0));
+        }
+        let (tables, _) = detector.detect(spans);
+        assert_eq!(tables.len(), 1, "the table must still be found");
+        assert!(
+            tables[0].columns.len() >= 3,
+            "columns: {:?}",
+            tables[0].columns
+        );
     }
 
     #[test]

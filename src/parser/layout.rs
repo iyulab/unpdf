@@ -1367,21 +1367,7 @@ impl<'a> LayoutAnalyzer<'a> {
             return vec![];
         }
 
-        // Sort spans by Y (descending, since PDF Y is bottom-up) then X
-        let mut spans = spans;
-        spans.sort_by(|a, b| {
-            let y_cmp = b.y.partial_cmp(&a.y).unwrap_or(std::cmp::Ordering::Equal);
-            if y_cmp == std::cmp::Ordering::Equal {
-                a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal)
-            } else {
-                y_cmp
-            }
-        });
-
-        // Merge adjacent single/few-character spans that likely form words.
-        // This fixes the "w arranty", "M ac B ook" splitting caused by
-        // per-character text rendering in some PDFs.
-        spans = merge_fragmented_spans(spans);
+        let mut spans = coalesce_runs(spans);
 
         // Widths are needed downstream by `should_insert_space_between` and by table
         // detection, but they must be assigned *after* merging: `merge_fragmented_spans`
@@ -2257,6 +2243,26 @@ impl TextLine {
         merged.font_size = font_size;
         merged
     }
+}
+
+/// Put spans in reading order (top to bottom, then left to right) and join the
+/// fragments of one run: glyphs a producer drew one operator at a time, so that each
+/// span is a stretch of text rather than an accident of how it was drawn.
+///
+/// Everything that reasons about span positions should see runs, not fragments —
+/// line grouping, and table detection before it: a column edge found at the start of
+/// a fragment is a boundary in the middle of a word. Applying it twice is harmless;
+/// joined runs are no longer fragments.
+pub(crate) fn coalesce_runs(mut spans: Vec<TextSpan>) -> Vec<TextSpan> {
+    spans.sort_by(|a, b| {
+        let y_cmp = b.y.partial_cmp(&a.y).unwrap_or(std::cmp::Ordering::Equal);
+        if y_cmp == std::cmp::Ordering::Equal {
+            a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal)
+        } else {
+            y_cmp
+        }
+    });
+    merge_fragmented_spans(spans)
 }
 
 /// Whether `next` continues `prev` on the same line, in the same font, starting where

@@ -634,6 +634,10 @@ fn extract_page_with_tables_fn(
         return Ok(vec![]);
     }
 
+    // Both table detectors reason about where text starts and ends, so they must see
+    // runs, not the fragments a producer happened to draw them in.
+    let spans = super::layout::coalesce_runs(spans);
+
     // Lattice mode first: explicit ruling lines are direct structural
     // evidence, so a confirmed grid is accepted outright — it doesn't need
     // stream mode's alignment/occupancy heuristics, which exist only to
