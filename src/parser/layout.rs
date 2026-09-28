@@ -836,7 +836,7 @@ impl<'a> LayoutAnalyzer<'a> {
                         get_number_from_value(&op.operands[4]).unwrap_or(0.0),
                         get_number_from_value(&op.operands[5]).unwrap_or(0.0),
                     ];
-                    ctm = concat_matrix(&ctm, &cm);
+                    ctm = apply_cm(&ctm, &cm);
                 }
                 "BT" => {
                     in_text_block = true;
@@ -1846,7 +1846,7 @@ fn maybe_insert_space_tj(text: &mut String, adjustment: f32) {
 /// Concatenate two PDF transformation matrices (right-multiply: result = a × b).
 /// Matrix form: `[a, b, c, d, e, f]` where a point `(x,y)` transforms as
 /// `x' = a*x + c*y + e`,  `y' = b*x + d*y + f`.
-pub(crate) fn concat_matrix(a: &[f32; 6], b: &[f32; 6]) -> [f32; 6] {
+fn concat_matrix(a: &[f32; 6], b: &[f32; 6]) -> [f32; 6] {
     [
         a[0] * b[0] + a[1] * b[2],
         a[0] * b[1] + a[1] * b[3],
@@ -1877,6 +1877,18 @@ fn count_render_mode(text: &str, render_mode: i64, total: &mut usize, invisible:
     if render_mode == 3 || render_mode == 7 {
         *invisible += chars;
     }
+}
+
+/// The CTM after a `cm` operator with operands `cm`.
+///
+/// `cm` maps the new user space into the *current* one, so the operand matrix is
+/// applied first: CTM' = cm × CTM (ISO 32000-1 §8.4.4). The reverse order agrees
+/// with it only while the CTM is the identity or a pure scale, which is why it
+/// goes unnoticed on simple files — and why a browser-printed page, which opens
+/// with a flipped and scaled CTM and then nests `cm` translations, came out with
+/// every coordinate far off the page.
+pub(crate) fn apply_cm(ctm: &[f32; 6], cm: &[f32; 6]) -> [f32; 6] {
+    concat_matrix(cm, ctm)
 }
 
 /// Apply a CTM to a user-space point, returning device-space coordinates.

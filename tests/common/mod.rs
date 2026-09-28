@@ -38,6 +38,28 @@ pub fn text_pdf() -> Vec<u8> {
     assemble(objects)
 }
 
+/// One page drawn the way a browser prints: the page opens with a flipped, scaled
+/// CTM, and the text sits under a nested `cm` translation into a tall canvas. The
+/// line lands mid-page (device y 500) only if `cm` is concatenated in the order
+/// the PDF spec defines; the number is its own text run, as browsers emit it.
+pub fn browser_printed_pdf() -> Vec<u8> {
+    let content = b".24 0 0 -.24 0 842 cm \
+        q 3.125 0 0 3.125 150 -46865.625 cm \
+        BT /F1 16 Tf 1 0 0 -1 48 15453 Tm (Volume) Tj ET \
+        BT /F1 16 Tf 1 0 0 -1 120 15453 Tm (396) Tj ET \
+        Q\n";
+    let objects: Vec<Vec<u8>> = vec![
+        b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+        b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]\
+          /Resources<</Font<</F1 5 0 R>>>>/Contents 4 0 R>>"
+            .to_vec(),
+        stream_object(&format!("<</Length {}>>", content.len()), content),
+        HELVETICA.to_vec(),
+    ];
+    assemble(objects)
+}
+
 /// One page with a bordered 2x2 grid (ruling lines drawn via `m`/`l`/`S`) and
 /// real text in each cell — a lattice-mode table, not just aligned text.
 pub fn bordered_table_pdf() -> Vec<u8> {

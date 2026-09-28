@@ -10,7 +10,7 @@
 //! (row/column boundaries, cell intersections) is a separate, later stage.
 
 use super::backend::{get_number_from_value, ContentOp, PdfValue};
-use super::layout::{apply_ctm, concat_matrix};
+use super::layout::{apply_cm, apply_ctm};
 
 /// A straight line segment in device space, as painted by a content stream.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -61,7 +61,7 @@ pub fn extract_lines(ops: &[ContentOp]) -> Vec<GraphicsLine> {
                     num(&op.operands[4]),
                     num(&op.operands[5]),
                 ];
-                ctm = concat_matrix(&ctm, &cm);
+                ctm = apply_cm(&ctm, &cm);
             }
             "m" if op.operands.len() >= 2 => {
                 let p = apply_ctm(&ctm, num(&op.operands[0]), num(&op.operands[1]));
@@ -217,6 +217,29 @@ mod tests {
                 y0: 200.0,
                 x1: 110.0,
                 y1: 200.0,
+            }]
+        );
+    }
+
+    #[test]
+    fn nested_cm_applies_the_newer_matrix_first() {
+        // Scale by 2 first, then translate by (10, 20) in the scaled space:
+        // the translation is itself scaled, so (0,0) lands on (20, 40), not (10, 20).
+        let ops = vec![
+            op("cm", &[2.0, 0.0, 0.0, 2.0, 0.0, 0.0]),
+            op("cm", &[1.0, 0.0, 0.0, 1.0, 10.0, 20.0]),
+            op("m", &[0.0, 0.0]),
+            op("l", &[5.0, 0.0]),
+            op("S", &[]),
+        ];
+        let lines = extract_lines(&ops);
+        assert_eq!(
+            lines,
+            vec![GraphicsLine {
+                x0: 20.0,
+                y0: 40.0,
+                x1: 30.0,
+                y1: 40.0,
             }]
         );
     }
