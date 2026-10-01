@@ -93,6 +93,27 @@ pub fn helvetica_bold_advance(c: char) -> f32 {
 /// With `space_glyphs`, a space is drawn as a glyph like any other; without, it is
 /// left out and the word gap exists only as a larger move.
 pub fn glyph_per_operator_pdf(line: &str, font_size: f32, space_glyphs: bool) -> Vec<u8> {
+    glyph_per_operator_pdf_in(helvetica_bold_with_widths(), line, font_size, space_glyphs)
+}
+
+/// [`glyph_per_operator_pdf`] with Helvetica-Bold named by `/BaseFont` alone — no
+/// `/FirstChar`, no `/Widths` — as a PDF before 1.5 may do for the standard 14 fonts.
+/// The glyphs are still placed by the font's real advances.
+pub fn glyph_per_operator_pdf_without_widths(line: &str, font_size: f32) -> Vec<u8> {
+    glyph_per_operator_pdf_in(
+        b"<</Type/Font/Subtype/Type1/BaseFont/Helvetica-Bold>>".to_vec(),
+        line,
+        font_size,
+        true,
+    )
+}
+
+fn glyph_per_operator_pdf_in(
+    font: Vec<u8>,
+    line: &str,
+    font_size: f32,
+    space_glyphs: bool,
+) -> Vec<u8> {
     let mut content = format!("BT /F1 {font_size} Tf 72 700 Td ");
     let mut pending_dx: Option<f32> = None;
     for c in line.chars() {
@@ -115,7 +136,7 @@ pub fn glyph_per_operator_pdf(line: &str, font_size: f32, space_glyphs: bool) ->
           /Resources<</Font<</F1 5 0 R>>>>/Contents 4 0 R>>"
             .to_vec(),
         stream_object(&format!("<</Length {}>>", content.len()), &content),
-        helvetica_bold_with_widths(),
+        font,
     ];
     assemble(objects)
 }
@@ -123,12 +144,13 @@ pub fn glyph_per_operator_pdf(line: &str, font_size: f32, space_glyphs: bool) ->
 /// One page with two body lines carrying scripts the way typeset text does: a subscript
 /// lowered at the end of the first line (`C` + `4`) and a citation superscript raised at
 /// the end of the second (`right.` + `[35]`), both in a smaller size. Each script sits
-/// closer to the gap between the lines than a same-line tolerance allows.
+/// closer to the gap between the lines than a same-line tolerance allows. Each script
+/// starts exactly where its line ends by Helvetica's advances (271.42 and 285.42).
 pub fn scripted_lines_pdf() -> Vec<u8> {
     let content = b"BT /F1 12 Tf 72 700 Td (is both an evolutionary precursor to C) Tj ET \
-        BT /F1 9.6 Tf 282 696.8 Td (4) Tj ET \
+        BT /F1 9.6 Tf 271.42 696.8 Td (4) Tj ET \
         BT /F1 12 Tf 72 686 Td (and a useful mechanism in its own right.) Tj ET \
-        BT /F1 9.6 Tf 291 690.2 Td ([35]) Tj ET \
+        BT /F1 9.6 Tf 285.42 690.2 Td ([35]) Tj ET \
         BT /F1 12 Tf 72 672 Td (The next sentence follows.) Tj ET\n";
     let objects: Vec<Vec<u8>> = vec![
         b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),

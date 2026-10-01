@@ -34,6 +34,21 @@ fn a_word_drawn_one_glyph_at_a_time_stays_whole() {
 }
 
 #[test]
+fn a_standard_font_without_declared_widths_is_measured_by_its_own_metrics() {
+    // The standard 14 fonts may omit `/Widths` (ISO 32000-1 §9.6.2.2); their advances
+    // are the fonts' published metrics. Without them the line falls back to a guess and
+    // splits after the wide `m`.
+    let text = text_of(&common::glyph_per_operator_pdf_without_widths(
+        "carbon concentrating mechanisms",
+        14.0,
+    ));
+    assert!(
+        text.contains("carbon concentrating mechanisms"),
+        "the line must read as three whole words, got {text:?}"
+    );
+}
+
+#[test]
 fn a_tj_that_opens_with_an_offset_starts_where_its_first_glyph_is_drawn() {
     // The right-aligned run's text origin is exactly where the left run ends; only the
     // TJ's leading offset puts `october` near the right margin. Taking the origin as the

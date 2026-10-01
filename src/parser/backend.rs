@@ -9,6 +9,7 @@ use std::sync::RwLock;
 use crate::error::{Error, Result};
 use crate::model::{FieldType, FieldValue, FormField};
 
+use super::core14::StandardFont;
 use super::encoding::{build_encoding_map, decode_with_encoding_map, BaseEncoding};
 use super::font::{
     is_likely_binary, parse_to_unicode_cmap, parse_truetype_cmap_table, ToUnicodeMap,
@@ -1102,13 +1103,14 @@ impl RawFontResolver {
             });
         }
 
-        let first_char = raw_dict_get(font_dict, b"FirstChar").and_then(number)? as u32;
-        let widths: Vec<f32> = doc
-            .resolve(raw_dict_get(font_dict, b"Widths")?)
-            .as_array()?
-            .iter()
-            .map(|w| number(w).unwrap_or(0.0))
-            .collect();
+        let declared = raw_dict_get(font_dict, b"FirstChar")
+            .and_then(number)
+            .zip(raw_dict_get(font_dict, b"Widths").and_then(|w| doc.resolve(w).as_array()));
+        let Some((first_char, widths)) = declared else {
+            return self.standard_font_metrics(doc, font_obj_id, font_dict);
+        };
+        let first_char = first_char as u32;
+        let widths: Vec<f32> = widths.iter().map(|w| number(w).unwrap_or(0.0)).collect();
         let missing_width = raw_dict_get(font_dict, b"FontDescriptor")
             .and_then(|d| raw_resolve_dict(doc, d))
             .and_then(|d| raw_dict_get(d, b"MissingWidth"))
@@ -1134,6 +1136,30 @@ impl RawFontResolver {
             first_char,
             widths: widths.into_iter().map(|w| w * scale).collect(),
             missing_width: missing_width * scale,
+        })
+    }
+
+    /// Widths for a simple font that declares none: one of the standard 14, named
+    /// by `/BaseFont` alone (ISO 32000-1 §9.6.2.2). Any other font without
+    /// `/Widths` stays unmeasured.
+    fn standard_font_metrics(
+        &self,
+        doc: &RawDocument,
+        font_obj_id: PageId,
+        font_dict: &RawPdfDict,
+    ) -> Option<FontMetrics> {
+        let standard = raw_dict_get(font_dict, b"BaseFont")
+            .and_then(|n| doc.resolve(n).as_name())
+            .and_then(StandardFont::from_base_font)?;
+        // No `/Encoding` means the font's built-in one — StandardEncoding for the
+        // Latin faces. Symbol and ZapfDingbats ignore the map.
+        let encoding = self
+            .parse_encoding_dict(doc, font_obj_id)
+            .unwrap_or_else(|| build_encoding_map(None, &[]));
+        Some(FontMetrics::Simple {
+            first_char: 0,
+            widths: standard.widths_by_code(&encoding),
+            missing_width: 0.0,
         })
     }
 

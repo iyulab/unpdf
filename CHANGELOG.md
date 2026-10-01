@@ -10,6 +10,15 @@
   rule; the batch renderer, the streaming iterator and the CLI now share one definition of
   it instead of three.
 
+### Fixed
+
+- Text in one of the 14 standard fonts named without a `/Widths` array (allowed before
+  PDF 1.5) is now measured by the font's own metrics instead of a per-character guess.
+  A producer that draws such text one glyph at a time no longer gets words split after
+  wide glyphs (`m echanism s`). The widths come from the Adobe Core14 AFM files; the
+  common alternate names `Arial`, `TimesNewRoman` and `CourierNew` map to their
+  standard equivalents. Other fonts without `/Widths` are still estimated.
+
 ## 0.22.0 — 2026-09-28
 
 ### Changed
