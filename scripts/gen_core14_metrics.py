@@ -3,15 +3,21 @@
 
 The 14 standard Type 1 fonts may be used without embedding and, before PDF 1.5,
 without a /Widths array (ISO 32000-1 §9.6.2.2). A reader then needs the fonts'
-own metrics. This script reads the AFM files and the Adobe Glyph List and writes
-the advance widths as Rust constants.
+own metrics, and a font without /Encoding uses its built-in encoding
+(ISO 32000-1 §9.6.6). This script writes both as Rust constants: the advance
+widths from the AFM files, and the code -> Unicode maps of the two symbolic
+fonts' built-in encodings.
 
 Usage:
-    python scripts/gen_core14_metrics.py <dir-with-afm-files> <glyphlist.txt>
+    python scripts/gen_core14_metrics.py <dir>
+
+<dir> holds the 14 AFM files, glyphlist.txt, symbol.txt and zdingbat.txt.
 
 Sources (public):
     AFM files      https://github.com/apache/pdfbox/tree/trunk/pdfbox/src/main/resources/org/apache/pdfbox/resources/afm
     glyphlist.txt  https://github.com/adobe-type-tools/agl-aglfn
+    symbol.txt     https://unicode.org/Public/MAPPINGS/VENDORS/ADOBE/symbol.txt
+    zdingbat.txt   https://unicode.org/Public/MAPPINGS/VENDORS/ADOBE/zdingbat.txt
 """
 
 import pathlib
@@ -32,7 +38,7 @@ LATIN = [
     ("TIMES_ITALIC", "Times-Italic"),
     ("TIMES_BOLD_ITALIC", "Times-BoldItalic"),
 ]
-SYMBOLIC = [("SYMBOL", "Symbol"), ("ZAPF_DINGBATS", "ZapfDingbats")]
+SYMBOLIC = [("SYMBOL", "Symbol", "symbol.txt"), ("ZAPF_DINGBATS", "ZapfDingbats", "zdingbat.txt")]
 
 BACKSLASH = chr(0x5C)
 CHAR_METRIC =re.compile(r"^C (-?\d+) ; WX (\d+) ; N (\S+) ;")
@@ -60,15 +66,36 @@ def read_agl(path):
     return agl
 
 
+def read_vendor_map(path):
+    """Built-in code -> Unicode from an Adobe vendor mapping file.
+
+    A code listed more than once keeps its first entry (the file lists the
+    preferred value first). Private-use values (corporate-use extenders such as
+    the Symbol font's bracket pieces) carry no meaning outside the font and are
+    left unmapped.
+    """
+    table = [0] * 256
+    for line in path.read_text(encoding="latin-1").splitlines():
+        if line.startswith("#") or not line.strip():
+            continue
+        unicode_hex, code_hex = line.split(chr(9))[:2]
+        code, cp = int(code_hex, 16), int(unicode_hex, 16)
+        if 0xE000 <= cp <= 0xF8FF or table[code]:
+            continue
+        table[code] = cp
+    return table
+
+
 def chunks(values, per_line):
     for i in range(0, len(values), per_line):
         yield ", ".join(values[i : i + per_line])
 
 
 def main():
-    if len(sys.argv) != 3:
+    if len(sys.argv) != 2:
         sys.exit(__doc__)
-    afm_dir, agl = pathlib.Path(sys.argv[1]), read_agl(pathlib.Path(sys.argv[2]))
+    afm_dir = pathlib.Path(sys.argv[1])
+    agl = read_agl(afm_dir / "glyphlist.txt")
 
     latin = {const: {name: w for _, w, name in read_afm(afm_dir / f"{font}.afm")} for const, font in LATIN}
     glyphs = set(next(iter(latin.values())))
@@ -93,6 +120,11 @@ def main():
         "//! file is a modification: only the advance widths (`WX`) are kept, re-indexed by",
         "//! Unicode code point (Latin fonts) or by built-in encoding code (Symbol,",
         "//! ZapfDingbats).",
+        "//!",
+        "//! The Symbol and ZapfDingbats code -> Unicode maps come from the Unicode",
+        "//! Consortium's Adobe vendor mappings (symbol.txt, zdingbat.txt), Copyright (c)",
+        "//! 1991-2011 Unicode, Inc., which grants the right to use them in products",
+        "//! supporting the Unicode Standard.",
         "",
         f"/// The glyphs every Latin standard font covers, as Unicode code points, sorted.",
         f"pub(crate) const LATIN_CHARS: [char; {len(chars)}] = [",
@@ -103,7 +135,12 @@ def main():
         out += ["", f"/// `{font}`, indexed like [`LATIN_CHARS`].", f"pub(crate) static {const}: [u16; {len(chars)}] = ["]
         out += [f"    {line}," for line in chunks([str(latin[const][n]) for n in by_char], 16)]
         out.append("];")
-    for const, font in SYMBOLIC:
+    for const, font, mapping in SYMBOLIC:
+        chars = read_vendor_map(afm_dir / mapping)
+        out += ["", f"/// `{font}`'s built-in encoding: code -> Unicode scalar value (0 = unmapped).",
+                f"pub(crate) static {const}_UNICODE: [u32; 256] = ["]
+        out += [f"    {line}," for line in chunks([f"0x{c:04X}" for c in chars], 12)]
+        out.append("];")
         table = [0] * 256
         for code, width, _ in read_afm(afm_dir / f"{font}.afm"):
             if 0 <= code <= 255:

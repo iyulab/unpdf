@@ -141,6 +141,39 @@ fn glyph_per_operator_pdf_in(
     assemble(objects)
 }
 
+/// One page with a single line drawn as consecutive runs, each `(base_font, text)` in
+/// a standard font named by `/BaseFont` alone — no `/Encoding`, no `/Widths`, no
+/// `/ToUnicode` — so each font's built-in encoding decides what its codes mean. Runs
+/// are placed 30pt apart, which is wider than any run used with it.
+pub fn standard_fonts_line_pdf(runs: &[(&str, &str)]) -> Vec<u8> {
+    let mut content = String::from("BT 72 700 Td ");
+    let mut fonts = String::new();
+    let mut font_objects = Vec::new();
+    for (i, (base_font, text)) in runs.iter().enumerate() {
+        if i > 0 {
+            content.push_str("30 0 Td ");
+        }
+        content.push_str(&format!("/F{i} 12 Tf ({text}) Tj "));
+        fonts.push_str(&format!("/F{i} {} 0 R", 5 + i));
+        font_objects
+            .push(format!("<</Type/Font/Subtype/Type1/BaseFont/{base_font}>>").into_bytes());
+    }
+    content.push_str("ET\n");
+    let content = content.into_bytes();
+    let mut objects: Vec<Vec<u8>> = vec![
+        b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+        format!(
+            "<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]\
+             /Resources<</Font<<{fonts}>>>>/Contents 4 0 R>>"
+        )
+        .into_bytes(),
+        stream_object(&format!("<</Length {}>>", content.len()), &content),
+    ];
+    objects.extend(font_objects);
+    assemble(objects)
+}
+
 /// One page with two body lines carrying scripts the way typeset text does: a subscript
 /// lowered at the end of the first line (`C` + `4`) and a citation superscript raised at
 /// the end of the second (`right.` + `[35]`), both in a smaller size. Each script sits

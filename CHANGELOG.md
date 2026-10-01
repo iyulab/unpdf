@@ -18,6 +18,12 @@
   wide glyphs (`m echanism s`). The widths come from the Adobe Core14 AFM files; the
   common alternate names `Arial`, `TimesNewRoman` and `CourierNew` map to their
   standard equivalents. Other fonts without `/Widths` are still estimated.
+- Text in a standard font with no `/Encoding` and no `/ToUnicode` now decodes through
+  the font's built-in encoding instead of as Latin-1. Symbol text comes out as the
+  Greek letters and math signs it draws (`α ≤ 120°`, where `a £ 120°` came out
+  before), ZapfDingbats as dingbats (`✔`, not `4`), and the Latin faces through
+  StandardEncoding (code 0x27 is `’`). A run full of control codes is still
+  recognised as mis-decoded and suppressed.
 
 ## 0.22.0 — 2026-09-28
 

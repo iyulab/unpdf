@@ -1107,7 +1107,7 @@ impl RawFontResolver {
             .and_then(number)
             .zip(raw_dict_get(font_dict, b"Widths").and_then(|w| doc.resolve(w).as_array()));
         let Some((first_char, widths)) = declared else {
-            return self.standard_font_metrics(doc, font_obj_id, font_dict);
+            return self.standard_font_metrics(doc, font_obj_id);
         };
         let first_char = first_char as u32;
         let widths: Vec<f32> = widths.iter().map(|w| number(w).unwrap_or(0.0)).collect();
@@ -1142,25 +1142,32 @@ impl RawFontResolver {
     /// Widths for a simple font that declares none: one of the standard 14, named
     /// by `/BaseFont` alone (ISO 32000-1 §9.6.2.2). Any other font without
     /// `/Widths` stays unmeasured.
-    fn standard_font_metrics(
-        &self,
-        doc: &RawDocument,
-        font_obj_id: PageId,
-        font_dict: &RawPdfDict,
-    ) -> Option<FontMetrics> {
-        let standard = raw_dict_get(font_dict, b"BaseFont")
-            .and_then(|n| doc.resolve(n).as_name())
-            .and_then(StandardFont::from_base_font)?;
-        // No `/Encoding` means the font's built-in one — StandardEncoding for the
-        // Latin faces. Symbol and ZapfDingbats ignore the map.
-        let encoding = self
-            .parse_encoding_dict(doc, font_obj_id)
-            .unwrap_or_else(|| build_encoding_map(None, &[]));
+    fn standard_font_metrics(&self, doc: &RawDocument, font_obj_id: PageId) -> Option<FontMetrics> {
+        let standard = self.standard_font(doc, font_obj_id)?;
+        // The same code → character map the text decoder uses: the font's
+        // `/Encoding`, or its built-in one. Symbol and ZapfDingbats ignore it.
+        let widths = match self.get_encoding_map(doc, font_obj_id) {
+            Some(declared) => standard.widths_by_code(&declared),
+            None => standard.widths_by_code(standard.builtin_encoding()),
+        };
         Some(FontMetrics::Simple {
             first_char: 0,
-            widths: standard.widths_by_code(&encoding),
+            widths,
             missing_width: 0.0,
         })
+    }
+
+    /// The standard 14 font a simple font dictionary names, if any. Composite fonts
+    /// and Type 3 fonts are never standard fonts, whatever their `/BaseFont` says.
+    fn standard_font(&self, doc: &RawDocument, font_obj_id: PageId) -> Option<StandardFont> {
+        let font_dict = doc.get_dict(font_obj_id).ok()?;
+        let subtype = raw_dict_get(font_dict, b"Subtype").and_then(|s| s.as_name())?;
+        if !matches!(subtype, b"Type1" | b"MMType1" | b"TrueType") {
+            return None;
+        }
+        raw_dict_get(font_dict, b"BaseFont")
+            .and_then(|n| doc.resolve(n).as_name())
+            .and_then(StandardFont::from_base_font)
     }
 
     fn decode_text(
@@ -1247,13 +1254,23 @@ impl RawFontResolver {
             return DecodedText::suppressed(TextSuppression::CompositeUnresolved);
         }
 
-        // 6. Final fallback
+        // 6. A standard 14 font without `/Encoding` uses its built-in encoding
+        //    (ISO 32000-1 §9.6.6). The control-character judgement below still runs
+        //    first: those codes have no glyph in any built-in encoding and would be
+        //    dropped, turning the very evidence of a mis-decoded run into clean text.
         let simple = decode_text_simple(bytes);
         if is_likely_binary(&simple) {
-            DecodedText::suppressed(TextSuppression::BinaryDensity)
-        } else {
-            DecodedText::text(simple)
+            return DecodedText::suppressed(TextSuppression::BinaryDensity);
         }
+        if let Some(standard) = font_obj_id.and_then(|fid| self.standard_font(doc, fid)) {
+            let decoded = decode_with_encoding_map(bytes, standard.builtin_encoding());
+            if !decoded.is_empty() {
+                return DecodedText::text(decoded);
+            }
+        }
+
+        // 7. Final fallback
+        DecodedText::text(simple)
     }
 
     /// Find the font dictionary object ID for a given font name on a page.

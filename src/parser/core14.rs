@@ -1,25 +1,34 @@
-//! Metrics of the 14 standard Type 1 fonts, for fonts that declare no widths.
+//! What a reader must know about the 14 standard Type 1 fonts on its own.
 //!
 //! A simple font normally carries `/FirstChar` and `/Widths`. The standard 14
 //! fonts are the exception: a PDF before 1.5 may name one by `/BaseFont` alone and
 //! leave its metrics to the reader (ISO 32000-1 §9.6.2.2). Without them a run has
 //! no measured extent and falls back to a per-character estimate, which is exactly
-//! the guess [`super::glyph_metrics`] exists to replace. The widths themselves are
-//! generated from the Adobe AFM files into [`super::core14_data`].
+//! the guess [`super::glyph_metrics`] exists to replace.
+//!
+//! The same fonts also need no `/Encoding`: a font without one uses its built-in
+//! encoding (§9.6.6) — StandardEncoding for the Latin faces, and an encoding of
+//! their own for Symbol and ZapfDingbats, whose codes would otherwise read as
+//! unrelated Latin letters (a ZapfDingbats check mark is code `4`).
+//!
+//! Both are generated into [`super::core14_data`].
 
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 use super::core14_data as data;
+use super::encoding::{build_encoding_map, BaseEncoding};
 
-/// One of the standard 14 fonts, with the widths that go with it.
+/// One of the standard 14 fonts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StandardFont {
     /// Courier, Helvetica or Times — glyphs addressed by Unicode code point, so any
     /// encoding the font dictionary selects can be applied first.
     Latin(&'static [u16; data::LATIN_CHARS.len()]),
-    /// Symbol or ZapfDingbats — glyphs addressed by code in the font's own built-in
-    /// encoding, which is what a font dictionary without `/Encoding` uses.
-    Symbolic(&'static [u16; 256]),
+    /// Symbol — glyphs addressed by code in its own built-in encoding.
+    Symbol,
+    /// ZapfDingbats — glyphs addressed by code in its own built-in encoding.
+    ZapfDingbats,
 }
 
 impl StandardFont {
@@ -31,17 +40,17 @@ impl StandardFont {
     /// A subset tag (`ABCDEF+`) is ignored. Anything else is `None`.
     pub(crate) fn from_base_font(base_font: &[u8]) -> Option<Self> {
         let name = std::str::from_utf8(base_font).ok()?;
-        let name = match name.split_once('+') {
+        let canonical = match name.split_once('+') {
             Some((tag, rest)) if tag.len() == 6 && tag.bytes().all(|b| b.is_ascii_uppercase()) => {
                 rest
             }
             _ => name,
         };
-        let canonical = match name {
-            "Symbol" => return Some(Self::Symbolic(&data::SYMBOL)),
-            "ZapfDingbats" => return Some(Self::Symbolic(&data::ZAPF_DINGBATS)),
-            other => other,
-        };
+        match canonical {
+            "Symbol" => return Some(Self::Symbol),
+            "ZapfDingbats" => return Some(Self::ZapfDingbats),
+            _ => {}
+        }
 
         let (family, style) = split_family(canonical)?;
         let lower = style.to_ascii_lowercase();
@@ -66,12 +75,13 @@ impl StandardFont {
 
     /// Advance widths for every byte code, in thousandths of text space.
     ///
-    /// `encoding` is the font's code → character map (its `/Encoding`, or the
-    /// standard encoding when it has none). It is ignored for Symbol and
+    /// `encoding` is the font's code → character map (its `/Encoding`, or
+    /// [`Self::builtin_encoding`] when it has none). It is ignored for Symbol and
     /// ZapfDingbats, whose codes index their own built-in encoding. A code with no
     /// glyph gets 0 — the text decoder drops the same code, so the run's extent
     /// and its text stay consistent.
     pub(crate) fn widths_by_code(&self, encoding: &HashMap<u8, char>) -> Vec<f32> {
+        let by_code = |widths: &[u16; 256]| widths.iter().map(|&w| f32::from(w)).collect();
         match self {
             Self::Latin(widths) => (0u8..=255)
                 .map(|code| {
@@ -81,9 +91,38 @@ impl StandardFont {
                         .map_or(0.0, |i| f32::from(widths[i]))
                 })
                 .collect(),
-            Self::Symbolic(widths) => widths.iter().map(|&w| f32::from(w)).collect(),
+            Self::Symbol => by_code(&data::SYMBOL),
+            Self::ZapfDingbats => by_code(&data::ZAPF_DINGBATS),
         }
     }
+
+    /// The code → character map the font uses when its dictionary has no
+    /// `/Encoding` (ISO 32000-1 §9.6.6): StandardEncoding for the Latin faces, and
+    /// each symbolic font's own encoding. Built once, shared by every font.
+    pub(crate) fn builtin_encoding(&self) -> &'static HashMap<u8, char> {
+        static STANDARD: OnceLock<HashMap<u8, char>> = OnceLock::new();
+        static SYMBOL: OnceLock<HashMap<u8, char>> = OnceLock::new();
+        static ZAPF_DINGBATS: OnceLock<HashMap<u8, char>> = OnceLock::new();
+        match self {
+            Self::Latin(_) => {
+                STANDARD.get_or_init(|| build_encoding_map(Some(BaseEncoding::Standard), &[]))
+            }
+            Self::Symbol => SYMBOL.get_or_init(|| from_unicode_table(&data::SYMBOL_UNICODE)),
+            Self::ZapfDingbats => {
+                ZAPF_DINGBATS.get_or_init(|| from_unicode_table(&data::ZAPF_DINGBATS_UNICODE))
+            }
+        }
+    }
+}
+
+/// A generated code → scalar-value table as a map, 0 meaning "no glyph".
+fn from_unicode_table(table: &[u32; 256]) -> HashMap<u8, char> {
+    (0u8..=255)
+        .filter_map(|code| match table[usize::from(code)] {
+            0 => None,
+            cp => Some((code, char::from_u32(cp)?)),
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,7 +159,6 @@ fn split_family(name: &str) -> Option<(Family, &str)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::encoding::{build_encoding_map, BaseEncoding};
 
     fn latin(name: &str) -> &'static [u16; data::LATIN_CHARS.len()] {
         match StandardFont::from_base_font(name.as_bytes()) {
@@ -226,6 +264,26 @@ mod tests {
         let widths = font.widths_by_code(&build_encoding_map(Some(BaseEncoding::WinAnsi), &[]));
         assert!(widths[0x20..0x7F].iter().all(|&w| w == 600.0));
         assert_eq!(widths[0x00], 0.0);
+    }
+
+    #[test]
+    fn built_in_encodings_name_the_glyph_the_font_draws() {
+        let symbol = StandardFont::from_base_font(b"Symbol")
+            .unwrap()
+            .builtin_encoding();
+        assert_eq!(symbol.get(&b'a'), Some(&'\u{03B1}')); // alpha
+        assert_eq!(symbol.get(&b'D'), Some(&'\u{0394}')); // Delta
+        let dingbats = StandardFont::from_base_font(b"ZapfDingbats")
+            .unwrap()
+            .builtin_encoding();
+        assert_eq!(dingbats.get(&b'4'), Some(&'\u{2714}')); // heavy check mark
+        assert_eq!(dingbats.get(&b'l'), Some(&'\u{25CF}')); // black circle
+        assert_eq!(dingbats.get(&0x00), None);
+        // The Latin faces use StandardEncoding: 0x27 is a right single quote there.
+        let helvetica = StandardFont::from_base_font(b"Helvetica")
+            .unwrap()
+            .builtin_encoding();
+        assert_eq!(helvetica.get(&0x27), Some(&'\u{2019}'));
     }
 
     #[test]
