@@ -115,6 +115,7 @@ impl PdfParser {
                                 // not duplicated here.
                                 let (resource, _unsupported) = convert_resource_xobject(
                                     xobj,
+                                    page.number,
                                     self.options.min_image_dimension,
                                 );
                                 if let Some(r) = resource {
@@ -258,9 +259,10 @@ pub(crate) fn parse_single_page(
 
         page.ocr_text_suppressed = analyzer.ocr_text_suppressed();
         page.suppressed_text_runs = analyzer.suppressed_text_runs();
-        let (text_ops, image_ops) = analyzer.page_op_counts();
-        page.text_op_count = text_ops;
-        page.image_op_count = image_ops;
+        let counts = analyzer.page_op_counts();
+        page.text_op_count = counts.text;
+        page.image_op_count = counts.image;
+        page.form_op_count = counts.form;
 
         // A content stream that could not be decoded is content this page lost. Lenient
         // keeps what the other streams hold; strict fails the page, exactly as it does
@@ -289,7 +291,7 @@ pub(crate) fn parse_single_page(
                 for xobj in xobjects {
                     let base_id = format!("page{}_{}", page_num, xobj.name);
                     let (resource, unsupported) =
-                        convert_resource_xobject(xobj, options.min_image_dimension);
+                        convert_resource_xobject(xobj, page_num, options.min_image_dimension);
                     if unsupported {
                         page.unsupported_image_count += 1;
                     }
@@ -402,10 +404,11 @@ fn reencode_flate_image_as_png(
 /// warning.
 fn convert_resource_xobject(
     xobj: RawXObject,
+    page: u32,
     min_image_dimension: u32,
 ) -> (Option<Resource>, bool) {
     let resource = match convert_xobject_pub(xobj) {
-        Some(r) => r,
+        Some(r) => r.with_page(page),
         None => return (None, false),
     };
     if !resource.is_image() {

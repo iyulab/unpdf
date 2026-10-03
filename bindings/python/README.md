@@ -108,14 +108,17 @@ Document-level extraction diagnostics: `char_count`, `word_count`,
 
 ### `get_page_stats(source: PdfSource, page_number: int, options: dict | None = None) -> dict`
 Per-page content-stream operator counts (1-indexed): `page`, `text_op_count`,
-`image_op_count`, `ocr_text_suppressed`, `suppressed_text_runs`,
-`undecodable_content_streams`. The last two are this page's share of the
-document-level counts of the same name.
+`image_op_count`, `form_op_count`, `ocr_text_suppressed`, `suppressed_text_runs`,
+`undecodable_content_streams`. Text and images a page paints through Form
+XObjects count as the page's own; `form_op_count` counts the form paints. The
+last two are this page's share of the document-level counts of the same name.
 
 ### `get_resource_ids(source: PdfSource, options: dict | None = None) -> list[str]`
 ### `get_resource_info(source: PdfSource, resource_id: str, options: dict | None = None) -> dict`
 ### `get_resource_data(source: PdfSource, resource_id: str, options: dict | None = None) -> bytes`
-List and retrieve extracted embedded resources (images). See
+List and retrieve extracted embedded resources (images). Resource info carries
+`page` — the page the resource was collected from (1-based); read it from there
+rather than from the id, whose format is not part of the contract. See
 [Embedded resources](#embedded-resources) — these only return anything once
 `extract_resources` is enabled via `options`.
 

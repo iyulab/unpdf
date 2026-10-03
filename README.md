@@ -955,7 +955,8 @@ Parsing from memory works the same way: `UnpdfDocument.ParseBytes(byte[])`.
 
 Note: `SectionCount` is the page count. `ResourceCount` counts embedded resources,
 which is not the same as the number of images — filter with `GetResourceInfo(id)` if
-you need images specifically.
+you need images specifically. Its `page` field is the page a resource was collected
+from (1-based, the numbering of the page markers).
 
 ### Detecting Scanned (Image-only) PDFs
 

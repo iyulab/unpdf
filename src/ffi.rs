@@ -815,14 +815,17 @@ unparser_shared::export_string_getter!(
 unparser_shared::export_string_getter!(
     /// Get per-page content-stream operator statistics as a JSON object.
     ///
-    /// Returns `{"page":N,"text_op_count":N,"image_op_count":N,"ocr_text_suppressed":bool,
-    /// "suppressed_text_runs":N,"undecodable_content_streams":N}`.
+    /// Returns `{"page":N,"text_op_count":N,"image_op_count":N,"form_op_count":N,
+    /// "ocr_text_suppressed":bool,"suppressed_text_runs":N,"undecodable_content_streams":N}`.
     ///
     /// - `suppressed_text_runs` / `undecodable_content_streams`: this page's share of the
     ///   document-level counts of the same name in `unpdf_get_extraction_quality`.
-    /// - `text_op_count`: number of text-showing operators (`Tj`/`TJ`/`'`/`"`).
-    /// - `image_op_count`: number of XObject `Do` invocations (mostly images;
-    ///   may include form XObjects).
+    /// - `text_op_count`: number of text-showing operators (`Tj`/`TJ`/`'`/`"`),
+    ///   including those inside the Form XObjects the page paints.
+    /// - `image_op_count`: number of image paints (`Do` of anything but a Form XObject),
+    ///   including those inside the forms the page paints.
+    /// - `form_op_count`: number of Form XObject paints. A form's content is part of the
+    ///   page and is already counted above; this says how the page was assembled.
     /// - Both `0` → genuinely blank page. `text_op_count == 0` with
     ///   `image_op_count > 0` → image-only (scanned) page, OCR required.
     /// - Note: a *searchable* scan (page image plus an invisible OCR text layer)
@@ -857,6 +860,7 @@ unparser_shared::export_string_getter!(
             "page": page.number,
             "text_op_count": page.text_op_count,
             "image_op_count": page.image_op_count,
+            "form_op_count": page.form_op_count,
             "ocr_text_suppressed": page.ocr_text_suppressed,
             "suppressed_text_runs": page.suppressed_text_runs,
             "undecodable_content_streams": page.undecodable_content_streams,
@@ -867,6 +871,11 @@ unparser_shared::export_string_getter!(
 
 unparser_shared::export_string_getter!(
     /// Get resource metadata as JSON (without binary data).
+    ///
+    /// Returns `{"id","type","filename","mime_type","size","width","height","page"}`.
+    /// `page` is the page the resource was collected from (1-based, the numbering of the
+    /// page markers in rendered output). Read the page from this field, not from the id:
+    /// the id's format is not part of the contract.
     ///
     /// # Safety
     ///
@@ -891,6 +900,7 @@ unparser_shared::export_string_getter!(
                     "size": resource.size(),
                     "width": resource.width,
                     "height": resource.height,
+                    "page": resource.page,
                 });
                 serde_json::to_string(&info).map_err(json_err)
             }

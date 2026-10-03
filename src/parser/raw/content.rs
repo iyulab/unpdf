@@ -88,17 +88,17 @@ pub fn parse_content_stream(data: &[u8]) -> Result<Vec<ContentOp>> {
                     // Inline image: skip until EI
                     i = skip_inline_image(data, i);
                     // Emit BI as an operator with no operands (stack should be empty)
-                    ops.push(ContentOp {
-                        operator: "BI".to_string(),
-                        operands: std::mem::take(&mut operand_stack),
-                    });
+                    ops.push(ContentOp::new(
+                        "BI".to_string(),
+                        std::mem::take(&mut operand_stack),
+                    ));
                 }
                 _ => {
                     // It's an operator
-                    ops.push(ContentOp {
-                        operator: token_str.to_string(),
-                        operands: std::mem::take(&mut operand_stack),
-                    });
+                    ops.push(ContentOp::new(
+                        token_str.to_string(),
+                        std::mem::take(&mut operand_stack),
+                    ));
                 }
             }
             continue;
@@ -108,10 +108,7 @@ pub fn parse_content_stream(data: &[u8]) -> Result<Vec<ContentOp>> {
         if data[i] == b'\'' || data[i] == b'"' {
             let op = (data[i] as char).to_string();
             i += 1;
-            ops.push(ContentOp {
-                operator: op,
-                operands: std::mem::take(&mut operand_stack),
-            });
+            ops.push(ContentOp::new(op, std::mem::take(&mut operand_stack)));
             continue;
         }
 

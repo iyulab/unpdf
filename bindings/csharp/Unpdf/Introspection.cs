@@ -165,11 +165,19 @@ public sealed class PageStats
     public uint TextOpCount { get; init; }
 
     /// <summary>
-    /// Number of XObject Do invocations on the page — mostly images, but form
-    /// XObjects may be included.
+    /// Number of image paints on the page (<c>Do</c> of anything but a Form XObject),
+    /// including those inside the forms the page paints.
     /// </summary>
     [JsonPropertyName("image_op_count")]
     public uint ImageOpCount { get; init; }
+
+    /// <summary>
+    /// Number of Form XObject paints on the page. A form's content is part of the page —
+    /// its text is in <see cref="TextOpCount"/>, its images in <see cref="ImageOpCount"/> —
+    /// so this says how the page was assembled, not what it shows.
+    /// </summary>
+    [JsonPropertyName("form_op_count")]
+    public uint FormOpCount { get; init; }
 
     /// <summary>Whether this page's unreadable OCR text layer was dropped.</summary>
     [JsonPropertyName("ocr_text_suppressed")]

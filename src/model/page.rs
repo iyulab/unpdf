@@ -54,11 +54,16 @@ pub struct Page {
     #[serde(default, skip_serializing_if = "is_zero")]
     pub text_op_count: u32,
 
-    /// 콘텐츠 스트림의 XObject `Do` 호출 수. 이미지가 대부분이지만 Form
-    /// XObject 도 포함될 수 있다(리소스 사전 조회 없이 집계하기 위함).
-    /// JSON에서는 0일 때 생략된다(부재 = 0).
+    /// Image paints: `Do` operators that paint an image (or anything that is not a Form
+    /// XObject), including those inside the forms the page paints. Omitted from JSON when 0.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub image_op_count: u32,
+
+    /// Form XObject paints: `Do` operators that paint a form. A form's content is part of
+    /// the page -- its text is counted in `text_op_count`, its images in `image_op_count` --
+    /// so this says how the page was assembled, not what it shows. Omitted from JSON when 0.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub form_op_count: u32,
 
     /// Image XObjects on this page recognized as images but not extractable in the
     /// current output format (unsupported color space or bit depth), so dropped.
@@ -85,6 +90,7 @@ impl Page {
             undecodable_content_streams: 0,
             text_op_count: 0,
             image_op_count: 0,
+            form_op_count: 0,
             unsupported_image_count: 0,
         }
     }

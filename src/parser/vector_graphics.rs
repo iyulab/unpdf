@@ -152,10 +152,10 @@ mod tests {
     use super::*;
 
     fn op(operator: &str, operands: &[f32]) -> ContentOp {
-        ContentOp {
-            operator: operator.to_string(),
-            operands: operands.iter().map(|n| PdfValue::Real(*n)).collect(),
-        }
+        ContentOp::new(
+            operator.to_string(),
+            operands.iter().map(|n| PdfValue::Real(*n)).collect(),
+        )
     }
 
     #[test]
@@ -277,10 +277,7 @@ mod tests {
     fn clip_only_path_emits_nothing() {
         let ops = vec![
             op("re", &[0.0, 0.0, 100.0, 100.0]),
-            ContentOp {
-                operator: "W".to_string(),
-                operands: vec![],
-            },
+            ContentOp::new("W".to_string(), vec![]),
             op("n", &[]),
         ];
         assert!(extract_lines(&ops).is_empty());
@@ -292,10 +289,7 @@ mod tests {
             op("m", &[0.0, 0.0]),
             op("l", &[10.0, 0.0]),
             op("l", &[10.0, 10.0]),
-            ContentOp {
-                operator: "h".to_string(),
-                operands: vec![],
-            },
+            ContentOp::new("h".to_string(), vec![]),
             op("S", &[]),
         ];
         let lines = extract_lines(&ops);

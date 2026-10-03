@@ -127,7 +127,7 @@ using var doc = UnpdfDocument.ParseFile(path, new ParseOptions
 
 foreach (var id in doc.GetResourceIds())
 {
-    var info = doc.GetResourceInfo(id);
+    using var info = doc.GetResourceInfo(id); // page, width, height, mime_type, ...
     var data = doc.GetResourceData(id);
     // ...
 }
@@ -197,7 +197,9 @@ if (quality.PagesIncomplete)
 
 ### `PageStats`
 
-`Page`, `TextOpCount`, `ImageOpCount`, `OcrTextSuppressed`.
+`Page`, `TextOpCount`, `ImageOpCount`, `FormOpCount`, `OcrTextSuppressed`,
+`SuppressedTextRuns`, `UndecodableContentStreams`. Text and images a page paints
+through Form XObjects count as the page's own; `FormOpCount` counts the form paints.
 
 ### `UnpdfException`
 

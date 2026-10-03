@@ -29,6 +29,11 @@ pub struct Resource {
 
     /// Bits per component (e.g., 8)
     pub bits_per_component: Option<u8>,
+
+    /// The page the resource was collected from (1-based, the same numbering as page
+    /// markers in rendered output). `None` for a resource that belongs to no page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page: Option<u32>,
 }
 
 impl Resource {
@@ -43,6 +48,7 @@ impl Resource {
             height: None,
             color_space: None,
             bits_per_component: None,
+            page: None,
         }
     }
 
@@ -71,6 +77,12 @@ impl Resource {
     /// Set color space.
     pub fn with_color_space(mut self, color_space: impl Into<String>) -> Self {
         self.color_space = Some(color_space.into());
+        self
+    }
+
+    /// Set the page the resource was collected from (1-based).
+    pub fn with_page(mut self, page: u32) -> Self {
+        self.page = Some(page);
         self
     }
 

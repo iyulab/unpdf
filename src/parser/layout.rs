@@ -6,7 +6,7 @@
 use std::cell::Cell;
 use std::collections::{BTreeMap, HashMap};
 
-use super::backend::{get_number_from_value, PdfBackend, PdfValue};
+use super::backend::{get_number_from_value, ContentOp, PdfBackend, PdfValue, ResourceScope};
 use crate::error::{Error, Result};
 
 /// A text span with position and style information.
@@ -363,6 +363,17 @@ impl TextBlock {
     }
 }
 
+/// How many of each kind of painting operator a page's content holds, forms interpreted.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PageOpCounts {
+    /// Text-showing operators (`Tj`, `TJ`, `'`, `"`).
+    pub text: u32,
+    /// `Do` of an image (or of anything that is not a form), including inside forms.
+    pub image: u32,
+    /// `Do` of a Form XObject.
+    pub form: u32,
+}
+
 /// Layout analyzer for extracting structured text from PDF pages.
 pub struct LayoutAnalyzer<'a> {
     backend: &'a dyn PdfBackend,
@@ -375,8 +386,11 @@ pub struct LayoutAnalyzer<'a> {
     /// 마지막으로 분석한 페이지의 텍스트 쇼잉 오퍼레이터(Tj/TJ/'/") 수.
     /// `parse_operations` 진입 시 리셋 — 같은 페이지가 재분석돼도 최종값이 유효.
     text_op_count: Cell<u32>,
-    /// 마지막으로 분석한 페이지의 XObject `Do` 호출 수.
+    /// 마지막으로 분석한 페이지의 이미지 XObject `Do` 호출 수 — Form XObject 안의 것 포함,
+    /// Form 자체를 그리는 `Do` 는 제외(그것은 `form_op_count`).
     image_op_count: Cell<u32>,
+    /// Form XObjects the page last analysed painted.
+    form_op_count: Cell<u32>,
     /// Text runs the font decoder discarded on the page last analysed.
     ///
     /// Reset on entry to `parse_operations`, like the operator counts above, so a
@@ -585,6 +599,7 @@ impl<'a> LayoutAnalyzer<'a> {
             ocr_text_suppressed: Cell::new(false),
             text_op_count: Cell::new(0),
             image_op_count: Cell::new(0),
+            form_op_count: Cell::new(0),
             suppressed_text_runs: Cell::new(0),
             undecodable_content_streams: Cell::new(0),
         }
@@ -616,11 +631,24 @@ impl<'a> LayoutAnalyzer<'a> {
         self.undecodable_content_streams.get()
     }
 
-    /// 마지막으로 분석한 페이지의 `(text_op_count, image_op_count)`.
-    /// 텍스트 쇼잉 오퍼레이터 수와 XObject `Do` 호출 수 — 스캔 페이지와
-    /// 빈 페이지를 가르는 판별자로 `parse_single_page` 가 Page 에 옮겨 적는다.
-    pub fn page_op_counts(&self) -> (u32, u32) {
-        (self.text_op_count.get(), self.image_op_count.get())
+    /// The operator counts of the page last analysed — what tells an image-only scanned
+    /// page apart from a blank one; `parse_single_page` copies them onto the `Page`.
+    pub fn page_op_counts(&self) -> PageOpCounts {
+        PageOpCounts {
+            text: self.text_op_count.get(),
+            image: self.image_op_count.get(),
+            form: self.form_op_count.get(),
+        }
+    }
+
+    /// The display names of the fonts the names in `scope` refer to.
+    fn font_names(&self, scope: ResourceScope) -> HashMap<Vec<u8>, FontInfo> {
+        self.backend
+            .page_fonts(scope)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|fi| (fi.name, FontInfo { name: fi.base_font }))
+            .collect()
     }
 
     /// Get mutable reference to font statistics (for external use).
@@ -673,23 +701,11 @@ impl<'a> LayoutAnalyzer<'a> {
             .get(&page_num)
             .ok_or(Error::PageOutOfRange(page_num, pages.len() as u32))?;
 
-        // Build font info map
-        let backend_fonts = self.backend.page_fonts(*page_id)?;
-        let mut fonts = HashMap::new();
-        for fi in &backend_fonts {
-            fonts.insert(
-                fi.name.clone(),
-                FontInfo {
-                    name: fi.base_font.clone(),
-                },
-            );
-        }
-
-        let content = self.backend.page_content_with_losses(*page_id)?;
+        let painted = super::form_xobject::page_operations(self.backend, *page_id)?;
         self.undecodable_content_streams
-            .set(content.undecodable_streams);
-        let content = content.data;
-        let (spans, signals, grids) = self.parse_operations(&content, &fonts, *page_id)?;
+            .set(painted.undecodable_streams);
+        self.form_op_count.set(painted.forms_painted);
+        let (spans, signals, grids) = self.parse_operations(&painted.ops, *page_id)?;
 
         if self.suppress_low_confidence_ocr && signals.is_ocr_layer_over_scan() {
             let text = spans
@@ -742,22 +758,24 @@ impl<'a> LayoutAnalyzer<'a> {
         Ok(blocks)
     }
 
-    /// Parse content stream operations into text spans.
+    /// Parse a page's operations (forms already interpreted in place) into text spans.
     ///
-    /// Delegates content decoding and text decoding to the backend,
-    /// keeping layout.rs free from concrete PDF library types.
+    /// Delegates text decoding to the backend, keeping layout.rs free from concrete PDF
+    /// library types.
     fn parse_operations(
         &self,
-        content: &[u8],
-        fonts: &HashMap<Vec<u8>, FontInfo>,
+        operations: &[ContentOp],
         page_id: super::backend::PageId,
     ) -> Result<(
         Vec<TextSpan>,
         PageTextLayerSignals,
         Vec<super::lattice::LatticeGrid>,
     )> {
-        let operations = self.backend.decode_content(content)?;
-        let ruling_lines = super::vector_graphics::extract_lines(&operations);
+        // Font names resolve per resource scope: the same `/F1` can be a different font
+        // inside a form than on the page.
+        let mut fonts: HashMap<Option<super::backend::ObjectId>, HashMap<Vec<u8>, FontInfo>> =
+            HashMap::new();
+        let ruling_lines = super::vector_graphics::extract_lines(operations);
         let lattice_grids =
             super::lattice::infer_grids(&ruling_lines, &super::lattice::LatticeConfig::default());
         log::debug!(
@@ -793,7 +811,7 @@ impl<'a> LayoutAnalyzer<'a> {
         let mut ctm: [f32; 6] = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
         let mut ctm_stack: Vec<[f32; 6]> = Vec::new();
 
-        for op in &operations {
+        for op in operations {
             // 페이지 판별용 오퍼레이터 통계 — 아래 본 match 의 가드 조건과
             // 무관하게 항상 집계한다 (`Do` arm 은 page_area 가드가 있음).
             match op.operator.as_str() {
@@ -854,6 +872,9 @@ impl<'a> LayoutAnalyzer<'a> {
                 "Tf" if op.operands.len() >= 2 => {
                     if let PdfValue::Name(font_name) = &op.operands[0] {
                         text_state.font_resource = font_name.clone();
+                        let fonts = fonts
+                            .entry(op.form)
+                            .or_insert_with(|| self.font_names(op.scope(page_id)));
                         text_state.font = match fonts.get(font_name.as_slice()) {
                             Some(info) => info.name.clone(),
                             None => String::from_utf8_lossy(font_name.as_slice()).to_string(),
@@ -942,7 +963,7 @@ impl<'a> LayoutAnalyzer<'a> {
                             PdfValue::Str(bytes) => {
                                 drawn = true;
                                 let decoded = self.backend.decode_text(
-                                    page_id,
+                                    op.scope(page_id),
                                     &text_state.font_resource,
                                     bytes,
                                 );
@@ -950,7 +971,11 @@ impl<'a> LayoutAnalyzer<'a> {
                                 text.push_str(&decoded.text);
                                 advance = advance.and_then(|sum| {
                                     self.backend
-                                        .glyph_advances(page_id, &text_state.font_resource, bytes)
+                                        .glyph_advances(
+                                            op.scope(page_id),
+                                            &text_state.font_resource,
+                                            bytes,
+                                        )
                                         .map(|glyphs| sum + text_state.advance_of(&glyphs))
                                 });
                             }

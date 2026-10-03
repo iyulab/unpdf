@@ -9,6 +9,7 @@ mod core14_data;
 mod dedup;
 pub(crate) mod encoding;
 pub(crate) mod font;
+mod form_xobject;
 pub(crate) mod glyph_metrics;
 mod lattice;
 mod layout;
@@ -27,7 +28,7 @@ mod vector_graphics;
 pub mod xycut;
 
 pub use layout::{
-    BlockType, Column, FontStatistics, LayoutAnalyzer, TextBlock, TextLine, TextSpan,
+    BlockType, Column, FontStatistics, LayoutAnalyzer, PageOpCounts, TextBlock, TextLine, TextSpan,
 };
 pub use options::{ErrorMode, ParseOptions};
 pub use pdf_parser::PdfParser;

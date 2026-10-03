@@ -530,6 +530,150 @@ pub fn form_pdf() -> Vec<u8> {
     assemble(objects)
 }
 
+/// The text [`form_xobject_text_pdf`] draws, all of it inside a Form XObject.
+pub const FORM_XOBJECT_TEXT: &str = "Hello from form xobject";
+
+/// One page whose content only paints a Form XObject (`q /Fm1 Do Q`); the text lives in the
+/// form, under the form's own `/Resources`. The page has no `/Font` of its own.
+pub fn form_xobject_text_pdf() -> Vec<u8> {
+    let page = b"q /Fm1 Do Q\n";
+    let form = format!("BT /F1 24 Tf 72 700 Td ({FORM_XOBJECT_TEXT}) Tj ET\n");
+    let objects: Vec<Vec<u8>> = vec![
+        b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+        b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]\
+          /Resources<</XObject<</Fm1 6 0 R>>>>/Contents 4 0 R>>"
+            .to_vec(),
+        stream_object(&format!("<</Length {}>>", page.len()), page),
+        HELVETICA.to_vec(),
+        stream_object(
+            &format!(
+                "<</Type/XObject/Subtype/Form/BBox[0 0 612 792]\
+                  /Resources<</Font<</F1 5 0 R>>>>/Length {}>>",
+                form.len()
+            ),
+            form.as_bytes(),
+        ),
+    ];
+    assemble(objects)
+}
+
+/// One page as a scanner often writes it: the page paints a Form XObject, and the form
+/// paints a page-sized JPEG. There is no text anywhere.
+pub fn form_wrapped_scan_pdf() -> Vec<u8> {
+    let page = b"q /Fm1 Do Q\n";
+    let form = b"q 595 0 0 842 0 0 cm /Im1 Do Q\n";
+    let objects: Vec<Vec<u8>> = vec![
+        b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+        b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]\
+          /Resources<</XObject<</Fm1 5 0 R>>>>/Contents 4 0 R>>"
+            .to_vec(),
+        stream_object(&format!("<</Length {}>>", page.len()), page),
+        stream_object(
+            &format!(
+                "<</Type/XObject/Subtype/Form/BBox[0 0 595 842]\
+                  /Resources<</XObject<</Im1 6 0 R>>>>/Length {}>>",
+                form.len()
+            ),
+            form,
+        ),
+        jpeg_image(),
+    ];
+    assemble(objects)
+}
+
+/// One page that paints `Page text` with its own `/F1` (plain Helvetica), then a Form XObject
+/// whose `/Resources` binds the **same name** `/F1` to a different font: Helvetica whose
+/// `/Differences` map code 65 (`A`) to `/Z`. The form shows `(AAA)`, so it reads `ZZZ` only
+/// when the form's names resolve in the form's own resources.
+pub fn form_with_shadowing_font_name_pdf() -> Vec<u8> {
+    let page = b"BT /F1 12 Tf 72 720 Td (Page text) Tj ET q /Fm1 Do Q\n";
+    let form = b"BT /F1 12 Tf 72 600 Td (AAA) Tj ET\n";
+    let objects: Vec<Vec<u8>> = vec![
+        b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+        b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]\
+          /Resources<</Font<</F1 5 0 R>>/XObject<</Fm1 6 0 R>>>>/Contents 4 0 R>>"
+            .to_vec(),
+        stream_object(&format!("<</Length {}>>", page.len()), page),
+        HELVETICA.to_vec(),
+        stream_object(
+            &format!(
+                "<</Type/XObject/Subtype/Form/BBox[0 0 595 842]\
+                  /Resources<</Font<</F1 7 0 R>>>>/Length {}>>",
+                form.len()
+            ),
+            form,
+        ),
+        b"<</Type/Font/Subtype/Type1/BaseFont/Helvetica\
+          /Encoding<</Type/Encoding/BaseEncoding/WinAnsiEncoding/Differences[65/Z]>>>>"
+            .to_vec(),
+    ];
+    assemble(objects)
+}
+
+/// One page whose text is split between the page and a Form XObject placed by its
+/// `/Matrix`. The form draws `Bottom line` at y 700 of form space, and its matrix moves it
+/// down by 600 to y 100 on the page; the page itself draws `Middle line` at y 400. The form
+/// is painted first, so reading order puts `Middle line` first only if the form's matrix
+/// is applied.
+pub fn form_with_matrix_pdf() -> Vec<u8> {
+    let page = b"q /Fm1 Do Q BT /F1 12 Tf 72 400 Td (Middle line) Tj ET\n";
+    let form = b"BT /F1 12 Tf 72 700 Td (Bottom line) Tj ET\n";
+    let objects: Vec<Vec<u8>> = vec![
+        b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+        b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]\
+          /Resources<</Font<</F1 5 0 R>>/XObject<</Fm1 6 0 R>>>>/Contents 4 0 R>>"
+            .to_vec(),
+        stream_object(&format!("<</Length {}>>", page.len()), page),
+        HELVETICA.to_vec(),
+        stream_object(
+            &format!(
+                "<</Type/XObject/Subtype/Form/BBox[0 0 595 842]/Matrix[1 0 0 1 0 -600]\
+                  /Resources<</Font<</F1 5 0 R>>>>/Length {}>>",
+                form.len()
+            ),
+            form,
+        ),
+    ];
+    assemble(objects)
+}
+
+/// One page whose Form XObject paints another form, which has no `/Resources` of its own and
+/// so takes its names from the page (ISO 32000-1 §8.10.1). Each level draws one line.
+pub fn nested_form_pdf() -> Vec<u8> {
+    let page = b"q /Fm1 Do Q\n";
+    let outer = b"BT /F1 12 Tf 72 700 Td (Outer form) Tj ET q /Fm2 Do Q\n";
+    let inner = b"BT /F1 12 Tf 72 650 Td (Inner form) Tj ET\n";
+    let objects: Vec<Vec<u8>> = vec![
+        b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+        b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]\
+          /Resources<</Font<</F1 5 0 R>>/XObject<</Fm1 6 0 R>>>>/Contents 4 0 R>>"
+            .to_vec(),
+        stream_object(&format!("<</Length {}>>", page.len()), page),
+        HELVETICA.to_vec(),
+        stream_object(
+            &format!(
+                "<</Type/XObject/Subtype/Form/BBox[0 0 595 842]\
+                  /Resources<</Font<</F1 5 0 R>>/XObject<</Fm2 7 0 R>>>>/Length {}>>",
+                outer.len()
+            ),
+            outer,
+        ),
+        stream_object(
+            &format!(
+                "<</Type/XObject/Subtype/Form/BBox[0 0 595 842]/Length {}>>",
+                inner.len()
+            ),
+            inner,
+        ),
+    ];
+    assemble(objects)
+}
+
 // Damaged documents. Deliberately **not** listed in `all_fixtures`, whose sweeps assert
 // properties every well-formed document must have.
 
@@ -573,6 +717,56 @@ pub fn partly_undecodable_content_pdf() -> Vec<u8> {
     assemble(objects)
 }
 
+/// One page whose Form XObject paints itself: its `/Resources` name it as `/Fm1`, and its
+/// content draws a line and then `/Fm1 Do`. A reader that follows the reference without a
+/// guard never returns.
+pub fn self_painting_form_pdf() -> Vec<u8> {
+    let page = b"q /Fm1 Do Q\n";
+    let form = b"BT /F1 12 Tf 72 700 Td (Drawn once) Tj ET q /Fm1 Do Q\n";
+    let objects: Vec<Vec<u8>> = vec![
+        b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+        b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]\
+          /Resources<</XObject<</Fm1 6 0 R>>>>/Contents 4 0 R>>"
+            .to_vec(),
+        stream_object(&format!("<</Length {}>>", page.len()), page),
+        HELVETICA.to_vec(),
+        stream_object(
+            &format!(
+                "<</Type/XObject/Subtype/Form/BBox[0 0 595 842]\
+                  /Resources<</Font<</F1 5 0 R>>/XObject<</Fm1 6 0 R>>>>/Length {}>>",
+                form.len()
+            ),
+            form,
+        ),
+    ];
+    assemble(objects)
+}
+
+/// One page that draws `Hello World` itself and then paints a Form XObject whose content
+/// stream cannot be decoded.
+pub fn undecodable_form_pdf() -> Vec<u8> {
+    let page = b"BT /F1 12 Tf 72 720 Td (Hello World) Tj ET q /Fm1 Do Q\n";
+    let objects: Vec<Vec<u8>> = vec![
+        b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+        b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]\
+          /Resources<</Font<</F1 5 0 R>>/XObject<</Fm1 6 0 R>>>>/Contents 4 0 R>>"
+            .to_vec(),
+        stream_object(&format!("<</Length {}>>", page.len()), page),
+        HELVETICA.to_vec(),
+        stream_object(
+            &format!(
+                "<</Type/XObject/Subtype/Form/BBox[0 0 595 842]/Filter/FlateDecode\
+                  /Resources<</Font<</F1 5 0 R>>>>/Length {}>>",
+                NOT_FLATE.len()
+            ),
+            NOT_FLATE,
+        ),
+    ];
+    assemble(objects)
+}
+
 /// Every single-document fixture in this module, by name, for properties that must hold on
 /// any well-formed document (the sweeps in `document_integrity_test` and `text_hygiene_test`).
 /// Listing a new fixture here enrolls it in those sweeps.
@@ -591,6 +785,14 @@ pub fn all_fixtures() -> Vec<(&'static str, Vec<u8>)> {
         ("text_with_inline_image_pdf", text_with_inline_image_pdf()),
         ("repeated_logo_pdf(3)", repeated_logo_pdf(3)),
         ("form_pdf", form_pdf()),
+        ("form_xobject_text_pdf", form_xobject_text_pdf()),
+        ("form_wrapped_scan_pdf", form_wrapped_scan_pdf()),
+        (
+            "form_with_shadowing_font_name_pdf",
+            form_with_shadowing_font_name_pdf(),
+        ),
+        ("form_with_matrix_pdf", form_with_matrix_pdf()),
+        ("nested_form_pdf", nested_form_pdf()),
     ]
 }
 

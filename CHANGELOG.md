@@ -1,5 +1,47 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **Breaking — resource names resolve per resource scope.** `PdfBackend::page_fonts`,
+  `decode_text` and `glyph_advances` take a `ResourceScope` (the page, plus the Form XObject
+  being interpreted, if any) instead of a `PageId`; a `PageId` converts with `.into()` or
+  `ResourceScope::page`. `ContentOp` gains a `form` field (build one with `ContentOp::new`),
+  and `LayoutAnalyzer::page_op_counts` returns a `PageOpCounts` struct instead of a tuple.
+  Inside a form the same name can mean a different font than on the page, so a page id
+  alone cannot say which font a run uses.
+- `image_op_count` (on `Page`, and in the page statistics of every binding) now counts image
+  paints only, including images painted inside forms. It used to count every `Do`, so a page
+  that paints its content through forms looked like an image-only page.
+
+### Added
+
+- `form_op_count` on `Page` and in the page statistics (C ABI `unpdf_page_stats`, C#
+  `PageStats.FormOpCount`, Python `get_page_stats`): how many Form XObjects the page paints.
+- `Resource::page` and a `page` field in resource info (`unpdf_get_resource_info`,
+  `GetResourceInfo`, `get_resource_info`): the page the resource was collected from, 1-based
+  like the page markers. Read the page from this field rather than from the resource id,
+  whose format is not part of the contract.
+- `PdfBackend::xobject`, which says what a `Do` paints in a given scope.
+
+### Fixed
+
+- **Content drawn through Form XObjects is extracted.** A page that paints its text inside a
+  form (`q /Fm1 Do Q`) read as empty, and since every `Do` counted as an image the document
+  was reported as a scan (`is_scan_pdf`). Forms are now interpreted where they are painted —
+  their `/Matrix` composed onto the CTM, their names resolved in their own `/Resources`
+  (falling back to the page's), nested forms followed, a form that paints itself drawn once.
+  The same applies to everything else that reads the page's operators: table ruling lines,
+  the page-covering-image signal and the scan heuristic. A form whose content stream cannot
+  be decoded counts towards `undecodable_content_streams`, so strict parsing fails the page.
+- Images inside Form XObjects are extracted as resources (a scanner often wraps the page image
+  in a form). Their ids name the form they were found in: `page1_Fm1_Im1`.
+- A page without `/Resources` of its own now lists the images of the resources it inherits
+  from the page tree, as its fonts already did.
+- The NuGet package, the PyPI package and the `unpdf-cli` crate now carry the license text
+  (`LICENSE`) next to the `MIT` license expression. Only the npm package had it.
+
 ## 0.23.0 — 2026-10-02
 
 ### Added

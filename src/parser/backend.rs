@@ -20,6 +20,44 @@ use super::sanitize::sanitize_extracted_text;
 /// Page identifier: (object number, generation number).
 pub type PageId = (u32, u16);
 
+/// An indirect object's identifier: (object number, generation number).
+pub type ObjectId = (u32, u16);
+
+/// Where the names a content stream uses (`/F1 Tf`, `/Im1 Do`) are looked up.
+///
+/// A page's own content resolves names in the page's `/Resources`. A Form XObject painted on
+/// the page is a content stream of its own and resolves them in the form's `/Resources`
+/// (ISO 32000-1 §8.10.1) -- the same name can mean a different font there. A form without
+/// `/Resources` takes the page's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ResourceScope {
+    /// The page being painted.
+    pub page: PageId,
+    /// The Form XObject whose content is being interpreted; `None` for the page's own content.
+    pub form: Option<ObjectId>,
+}
+
+impl ResourceScope {
+    /// The page's own content.
+    pub fn page(page: PageId) -> Self {
+        Self { page, form: None }
+    }
+
+    /// The content of `form`, painted on `page`.
+    pub fn form(page: PageId, form: ObjectId) -> Self {
+        Self {
+            page,
+            form: Some(form),
+        }
+    }
+}
+
+impl From<PageId> for ResourceScope {
+    fn from(page: PageId) -> Self {
+        Self::page(page)
+    }
+}
+
 /// Font information returned by the backend.
 #[derive(Debug, Clone)]
 pub struct BackendFontInfo {
@@ -45,6 +83,51 @@ pub enum PdfValue {
 pub struct ContentOp {
     pub operator: String,
     pub operands: Vec<PdfValue>,
+    /// The Form XObject whose content stream this operation comes from, once a page's
+    /// operations have had their forms expanded; `None` for the page's own content. Names
+    /// among the operands resolve in [`ResourceScope`] `{ page, form }`.
+    pub form: Option<ObjectId>,
+}
+
+impl ContentOp {
+    /// An operation from the page's own content.
+    pub fn new(operator: impl Into<String>, operands: Vec<PdfValue>) -> Self {
+        Self {
+            operator: operator.into(),
+            operands,
+            form: None,
+        }
+    }
+
+    /// The scope the operation's names resolve in, on `page`.
+    pub fn scope(&self, page: PageId) -> ResourceScope {
+        ResourceScope {
+            page,
+            form: self.form,
+        }
+    }
+}
+
+/// What a `Do` operator paints, resolved in its [`ResourceScope`].
+#[derive(Debug, Clone)]
+pub enum PaintedXObject {
+    /// A Form XObject: a content stream painted as part of the page.
+    Form(FormXObject),
+    /// An image XObject.
+    Image,
+    /// Anything else (a PostScript XObject, an unrecognised subtype).
+    Other,
+}
+
+/// A Form XObject, ready to be interpreted in place of the `Do` that paints it.
+#[derive(Debug, Clone)]
+pub struct FormXObject {
+    /// The form's object id -- its [`ResourceScope::form`].
+    pub id: ObjectId,
+    /// `/Matrix`: form space to the user space of the `Do` (identity when absent).
+    pub matrix: [f32; 6],
+    /// The decoded content stream, or `None` when it could not be decoded.
+    pub content: Option<Vec<u8>>,
 }
 
 /// Raw metadata from the PDF backend.
@@ -219,8 +302,8 @@ pub trait PdfBackend: Send + Sync {
     /// Return all pages as (page_number → PageId).
     fn pages(&self) -> BTreeMap<u32, PageId>;
 
-    /// Return font info for a given page.
-    fn page_fonts(&self, page: PageId) -> Result<Vec<BackendFontInfo>>;
+    /// Return the fonts the names in `scope` can refer to.
+    fn page_fonts(&self, scope: ResourceScope) -> Result<Vec<BackendFontInfo>>;
 
     /// Return the raw (decompressed) content stream bytes for a page.
     ///
@@ -241,8 +324,8 @@ pub trait PdfBackend: Send + Sync {
     /// Parse raw content stream bytes into a sequence of operations.
     fn decode_content(&self, data: &[u8]) -> Result<Vec<ContentOp>>;
 
-    /// Decode a text byte sequence using the font's encoding on the given page.
-    /// Falls back to simple decoding if the font or encoding is unavailable.
+    /// Decode a text byte sequence using the encoding of the font `font_name` names in
+    /// `scope`. Falls back to simple decoding if the font or encoding is unavailable.
     ///
     /// Implementations must return text: no C0/C1 control characters other than
     /// `\n`, `\r` and `\t`. PDF string literals may legally contain control bytes,
@@ -255,9 +338,10 @@ pub trait PdfBackend: Send + Sync {
     /// [`DecodedText::suppressed`] rather than returning a bare empty string:
     /// "this run was discarded" and "this run held no text" look identical to the
     /// caller otherwise, and the difference is the whole of the caller's diagnostic.
-    fn decode_text(&self, page: PageId, font_name: &[u8], bytes: &[u8]) -> DecodedText;
+    fn decode_text(&self, scope: ResourceScope, font_name: &[u8], bytes: &[u8]) -> DecodedText;
 
-    /// The advance of each code in `bytes`, as the font on the given page declares it.
+    /// The advance of each code in `bytes`, as the font `font_name` names in `scope`
+    /// declares it.
     ///
     /// `None` when the font's widths are not available to this backend (no `/Widths`,
     /// a CMap other than Identity, a font it cannot resolve): the caller then has no
@@ -265,7 +349,7 @@ pub trait PdfBackend: Send + Sync {
     /// `None` so a backend that cannot read widths never claims a measurement.
     fn glyph_advances(
         &self,
-        _page: PageId,
+        _scope: ResourceScope,
         _font_name: &[u8],
         _bytes: &[u8],
     ) -> Option<Vec<GlyphAdvance>> {
@@ -283,8 +367,17 @@ pub trait PdfBackend: Send + Sync {
     /// Implementations must handle cycle detection and depth limits.
     fn outline(&self) -> Result<Vec<RawOutlineItem>>;
 
-    /// Return XObjects (images) from a page.
+    /// Return the image XObjects a page's resources hold, including those of the Form
+    /// XObjects it paints. An image reached through a form is named `{form}_{image}`.
     fn page_xobjects(&self, page: PageId) -> Result<Vec<RawXObject>>;
+
+    /// What the XObject `name` is, in `scope`. `None` when the name does not resolve.
+    ///
+    /// Defaults to `None` -- every `Do` stays opaque -- so a backend that cannot read
+    /// XObjects never claims to know what one paints.
+    fn xobject(&self, _scope: ResourceScope, _name: &[u8]) -> Option<PaintedXObject> {
+        None
+    }
 
     /// Extract AcroForm fields from the document.
     fn acroform_fields(&self) -> Vec<FormField> {
@@ -394,8 +487,8 @@ impl PdfBackend for RawBackend {
         }
     }
 
-    fn page_fonts(&self, page: PageId) -> Result<Vec<BackendFontInfo>> {
-        self.font_resolver.page_fonts(&self.doc, page)
+    fn page_fonts(&self, scope: ResourceScope) -> Result<Vec<BackendFontInfo>> {
+        Ok(self.font_resolver.page_fonts(&self.doc, scope))
     }
 
     fn page_content(&self, page_id: PageId) -> Result<Vec<u8>> {
@@ -491,13 +584,13 @@ impl PdfBackend for RawBackend {
         raw_content::parse_content_stream(data)
     }
 
-    fn decode_text(&self, page: PageId, font_name: &[u8], bytes: &[u8]) -> DecodedText {
+    fn decode_text(&self, scope: ResourceScope, font_name: &[u8], bytes: &[u8]) -> DecodedText {
         // Sanitising here — at the outermost return, not inside the decode paths —
         // is deliberate: the inner resolver judges suspect decodes by control-character
         // density, and that evidence must survive until after it has decided.
         let decoded = self
             .font_resolver
-            .decode_text(&self.doc, page, font_name, bytes);
+            .decode_text(&self.doc, scope, font_name, bytes);
         DecodedText {
             text: sanitize_extracted_text(decoded.text),
             suppressed: decoded.suppressed,
@@ -506,12 +599,12 @@ impl PdfBackend for RawBackend {
 
     fn glyph_advances(
         &self,
-        page: PageId,
+        scope: ResourceScope,
         font_name: &[u8],
         bytes: &[u8],
     ) -> Option<Vec<GlyphAdvance>> {
         self.font_resolver
-            .glyph_advances(&self.doc, page, font_name, bytes)
+            .glyph_advances(&self.doc, scope, font_name, bytes)
     }
 
     fn metadata(&self) -> PdfMetadataRaw {
@@ -580,95 +673,206 @@ impl PdfBackend for RawBackend {
     }
 
     fn page_xobjects(&self, page: PageId) -> Result<Vec<RawXObject>> {
-        let mut xobjects = Vec::new();
-
-        let page_dict = self
-            .doc
+        // Fail on a page that is not there, as before; a page without resources has no images.
+        self.doc
             .get_dict(page)
             .map_err(|e| Error::PdfParse(e.to_string()))?;
 
-        let resources = match raw_dict_get(page_dict, b"Resources") {
-            Some(r) => r,
-            None => return Ok(xobjects),
-        };
-
-        let res_dict = raw_resolve_dict(&self.doc, resources);
-        let res_dict = match res_dict {
-            Some(d) => d,
-            None => return Ok(xobjects),
-        };
-
-        let xobj_entry = match raw_dict_get(res_dict, b"XObject") {
-            Some(x) => x,
-            None => return Ok(xobjects),
-        };
-
-        let xobj_dict = raw_resolve_dict(&self.doc, xobj_entry);
-        let xobj_dict = match xobj_dict {
-            Some(d) => d,
-            None => return Ok(xobjects),
-        };
-
-        for (name, obj) in xobj_dict {
-            if let Some((n, g)) = obj.as_reference() {
-                if let Some(raw_obj) = self.doc.get_object((n, g)) {
-                    let resolved = self.doc.resolve(raw_obj);
-                    if let Some(stream) = resolved.as_stream() {
-                        let dict = &stream.dict;
-
-                        let subtype = raw_dict_get(dict, b"Subtype")
-                            .and_then(|s| s.as_name())
-                            .map(|n| String::from_utf8_lossy(n).to_string())
-                            .unwrap_or_default();
-
-                        if subtype != "Image" {
-                            continue;
-                        }
-
-                        let filter = raw_dict_get(dict, b"Filter")
-                            .and_then(|f| f.as_name())
-                            .map(|n| String::from_utf8_lossy(n).to_string());
-
-                        let data = match filter.as_deref() {
-                            Some("DCTDecode") | Some("JPXDecode") => stream.raw_data.clone(),
-                            _ => raw_stream::decompress(stream)
-                                .unwrap_or_else(|_| stream.raw_data.clone()),
-                        };
-
-                        let width = raw_dict_get(dict, b"Width")
-                            .and_then(|w| w.as_i64())
-                            .map(|w| w as u32);
-                        let height = raw_dict_get(dict, b"Height")
-                            .and_then(|h| h.as_i64())
-                            .map(|h| h as u32);
-                        let bits = raw_dict_get(dict, b"BitsPerComponent")
-                            .and_then(|b| b.as_i64())
-                            .map(|b| b as u8);
-
-                        let color_space = raw_dict_get(dict, b"ColorSpace")
-                            .and_then(|cs| resolve_color_space_name(&self.doc, cs));
-
-                        xobjects.push(RawXObject {
-                            name: String::from_utf8_lossy(name).to_string(),
-                            subtype,
-                            data,
-                            filter,
-                            width,
-                            height,
-                            bits_per_component: bits,
-                            color_space,
-                        });
-                    }
-                }
-            }
-        }
-
+        let mut xobjects = Vec::new();
+        let mut walk = XObjectWalk::default();
+        self.collect_images(ResourceScope::page(page), "", 0, &mut walk, &mut xobjects);
         Ok(xobjects)
+    }
+
+    fn xobject(&self, scope: ResourceScope, name: &[u8]) -> Option<PaintedXObject> {
+        let id = resource_chain(&self.doc, scope)
+            .into_iter()
+            .find_map(|res| named_resource(&self.doc, res, b"XObject", name))?;
+        let stream = self.doc.resolve(self.doc.get_object(id)?).as_stream()?;
+        let subtype = raw_dict_get(&stream.dict, b"Subtype").and_then(|s| s.as_name());
+        Some(match subtype {
+            Some(b"Form") => PaintedXObject::Form(FormXObject {
+                id,
+                matrix: raw_dict_get(&stream.dict, b"Matrix")
+                    .and_then(|m| matrix_from(&self.doc, m))
+                    .unwrap_or(IDENTITY_MATRIX),
+                content: raw_stream::decompress(stream).ok(),
+            }),
+            Some(b"Image") => PaintedXObject::Image,
+            _ => PaintedXObject::Other,
+        })
     }
 
     fn acroform_fields(&self) -> Vec<FormField> {
         self.extract_acroform_fields()
     }
+}
+
+/// What [`RawBackend::collect_images`] has already seen on one page.
+#[derive(Default)]
+struct XObjectWalk {
+    /// Forms already descended into -- a form that paints itself (or an ancestor) is entered once.
+    forms: std::collections::HashSet<ObjectId>,
+    /// Images already listed -- one image reached by several paths is listed once.
+    images: std::collections::HashSet<ObjectId>,
+}
+
+/// Forms nested deeper than this are not descended into. Real documents nest a handful of
+/// levels; the cap bounds a hostile chain of distinct forms.
+pub(crate) const MAX_FORM_DEPTH: usize = 32;
+
+impl RawBackend {
+    /// List the images in `scope`'s XObject resources, descending into its forms.
+    fn collect_images(
+        &self,
+        scope: ResourceScope,
+        prefix: &str,
+        depth: usize,
+        walk: &mut XObjectWalk,
+        out: &mut Vec<RawXObject>,
+    ) {
+        // Listing (unlike looking up one name) uses only the innermost resources: a form's
+        // resources are its own, and a page's inherited ones are the page's.
+        let Some(res) = resource_chain(&self.doc, scope).into_iter().next() else {
+            return;
+        };
+        let Some(xobj_dict) =
+            raw_dict_get(res, b"XObject").and_then(|x| raw_resolve_dict(&self.doc, x))
+        else {
+            return;
+        };
+
+        for (name, obj) in xobj_dict {
+            let Some(id) = obj.as_reference() else {
+                continue;
+            };
+            let Some(raw_obj) = self.doc.get_object(id) else {
+                continue;
+            };
+            let Some(stream) = self.doc.resolve(raw_obj).as_stream() else {
+                continue;
+            };
+            let dict = &stream.dict;
+            let label = format!("{prefix}{}", String::from_utf8_lossy(name));
+
+            let subtype = raw_dict_get(dict, b"Subtype")
+                .and_then(|s| s.as_name())
+                .map(|n| String::from_utf8_lossy(n).to_string())
+                .unwrap_or_default();
+
+            if subtype == "Form" {
+                if depth < MAX_FORM_DEPTH && walk.forms.insert(id) {
+                    let inner = ResourceScope::form(scope.page, id);
+                    self.collect_images(inner, &format!("{label}_"), depth + 1, walk, out);
+                }
+                continue;
+            }
+            if subtype != "Image" || !walk.images.insert(id) {
+                continue;
+            }
+
+            let filter = raw_dict_get(dict, b"Filter")
+                .and_then(|f| f.as_name())
+                .map(|n| String::from_utf8_lossy(n).to_string());
+
+            let data = match filter.as_deref() {
+                Some("DCTDecode") | Some("JPXDecode") => stream.raw_data.clone(),
+                _ => raw_stream::decompress(stream).unwrap_or_else(|_| stream.raw_data.clone()),
+            };
+
+            let width = raw_dict_get(dict, b"Width")
+                .and_then(|w| w.as_i64())
+                .map(|w| w as u32);
+            let height = raw_dict_get(dict, b"Height")
+                .and_then(|h| h.as_i64())
+                .map(|h| h as u32);
+            let bits = raw_dict_get(dict, b"BitsPerComponent")
+                .and_then(|b| b.as_i64())
+                .map(|b| b as u8);
+
+            let color_space = raw_dict_get(dict, b"ColorSpace")
+                .and_then(|cs| resolve_color_space_name(&self.doc, cs));
+
+            out.push(RawXObject {
+                name: label,
+                subtype,
+                data,
+                filter,
+                width,
+                height,
+                bits_per_component: bits,
+                color_space,
+            });
+        }
+    }
+}
+
+const IDENTITY_MATRIX: [f32; 6] = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+
+/// A six-number matrix array (`/Matrix [a b c d e f]`).
+fn matrix_from(doc: &RawDocument, obj: &RawPdfObject) -> Option<[f32; 6]> {
+    let RawPdfObject::Array(items) = doc.resolve(obj) else {
+        return None;
+    };
+    if items.len() != 6 {
+        return None;
+    }
+    let mut m = [0.0f32; 6];
+    for (slot, item) in m.iter_mut().zip(items) {
+        *slot = match doc.resolve(item) {
+            RawPdfObject::Integer(i) => *i as f32,
+            RawPdfObject::Real(r) => *r as f32,
+            _ => return None,
+        };
+    }
+    Some(m)
+}
+
+/// The resource dictionaries the names in `scope` resolve through, innermost first: the
+/// form's own `/Resources`, then the page's, then each Pages-tree ancestor's -- resources a
+/// page inherits (ISO 32000-1 §7.7.3.4).
+///
+/// Looking a name up walks the whole chain, so a form or page that omits a resource its
+/// content uses still finds it further out -- the lenient reading every viewer applies.
+fn resource_chain(doc: &RawDocument, scope: ResourceScope) -> Vec<&RawPdfDict> {
+    const MAX_TREE_DEPTH: usize = 64;
+    let resources_of = |id: ObjectId| {
+        let dict = doc.get_dict(id).ok()?;
+        raw_dict_get(dict, b"Resources").and_then(|r| raw_resolve_dict(doc, r))
+    };
+
+    let mut chain = Vec::new();
+    if let Some(res) = scope.form.and_then(resources_of) {
+        chain.push(res);
+    }
+    let mut node = Some(scope.page);
+    let mut seen = std::collections::HashSet::new();
+    while let Some(id) = node {
+        if seen.len() >= MAX_TREE_DEPTH || !seen.insert(id) {
+            break;
+        }
+        if let Some(res) = resources_of(id) {
+            chain.push(res);
+        }
+        node = doc
+            .get_dict(id)
+            .ok()
+            .and_then(|d| raw_dict_get(d, b"Parent"))
+            .and_then(|p| p.as_reference());
+    }
+    chain
+}
+
+/// The object `name` refers to in the `category` sub-dictionary (`/Font`, `/XObject`) of
+/// `resources`.
+fn named_resource(
+    doc: &RawDocument,
+    resources: &RawPdfDict,
+    category: &[u8],
+    name: &[u8],
+) -> Option<ObjectId> {
+    let sub = raw_resolve_dict(doc, raw_dict_get(resources, category)?)?;
+    raw_dict_get(sub, name)?.as_reference()
 }
 
 /// Resolve an image XObject's `/ColorSpace` entry to a name.
@@ -1045,11 +1249,11 @@ impl RawFontResolver {
     fn glyph_advances(
         &self,
         doc: &RawDocument,
-        page: PageId,
+        scope: ResourceScope,
         font_name: &[u8],
         bytes: &[u8],
     ) -> Option<Vec<GlyphAdvance>> {
-        let fid = self.find_font_dict(doc, page, font_name)?;
+        let fid = self.find_font_dict(doc, scope, font_name)?;
         {
             let cache = self.metrics_cache.read().unwrap();
             if let Some(cached) = cache.get(&fid) {
@@ -1173,11 +1377,11 @@ impl RawFontResolver {
     fn decode_text(
         &self,
         doc: &RawDocument,
-        page: PageId,
+        scope: ResourceScope,
         font_name: &[u8],
         bytes: &[u8],
     ) -> DecodedText {
-        let font_obj_id = self.find_font_dict(doc, page, font_name);
+        let font_obj_id = self.find_font_dict(doc, scope, font_name);
         let mut is_identity_h = false;
         let mut is_composite = false;
 
@@ -1273,70 +1477,16 @@ impl RawFontResolver {
         DecodedText::text(simple)
     }
 
-    /// Find the font dictionary object ID for a given font name on a page.
-    fn find_font_dict(&self, doc: &RawDocument, page: PageId, font_name: &[u8]) -> Option<PageId> {
-        // Try the page's own Resources
-        if let Some(fid) = self.find_font_in_resources(doc, page, font_name) {
-            return Some(fid);
-        }
-
-        // Walk up the Pages tree for inherited Resources
-        if let Ok(page_dict) = doc.get_dict(page) {
-            if let Some(parent) = raw_dict_get(page_dict, b"Parent") {
-                if let Some(parent_id) = parent.as_reference() {
-                    return self.find_font_in_ancestor(doc, parent_id, font_name);
-                }
-            }
-        }
-
-        None
-    }
-
-    fn find_font_in_resources(
+    /// The font dictionary `font_name` refers to in `scope`.
+    fn find_font_dict(
         &self,
         doc: &RawDocument,
-        obj_id: PageId,
+        scope: ResourceScope,
         font_name: &[u8],
-    ) -> Option<PageId> {
-        let dict = doc.get_dict(obj_id).ok()?;
-        let resources = raw_dict_get(dict, b"Resources")?;
-        self.find_font_in_resource_obj(doc, resources, font_name)
-    }
-
-    fn find_font_in_resource_obj(
-        &self,
-        doc: &RawDocument,
-        resources: &RawPdfObject,
-        font_name: &[u8],
-    ) -> Option<PageId> {
-        let res_dict = raw_resolve_dict(doc, resources)?;
-        let font_obj = raw_dict_get(res_dict, b"Font")?;
-        let font_dict = raw_resolve_dict(doc, font_obj)?;
-        let font_entry = raw_dict_get(font_dict, font_name)?;
-        font_entry.as_reference()
-    }
-
-    fn find_font_in_ancestor(
-        &self,
-        doc: &RawDocument,
-        ancestor_id: PageId,
-        font_name: &[u8],
-    ) -> Option<PageId> {
-        let dict = doc.get_dict(ancestor_id).ok()?;
-
-        if let Some(resources) = raw_dict_get(dict, b"Resources") {
-            if let Some(fid) = self.find_font_in_resource_obj(doc, resources, font_name) {
-                return Some(fid);
-            }
-        }
-
-        if let Some(parent) = raw_dict_get(dict, b"Parent") {
-            if let Some(parent_id) = parent.as_reference() {
-                return self.find_font_in_ancestor(doc, parent_id, font_name);
-            }
-        }
-
-        None
+    ) -> Option<ObjectId> {
+        resource_chain(doc, scope)
+            .into_iter()
+            .find_map(|res| named_resource(doc, res, b"Font", font_name))
     }
 
     /// Get or parse the ToUnicode CMap for a font.
@@ -1646,92 +1796,32 @@ impl RawFontResolver {
         result
     }
 
-    /// Collect font info for a page (with inherited resources fallback).
-    fn page_fonts(&self, doc: &RawDocument, page: PageId) -> Result<Vec<BackendFontInfo>> {
-        if let Some(fonts) = self.collect_fonts_from_page(doc, page) {
-            if !fonts.is_empty() {
-                return Ok(fonts);
-            }
-        }
-
-        // Try inherited resources
-        if let Ok(page_dict) = doc.get_dict(page) {
-            if let Some(parent) = raw_dict_get(page_dict, b"Parent") {
-                if let Some(parent_id) = parent.as_reference() {
-                    if let Some(fonts) = self.collect_fonts_from_ancestor(doc, parent_id) {
-                        return Ok(fonts);
-                    }
-                }
-            }
-        }
-
-        Ok(Vec::new())
-    }
-
-    fn collect_fonts_from_page(
-        &self,
-        doc: &RawDocument,
-        page: PageId,
-    ) -> Option<Vec<BackendFontInfo>> {
-        let dict = doc.get_dict(page).ok()?;
-        let resources = raw_dict_get(dict, b"Resources")?;
-        self.collect_fonts_from_resource_obj(doc, resources)
-    }
-
-    fn collect_fonts_from_ancestor(
-        &self,
-        doc: &RawDocument,
-        ancestor_id: PageId,
-    ) -> Option<Vec<BackendFontInfo>> {
-        let dict = doc.get_dict(ancestor_id).ok()?;
-
-        if let Some(resources) = raw_dict_get(dict, b"Resources") {
-            if let Some(fonts) = self.collect_fonts_from_resource_obj(doc, resources) {
-                if !fonts.is_empty() {
-                    return Some(fonts);
-                }
-            }
-        }
-
-        if let Some(parent) = raw_dict_get(dict, b"Parent") {
-            if let Some(parent_id) = parent.as_reference() {
-                return self.collect_fonts_from_ancestor(doc, parent_id);
-            }
-        }
-
-        None
-    }
-
-    fn collect_fonts_from_resource_obj(
-        &self,
-        doc: &RawDocument,
-        resources: &RawPdfObject,
-    ) -> Option<Vec<BackendFontInfo>> {
-        let res_dict = raw_resolve_dict(doc, resources)?;
-        let font_obj = raw_dict_get(res_dict, b"Font")?;
-        let font_dict = raw_resolve_dict(doc, font_obj)?;
-
-        let mut result = Vec::new();
-        for (name, val) in font_dict {
-            let font_id = match val.as_reference() {
-                Some(r) => r,
-                None => continue,
+    /// The fonts the names in `scope` can refer to -- an inner name hides an outer one.
+    fn page_fonts(&self, doc: &RawDocument, scope: ResourceScope) -> Vec<BackendFontInfo> {
+        let mut result: Vec<BackendFontInfo> = Vec::new();
+        for res in resource_chain(doc, scope) {
+            let Some(font_dict) = raw_dict_get(res, b"Font").and_then(|f| raw_resolve_dict(doc, f))
+            else {
+                continue;
             };
-            let fd = match doc.get_dict(font_id) {
-                Ok(d) => d,
-                Err(_) => continue,
-            };
-            let base_font = raw_dict_get(fd, b"BaseFont")
-                .and_then(|o| o.as_name())
-                .map(|n| String::from_utf8_lossy(n).to_string())
-                .unwrap_or_else(|| "Unknown".to_string());
-            result.push(BackendFontInfo {
-                name: name.clone(),
-                base_font,
-            });
+            for (name, val) in font_dict {
+                if result.iter().any(|f| &f.name == name) {
+                    continue;
+                }
+                let Some(fd) = val.as_reference().and_then(|id| doc.get_dict(id).ok()) else {
+                    continue;
+                };
+                let base_font = raw_dict_get(fd, b"BaseFont")
+                    .and_then(|o| o.as_name())
+                    .map(|n| String::from_utf8_lossy(n).to_string())
+                    .unwrap_or_else(|| "Unknown".to_string());
+                result.push(BackendFontInfo {
+                    name: name.clone(),
+                    base_font,
+                });
+            }
         }
-
-        Some(result)
+        result
     }
 }
 
@@ -2105,5 +2195,31 @@ mod raw_backend_tests {
     fn page_dimensions_come_from_the_media_box() {
         let raw = backend();
         assert_eq!(raw.page_dimensions(raw.pages()[&1]), (595.0, 842.0));
+    }
+
+    /// A page without `/Resources` inherits its parent's (ISO 32000-1 §7.7.3.4) -- for its
+    /// images as much as for its fonts, which were already looked up that way.
+    #[test]
+    fn a_page_lists_the_images_of_resources_it_inherits() {
+        use crate::parser::test_pdf::{pdf, stream};
+        let bytes = pdf(
+            vec![
+                b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+                b"<</Type/Pages/Kids[3 0 R]/Count 1/Resources<</XObject<</Im0 4 0 R>>>>>>".to_vec(),
+                b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]>>".to_vec(),
+                stream(
+                    "<</Type/XObject/Subtype/Image/Width 1/Height 1/ColorSpace/DeviceGray\
+                      /BitsPerComponent 8/Length 1>>",
+                    &[0x80],
+                ),
+            ],
+            1,
+        );
+        let raw = RawBackend::load_bytes(&bytes).unwrap();
+        let images = raw.page_xobjects(raw.pages()[&1]).unwrap();
+        assert_eq!(
+            images.iter().map(|i| i.name.as_str()).collect::<Vec<_>>(),
+            ["Im0"]
+        );
     }
 }

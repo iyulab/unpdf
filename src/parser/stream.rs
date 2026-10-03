@@ -223,13 +223,10 @@ fn detect_scan_pdf(
         let Some(&page_id) = page_map.get(&page_num) else {
             continue;
         };
-        let Ok(content) = backend.page_content(page_id) else {
+        let Ok(painted) = super::form_xobject::page_operations(backend, page_id) else {
             continue;
         };
-        let Ok(ops) = backend.decode_content(&content) else {
-            continue;
-        };
-        for op in &ops {
+        for op in &painted.ops {
             match op.operator.as_str() {
                 "Tj" | "TJ" | "'" | "\"" => return false, // Text found — not a scan PDF
                 "Do" => image_ops += 1,

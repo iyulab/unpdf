@@ -553,6 +553,12 @@ public class UnpdfDocument : IDisposable
     /// <summary>
     /// Get metadata for a resource.
     /// </summary>
+    /// <remarks>
+    /// The JSON carries <c>id</c>, <c>type</c>, <c>filename</c>, <c>mime_type</c>,
+    /// <c>size</c>, <c>width</c>, <c>height</c> and <c>page</c> — the page the resource
+    /// was collected from (1-based, the numbering of the page markers). Read the page from
+    /// that field, not from the id: the id's format is not part of the contract.
+    /// </remarks>
     /// <param name="resourceId">The resource ID</param>
     /// <returns>Resource metadata as JSON, or null if not found</returns>
     public JsonDocument? GetResourceInfo(string resourceId)

@@ -379,8 +379,10 @@ def get_page_stats(
 
     Returns:
         Dictionary with ``page``, ``text_op_count``, ``image_op_count``,
-        ``ocr_text_suppressed``, ``suppressed_text_runs``,
-        ``undecodable_content_streams``. The last two are this page's share of the
+        ``form_op_count``, ``ocr_text_suppressed``, ``suppressed_text_runs``,
+        ``undecodable_content_streams``. Text and images inside the Form XObjects
+        the page paints are counted in ``text_op_count`` / ``image_op_count``;
+        ``form_op_count`` counts the form paints themselves. The last two are this page's share of the
         document-level totals of the same name reported by
         :func:`get_extraction_quality` — text runs the font decoder could not read
         and discarded, and content streams that could not be decoded.
@@ -451,7 +453,9 @@ def get_resource_info(
 
     Returns:
         Dictionary with ``id``, ``type``, ``filename``, ``mime_type``, ``size``,
-        ``width``, ``height``.
+        ``width``, ``height``, ``page`` — the page the resource was collected from
+        (1-based, the numbering of the page markers). Read the page from this
+        field, not from the id: the id's format is not part of the contract.
 
     Raises:
         UnpdfError: If parsing fails or ``resource_id`` is not found

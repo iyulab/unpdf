@@ -48,6 +48,29 @@ public class IntrospectionTests
     }
 
     [Fact]
+    public void GetPageStats_FormDrawnPdf_CountsTheFormsTextAndNotAnImage()
+    {
+        using var doc = UnpdfDocument.ParseBytes(PdfFixtures.FormXObjectTextPdf());
+        var stats = doc.GetPageStats(1);
+        Assert.Equal(1u, stats.TextOpCount);
+        Assert.Equal(0u, stats.ImageOpCount);
+        Assert.Equal(1u, stats.FormOpCount);
+        Assert.Contains("Hello from form xobject", doc.PlainText());
+        Assert.False(doc.GetExtractionQuality().IsScanPdf);
+    }
+
+    [Fact]
+    public void GetResourceInfo_ReportsThePageTheResourceCameFrom()
+    {
+        using var doc = UnpdfDocument.ParseBytes(
+            PdfFixtures.JpegPdf(100, 100), new ParseOptions { ExtractResources = true });
+        var id = Assert.Single(doc.GetResourceIds());
+        using var info = doc.GetResourceInfo(id);
+        Assert.NotNull(info);
+        Assert.Equal(1, info!.RootElement.GetProperty("page").GetInt32());
+    }
+
+    [Fact]
     public void GetPageStats_OutOfRange_Throws()
     {
         using var doc = UnpdfDocument.ParseBytes(PdfFixtures.TextPdf());
@@ -136,6 +159,29 @@ internal static class PdfFixtures
     }
 
     /// <summary>One page drawn as a single full-page image, no text operators.</summary>
+    /// <summary>
+    /// One page whose content only paints a Form XObject; the text lives in the form,
+    /// under the form's own resources.
+    /// </summary>
+    public static byte[] FormXObjectTextPdf()
+    {
+        var page = "q /Fm1 Do Q\n";
+        var form = "BT /F1 24 Tf 72 700 Td (Hello from form xobject) Tj ET\n";
+        return Assemble(new[]
+        {
+            "<</Type/Catalog/Pages 2 0 R>>",
+            "<</Type/Pages/Kids[3 0 R]/Count 1>>",
+            "<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]" +
+                "/Resources<</XObject<</Fm1 6 0 R>>>>/Contents 4 0 R>>",
+            StreamObject($"<</Length {page.Length}>>", page),
+            "<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>",
+            StreamObject(
+                "<</Type/XObject/Subtype/Form/BBox[0 0 612 792]" +
+                    $"/Resources<</Font<</F1 5 0 R>>>>/Length {form.Length}>>",
+                form),
+        });
+    }
+
     public static byte[] ImageOnlyPdf()
     {
         var content = "q 595 0 0 842 0 0 cm /Im0 Do Q\n";

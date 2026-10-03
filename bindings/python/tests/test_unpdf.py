@@ -169,6 +169,25 @@ def _undecodable_content_pdf() -> bytes:
     ])
 
 
+def _form_xobject_text_pdf() -> bytes:
+    """One page whose content only paints a Form XObject; the text lives in the form."""
+    page = b"q /Fm1 Do Q\n"
+    form = b"BT /F1 24 Tf 72 700 Td (Hello from form xobject) Tj ET\n"
+    return _assemble([
+        b"<</Type/Catalog/Pages 2 0 R>>",
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>",
+        b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]"
+        b"/Resources<</XObject<</Fm1 6 0 R>>>>/Contents 4 0 R>>",
+        _stream_object(b"<</Length %d>>" % len(page), page),
+        b"<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>",
+        _stream_object(
+            b"<</Type/XObject/Subtype/Form/BBox[0 0 612 792]"
+            b"/Resources<</Font<</F1 5 0 R>>>>/Length %d>>" % len(form),
+            form,
+        ),
+    ])
+
+
 def _jpeg_pdf(width: int, height: int) -> bytes:
     """One page with a single ``DCTDecode``-tagged image XObject of the given size.
 
@@ -266,6 +285,7 @@ class TestResourceAccessors:
         assert info["width"] == 100
         assert info["height"] == 100
         assert info["type"] == "image"
+        assert info["page"] == 1
 
     def test_get_resource_data_returns_bytes(self):
         options = {"extract_resources": True}
@@ -410,6 +430,14 @@ class TestGetPageStats:
         assert stats["text_op_count"] == 0
         assert stats["image_op_count"] >= 1
         assert stats["ocr_text_suppressed"] is False
+
+    def test_form_drawn_page(self):
+        """Text drawn through a Form XObject is text, and the form is not an image."""
+        stats = unpdf.get_page_stats(_form_xobject_text_pdf(), 1)
+        assert stats["text_op_count"] == 1
+        assert stats["image_op_count"] == 0
+        assert stats["form_op_count"] == 1
+        assert "Hello from form xobject" in unpdf.to_text(_form_xobject_text_pdf())
 
     def test_text_page(self, tmp_path):
         """Text page: text ops present, no image ops."""
