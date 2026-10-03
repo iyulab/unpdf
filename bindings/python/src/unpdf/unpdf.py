@@ -419,7 +419,8 @@ def get_resource_ids(
         options: Parsing options — see :data:`ParseOptions`.
 
     Returns:
-        Resource ids, e.g. ``["page1_Im0.jpg"]``. Pass one to
+        Resource ids in reading order, e.g. ``["page1_Im0.jpg"]`` — the same ids
+        the rendered Markdown references. Pass one to
         :func:`get_resource_info` or :func:`get_resource_data`.
 
     Raises:

@@ -89,9 +89,6 @@ impl PdfParser {
         let mut document = Document::new();
         let mut err_out: Option<Error> = None;
 
-        // Snapshot page map so we can do resource extraction inside the handler.
-        let page_ids = self.backend.pages();
-
         let quality = run_stream(&*self.backend, &opts, |ev| match ev {
             ParseEvent::DocumentStart {
                 metadata,
@@ -105,26 +102,6 @@ impl PdfParser {
                 ControlFlow::Continue(())
             }
             ParseEvent::PageParsed(page) => {
-                if self.options.extract_resources {
-                    if let Some(page_id) = page_ids.get(&page.number) {
-                        if let Ok(xobjects) = self.backend.page_xobjects(*page_id) {
-                            for xobj in xobjects {
-                                let key = format!("page{}_{}", page.number, xobj.name);
-                                // The unsupported-image quality signal is counted once, from
-                                // `parse_single_page`'s pass over the same XObjects (below) —
-                                // not duplicated here.
-                                let (resource, _unsupported) = convert_resource_xobject(
-                                    xobj,
-                                    page.number,
-                                    self.options.min_image_dimension,
-                                );
-                                if let Some(r) = resource {
-                                    document.resources.insert(key, r);
-                                }
-                            }
-                        }
-                    }
-                }
                 document.add_page(page);
                 ControlFlow::Continue(())
             }
@@ -954,8 +931,8 @@ mod tests {
                 .expect("the fixture parses");
 
             let images: Vec<_> = doc
-                .resources
-                .values()
+                .resources()
+                .map(|(_, r)| r)
                 .filter(|r| !r.data.is_empty())
                 .collect();
             let distinct: std::collections::HashSet<&[u8]> =
@@ -1073,8 +1050,8 @@ mod tests {
             .expect("the fixture parses");
 
         let images: Vec<_> = doc
-            .resources
-            .values()
+            .resources()
+            .map(|(_, r)| r)
             .filter(|r| !r.data.is_empty())
             .collect();
         assert_eq!(images.len(), 2, "two different pictures stay two resources");

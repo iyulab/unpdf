@@ -3,7 +3,6 @@
 use super::{ExtractionQuality, FormField, Page, Resource};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 /// A parsed PDF document.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -11,11 +10,9 @@ pub struct Document {
     /// Document metadata (title, author, etc.)
     pub metadata: Metadata,
 
-    /// Pages in the document
+    /// Pages in the document. Each page holds the resources extracted from it
+    /// ([`Page::images`]); [`Document::resources`] lists them across the document.
     pub pages: Vec<Page>,
-
-    /// Embedded resources (images, fonts, etc.)
-    pub resources: HashMap<String, Resource>,
 
     /// Document outline (bookmarks)
     pub outline: Option<Outline>,
@@ -33,7 +30,6 @@ impl Document {
         Self {
             metadata: Metadata::default(),
             pages: Vec::new(),
-            resources: HashMap::new(),
             outline: None,
             extraction_quality: ExtractionQuality::default(),
             form_fields: Vec::new(),
@@ -58,14 +54,28 @@ impl Document {
         self.pages.push(page);
     }
 
-    /// Add a resource to the document.
-    pub fn add_resource(&mut self, id: String, resource: Resource) {
-        self.resources.insert(id, resource);
+    /// Every extracted resource, in reading order: page by page, and within a page in the
+    /// order the page lists them.
+    ///
+    /// The ids are the ones the rendered output references (`![](page1_Im0.jpg)`), so an
+    /// image reference and its resource are joined by plain equality. A resource lives on
+    /// the page it was collected from; this is a view over [`Page::images`], not a copy.
+    pub fn resources(&self) -> impl Iterator<Item = (&str, &Resource)> {
+        self.pages
+            .iter()
+            .flat_map(|page| page.images.iter().map(|(id, r)| (id.as_str(), r)))
     }
 
-    /// Get a resource by ID.
+    /// How many resources [`resources`](Self::resources) lists.
+    pub fn resource_count(&self) -> usize {
+        self.pages.iter().map(|page| page.images.len()).sum()
+    }
+
+    /// The resource `id` names -- an id from [`resources`](Self::resources) or from an image
+    /// reference in the rendered output.
     pub fn get_resource(&self, id: &str) -> Option<&Resource> {
-        self.resources.get(id)
+        self.resources()
+            .find_map(|(rid, resource)| (rid == id).then_some(resource))
     }
 
     /// Check if the document has any pages.

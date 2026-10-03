@@ -65,6 +65,8 @@ public class IntrospectionTests
         using var doc = UnpdfDocument.ParseBytes(
             PdfFixtures.JpegPdf(100, 100), new ParseOptions { ExtractResources = true });
         var id = Assert.Single(doc.GetResourceIds());
+        // The id the rendered Markdown references, extension included.
+        Assert.Equal("page1_Im0.jpg", id);
         using var info = doc.GetResourceInfo(id);
         Assert.NotNull(info);
         Assert.Equal(1, info!.RootElement.GetProperty("page").GetInt32());

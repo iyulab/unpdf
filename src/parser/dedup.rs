@@ -1,8 +1,8 @@
 //! Collapse resources whose bytes are identical, after all pages are assembled.
 //!
 //! A PDF can share one image XObject across every page -- a running-header logo is the ordinary
-//! case -- but the extractor keys resources as `page{n}_{name}`, a key space with no way to say
-//! "the same image". So one logo in a 40-page document became 40 resource entries, 40 copies in
+//! case -- but the extractor keys resources as `page{n}_{name}.{ext}`, a key space with no way to
+//! say "the same image". So one logo in a 40-page document became 40 resource entries in
 //! `page.images`, and (with the `ai` feature) 40 VLM calls for one picture.
 //!
 //! This runs as a pass over the finished document rather than inside page parsing, and that is
@@ -72,31 +72,6 @@ pub(crate) fn collapse_identical_resources(document: &mut Document) -> usize {
         let before = page.images.len();
         page.images.retain(|(id, _)| !alias.contains_key(id));
         removed += before - page.images.len();
-    }
-
-    // `document.resources` is keyed without the extension that `page.images` ids carry, so the
-    // aliases cannot be applied to it directly -- it is deduplicated on its own bytes, by the
-    // same first-occurrence rule.
-    let mut seen: HashMap<[u8; 16], Vec<u8>> = HashMap::new();
-    let mut keys: Vec<String> = document.resources.keys().cloned().collect();
-    keys.sort();
-    for key in keys {
-        let Some(resource) = document.resources.get(&key) else {
-            continue;
-        };
-        if resource.data.is_empty() {
-            continue;
-        }
-        let d = digest(&resource.data);
-        match seen.get(&d) {
-            Some(bytes) if bytes == &resource.data => {
-                document.resources.remove(&key);
-            }
-            Some(_) => {}
-            None => {
-                seen.insert(d, resource.data.clone());
-            }
-        }
     }
 
     removed

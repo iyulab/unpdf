@@ -52,7 +52,12 @@ fn an_image_inside_a_form_is_extracted_as_a_resource() {
     )
     .unwrap();
 
-    assert_eq!(doc.resources.len(), 1, "got: {:?}", doc.resources.keys());
+    assert_eq!(
+        doc.resource_count(),
+        1,
+        "got: {:?}",
+        doc.resources().map(|(id, _)| id).collect::<Vec<_>>()
+    );
     assert_eq!(doc.pages[0].images.len(), 1);
 }
 

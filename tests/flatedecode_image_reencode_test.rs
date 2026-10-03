@@ -99,11 +99,11 @@ fn flatedecode_devicergb_image_is_reencoded_as_png() {
         .unwrap();
 
     assert_eq!(
-        doc.resources.len(),
+        doc.resource_count(),
         1,
         "a FlateDecode DeviceRGB image is a reconstructable PNG, not a raw drop"
     );
-    let resource = doc.resources.values().next().unwrap();
+    let resource = doc.resources().map(|(_, r)| r).next().unwrap();
     assert_eq!(resource.mime_type, "image/png");
 
     let decoder = png::Decoder::new(std::io::Cursor::new(resource.data.as_slice()));
@@ -149,12 +149,12 @@ fn flatedecode_iccbased_rgb_image_resolves_component_count_and_reencodes() {
         .unwrap();
 
     assert_eq!(
-        doc.resources.len(),
+        doc.resource_count(),
         1,
         "ICCBased with N=3 is component-count-equivalent to DeviceRGB"
     );
     assert_eq!(
-        doc.resources.values().next().unwrap().mime_type,
+        doc.resources().map(|(_, r)| r).next().unwrap().mime_type,
         "image/png"
     );
 }
@@ -171,8 +171,8 @@ fn only_png(bytes: &[u8]) -> (png::ColorType, Vec<u8>) {
         .parse()
         .unwrap();
     assert_eq!(doc.extraction_quality.unsupported_image_count, 0);
-    assert_eq!(doc.resources.len(), 1);
-    let resource = doc.resources.values().next().unwrap();
+    assert_eq!(doc.resource_count(), 1);
+    let resource = doc.resources().map(|(_, r)| r).next().unwrap();
     assert_eq!(resource.mime_type, "image/png");
 
     let decoder = png::Decoder::new(std::io::Cursor::new(resource.data.as_slice()));
@@ -249,7 +249,7 @@ fn flatedecode_unsupported_colorspace_is_dropped_and_counted() {
         .unwrap();
 
     assert_eq!(
-        doc.resources.len(),
+        doc.resource_count(),
         0,
         "out-of-scope color spaces are still dropped, same as before"
     );

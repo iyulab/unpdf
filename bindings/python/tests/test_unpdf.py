@@ -274,7 +274,8 @@ class TestResourceAccessors:
             _jpeg_pdf(100, 100), options={"extract_resources": True}
         )
         assert len(ids) == 1
-        assert ids[0].startswith("page1_Im0")
+        # The id the rendered Markdown references, extension included.
+        assert ids == ["page1_Im0.jpg"]
 
     def test_get_resource_info_reports_metadata(self):
         options = {"extract_resources": True}

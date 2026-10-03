@@ -472,6 +472,52 @@ pub fn text_with_inline_image_pdf() -> Vec<u8> {
     assemble(objects)
 }
 
+/// `pages` pages, each drawing **its own** 100×100 JPEG-tagged image, whose bytes differ from
+/// every other page's — so no deduplication may merge them.
+pub fn distinct_image_per_page_pdf(pages: usize) -> Vec<u8> {
+    assert!(
+        (1..256).contains(&pages),
+        "one distinguishing byte per page"
+    );
+
+    // Per page: the page, its content stream, its image.
+    const FIRST_PAGE_OBJ: usize = 3;
+    let kids: Vec<String> = (0..pages)
+        .map(|i| format!("{} 0 R", FIRST_PAGE_OBJ + i * 3))
+        .collect();
+    let mut objects: Vec<Vec<u8>> = vec![
+        b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+        format!("<</Type/Pages/Kids[{}]/Count {}>>", kids.join(" "), pages).into_bytes(),
+    ];
+    for i in 0..pages {
+        let page_obj = FIRST_PAGE_OBJ + i * 3;
+        objects.push(
+            format!(
+                "<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]\
+                 /Resources<</XObject<</Im0 {} 0 R>>>>/Contents {} 0 R>>",
+                page_obj + 2,
+                page_obj + 1
+            )
+            .into_bytes(),
+        );
+        let content = b"q 100 0 0 100 72 600 cm /Im0 Do Q\n";
+        objects.push(stream_object(
+            &format!("<</Length {}>>", content.len()),
+            content,
+        ));
+        let data = [0xFF, 0xD8, 0xFF, 0xE0, i as u8, 0xFF, 0xD9];
+        objects.push(stream_object(
+            &format!(
+                "<</Type/XObject/Subtype/Image/Width 100/Height 100/ColorSpace/DeviceGray\
+                  /BitsPerComponent 8/Filter/DCTDecode/Length {}>>",
+                data.len()
+            ),
+            &data,
+        ));
+    }
+    assemble(objects)
+}
+
 /// `pages` pages, each with a line of text and **the same image XObject** — one shared object,
 /// the way a running-header logo appears in a real document.
 ///

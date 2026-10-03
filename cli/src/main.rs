@@ -1041,7 +1041,7 @@ fn cmd_info(input: &Path, quiet: bool) -> Result<bool, Box<dyn std::error::Error
     let text = doc.plain_text();
     let words: usize = text.split_whitespace().count();
     let chars = text.len();
-    let images = doc.resources.values().filter(|r| r.is_image()).count();
+    let images = doc.resources().filter(|(_, r)| r.is_image()).count();
 
     println!("{}: {}", "Words".bold(), words);
     println!("{}: {}", "Characters".bold(), chars);
@@ -1077,10 +1077,11 @@ fn cmd_extract(
     fs::create_dir_all(&output_dir)?;
 
     let mut count = 0;
-    for (id, resource) in &doc.resources {
+    for (id, resource) in doc.resources() {
         if resource.is_image() {
-            let filename = resource.suggested_filename(id);
-            let path = output_dir.join(&filename);
+            // The id already is the file name -- the one the rendered output references.
+            let filename = resource.filename.as_deref().unwrap_or(id);
+            let path = output_dir.join(filename);
             fs::write(&path, &resource.data)?;
             println!("{} {}", "Extracted".green(), filename);
             count += 1;

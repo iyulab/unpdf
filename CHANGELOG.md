@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **Breaking — one id per resource, the one the rendered output references.** Resource ids
+  (`GetResourceIds` / `get_resource_ids` / `unpdf_get_resource_ids`, and the lookups that take
+  them) are now the ids Markdown image references use, extension included: `page1_Im0.jpg`
+  instead of `page1_Im0`. Before, the inventory and the rendered output named the same image
+  differently, so joining an image reference to its metadata meant stripping the extension by
+  hand. Ids are listed in reading order (page by page) instead of in no particular order.
+- **Breaking — `Document::resources` is a method, not a field.** Each page holds the resources
+  collected from it (`Page::images`); `Document::resources()` lists them across the document,
+  `resource_count()` counts them and `get_resource(id)` looks one up. The JSON output no longer
+  has a top-level `resources` object — the same entries are under each page's `images`.
+  `Document::add_resource` is removed.
+
+### Fixed
+
+- Each image was decoded and converted twice when resources were extracted — once for the
+  page and once for the document inventory. It is now done once: a 13-page report with
+  22 megapixels of CMYK images parses in about 3.3 s instead of 6.5 s.
+- Shared images collapse by reading order everywhere. The document inventory used to be
+  deduplicated separately, in lexicographic id order, so the copy it kept could be a later
+  page's (`page10_…` sorts before `page2_…`) while the rendered output pointed at the first.
+
 ## 0.24.0 — 2026-10-03
 
 ### Changed

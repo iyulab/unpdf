@@ -19,7 +19,7 @@ fn main() {
                     let md = unpdf::render::to_markdown(&doc, &opts).unwrap_or_default();
                     let text_len = md.len();
                     let has_outline = doc.outline.is_some();
-                    let resource_count = doc.resources.len();
+                    let resource_count = doc.resource_count();
 
                     results.push((
                         name,

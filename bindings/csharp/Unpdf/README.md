@@ -156,7 +156,7 @@ paying the extraction cost.
 | `int ResourceCount` | Size of the extracted-resource inventory — see above. |
 | `ExtractionQuality GetExtractionQuality()` | Document-level extraction diagnostics. |
 | `PageStats GetPageStats(int pageNumber)` | Per-page content-stream operator counts. |
-| `string[] GetResourceIds()` | Ids in the resource inventory. |
+| `string[] GetResourceIds()` | Ids in the resource inventory, in reading order — the same ids the rendered Markdown references (`page1_Im0.jpg`). |
 | `JsonDocument? GetResourceInfo(string resourceId)` | Metadata for one resource. |
 | `byte[]? GetResourceData(string resourceId)` | Raw bytes of one resource. |
 | `void Dispose()` | Release the native handle. |

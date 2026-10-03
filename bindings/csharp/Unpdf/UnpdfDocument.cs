@@ -529,8 +529,12 @@ public class UnpdfDocument : IDisposable
     }
 
     /// <summary>
-    /// Get list of resource IDs in the document.
+    /// Get list of resource IDs in the document, in reading order.
     /// </summary>
+    /// <remarks>
+    /// Each id is the one the rendered Markdown references for that image
+    /// (<c>page1_Im0.jpg</c>, usable as its file name).
+    /// </remarks>
     /// <returns>Array of resource ID strings</returns>
     public string[] GetResourceIds()
     {

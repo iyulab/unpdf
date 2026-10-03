@@ -728,7 +728,7 @@ unparser_shared::export_count_getter!(
     unpdf_resource_count(doc: UnpdfDocument),
     {
         let document = &(*doc).inner;
-        Ok(document.resources.len() as c_int)
+        Ok(document.resource_count() as c_int)
     }
 );
 
@@ -771,7 +771,10 @@ unparser_shared::export_optional_string_getter!(
 );
 
 unparser_shared::export_string_getter!(
-    /// Get all resource IDs as a JSON array.
+    /// Get all resource IDs as a JSON array, in reading order.
+    ///
+    /// Each id is the one the rendered output references for that image (`page1_Im0.jpg`,
+    /// usable as its file name), so an image reference and its resource join by equality.
     ///
     /// # Safety
     ///
@@ -782,7 +785,7 @@ unparser_shared::export_string_getter!(
     unpdf_get_resource_ids(doc: UnpdfDocument),
     {
         let document = &(*doc).inner;
-        let ids: Vec<&String> = document.resources.keys().collect();
+        let ids: Vec<&str> = document.resources().map(|(id, _)| id).collect();
         serde_json::to_string(&ids).map_err(json_err)
     }
 );
@@ -890,7 +893,7 @@ unparser_shared::export_string_getter!(
 
         let document = &(*doc).inner;
 
-        match document.resources.get(id_str) {
+        match document.get_resource(id_str) {
             Some(resource) => {
                 let info = serde_json::json!({
                     "id": id_str,
@@ -929,7 +932,7 @@ unparser_shared::export_bytes_getter!(
 
         let document = &(*doc).inner;
 
-        match document.resources.get(id_str) {
+        match document.get_resource(id_str) {
             Some(resource) => Ok(resource.data.clone()),
             None => Err((
                 ErrorKind::ResourceNotFound as c_int,
