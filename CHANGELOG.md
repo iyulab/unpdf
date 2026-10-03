@@ -37,6 +37,12 @@
   be decoded counts towards `undecodable_content_streams`, so strict parsing fails the page.
 - Images inside Form XObjects are extracted as resources (a scanner often wraps the page image
   in a form). Their ids name the form they were found in: `page1_Fm1_Im1`.
+- `/FlateDecode` images in `DeviceCMYK` and `Indexed` color spaces are extracted as PNG
+  instead of being dropped as unsupported: CMYK converts to RGB, palette images are looked up
+  in their palette (over a gray, RGB or CMYK base), and samples of 1, 2, 4 and 16 bits are
+  read as well as 8. `/Decode` is honoured, so CMYK stored inverted comes out right. `Lab`,
+  `Separation` and `DeviceN` images are still dropped and counted in
+  `unsupported_image_count`. `RawXObject` gains `color` and `decode`.
 - A page without `/Resources` of its own now lists the images of the resources it inherits
   from the page tree, as its fonts already did.
 - The NuGet package, the PyPI package and the `unpdf-cli` crate now carry the license text

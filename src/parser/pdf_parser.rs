@@ -328,6 +328,8 @@ pub(crate) fn convert_xobject_pub(xobj: RawXObject) -> Option<Resource> {
         height,
         bits_per_component,
         color_space,
+        color,
+        decode,
         ..
     } = xobj;
 
@@ -340,7 +342,8 @@ pub(crate) fn convert_xobject_pub(xobj: RawXObject) -> Option<Resource> {
                 width,
                 height,
                 bits_per_component,
-                color_space.as_deref(),
+                color.as_ref(),
+                decode.as_deref(),
             ) {
                 Some(png) => (png, "image/png"),
                 None => (data, "application/octet-stream"),
@@ -362,29 +365,20 @@ pub(crate) fn convert_xobject_pub(xobj: RawXObject) -> Option<Resource> {
     Some(resource)
 }
 
-/// Re-encode an already-inflated `/FlateDecode` image XObject's raw scanlines as PNG.
+/// Re-encode an already-inflated `/FlateDecode` image XObject's raw samples as PNG.
 ///
-/// Stage-1 scope: 8-bit `DeviceGray`/`DeviceRGB` only (`backend::resolve_color_space_name`
-/// already folds `ICCBased` down to its device-equivalent by component count before this
-/// runs). `None` means "not eligible", not "encoding failed" — the caller falls back to the
-/// existing raw/undecoded-drop path. `Indexed` and `CMYK` colour spaces are a
-/// deliberate follow-up rather than an oversight — see [`super::png_encode`].
+/// `None` means "not eligible" (a color space or bit depth [`super::png_encode::image_to_png`]
+/// does not convert, or missing dimensions), not "encoding failed" — the caller falls back
+/// to the raw/undecoded-drop path, which is reported as an unsupported image.
 fn reencode_flate_image_as_png(
     data: &[u8],
     width: Option<u32>,
     height: Option<u32>,
     bits_per_component: Option<u8>,
-    color_space: Option<&str>,
+    color: Option<&super::backend::ImageColorSpace>,
+    decode: Option<&[f32]>,
 ) -> Option<Vec<u8>> {
-    if bits_per_component != Some(8) {
-        return None;
-    }
-    let color_type = match color_space {
-        Some("DeviceGray") | Some("CalGray") => super::png_encode::PngColorType::Gray,
-        Some("DeviceRGB") | Some("CalRGB") => super::png_encode::PngColorType::Rgb,
-        _ => return None,
-    };
-    super::png_encode::encode(width?, height?, color_type, data)
+    super::png_encode::image_to_png(width?, height?, bits_per_component?, color?, decode, data)
 }
 
 /// Convert an XObject into a resource for the document's resource inventory, applying the

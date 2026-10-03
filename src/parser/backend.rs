@@ -154,6 +154,35 @@ pub struct RawOutlineItem {
     pub children: Vec<RawOutlineItem>,
 }
 
+/// An image's color space, as far as converting its samples to pixels needs it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ImageColorSpace {
+    /// One component: `DeviceGray`, `CalGray`, or an `ICCBased` profile with `/N 1`.
+    Gray,
+    /// Three components: `DeviceRGB`, `CalRGB`, or `ICCBased` with `/N 3`.
+    Rgb,
+    /// Four components: `DeviceCMYK`, or `ICCBased` with `/N 4`.
+    Cmyk,
+    /// One component, an index into `lookup`: `hival + 1` entries of `base.components()`
+    /// bytes each.
+    Indexed {
+        base: Box<ImageColorSpace>,
+        hival: u8,
+        lookup: Vec<u8>,
+    },
+}
+
+impl ImageColorSpace {
+    /// Components per sample.
+    pub fn components(&self) -> usize {
+        match self {
+            ImageColorSpace::Gray | ImageColorSpace::Indexed { .. } => 1,
+            ImageColorSpace::Rgb => 3,
+            ImageColorSpace::Cmyk => 4,
+        }
+    }
+}
+
 /// A raw XObject (image) extracted from a PDF page.
 #[derive(Debug, Clone)]
 pub struct RawXObject {
@@ -164,7 +193,13 @@ pub struct RawXObject {
     pub width: Option<u32>,
     pub height: Option<u32>,
     pub bits_per_component: Option<u8>,
+    /// The color space's name (`ICCBased` resolved to its device equivalent).
     pub color_space: Option<String>,
+    /// The color space as converting samples needs it; `None` when it is not one this crate
+    /// converts (`Lab`, `Separation`, `DeviceN`, ...).
+    pub color: Option<ImageColorSpace>,
+    /// `/Decode`: how each component's raw sample maps onto its range.
+    pub decode: Option<Vec<f32>>,
 }
 
 /// A page's decoded content, together with what decoding it had to drop.
@@ -790,8 +825,12 @@ impl RawBackend {
                 .and_then(|b| b.as_i64())
                 .map(|b| b as u8);
 
-            let color_space = raw_dict_get(dict, b"ColorSpace")
-                .and_then(|cs| resolve_color_space_name(&self.doc, cs));
+            let color_space_entry = raw_dict_get(dict, b"ColorSpace");
+            let color_space =
+                color_space_entry.and_then(|cs| resolve_color_space_name(&self.doc, cs));
+            let color =
+                color_space_entry.and_then(|cs| resolve_image_color_space(&self.doc, cs, 0));
+            let decode = raw_dict_get(dict, b"Decode").and_then(|d| numbers_from(&self.doc, d));
 
             out.push(RawXObject {
                 name: label,
@@ -802,6 +841,8 @@ impl RawBackend {
                 height,
                 bits_per_component: bits,
                 color_space,
+                color,
+                decode,
             });
         }
     }
@@ -882,6 +923,87 @@ fn named_resource(
 /// referenced profile stream's `/N` entry. Consumers that gate on device color space (the PNG
 /// re-encoder among them) would otherwise see every `ICCBased` image as unrecognized, so this
 /// resolves `/N` (1/3/4 components) to the equivalent `Device*` name up front.
+/// Resolve an image's `/ColorSpace` to the structure converting its samples needs.
+///
+/// `depth` bounds the recursion an `Indexed` base or an `ICCBased` `/Alternate` takes.
+fn resolve_image_color_space(
+    doc: &RawDocument,
+    cs: &RawPdfObject,
+    depth: usize,
+) -> Option<ImageColorSpace> {
+    if depth > 4 {
+        return None;
+    }
+    let by_components = |n: i64| match n {
+        1 => Some(ImageColorSpace::Gray),
+        3 => Some(ImageColorSpace::Rgb),
+        4 => Some(ImageColorSpace::Cmyk),
+        _ => None,
+    };
+    match doc.resolve(cs) {
+        RawPdfObject::Name(n) => match n.as_slice() {
+            b"DeviceGray" | b"CalGray" | b"G" => Some(ImageColorSpace::Gray),
+            b"DeviceRGB" | b"CalRGB" | b"RGB" => Some(ImageColorSpace::Rgb),
+            b"DeviceCMYK" | b"CMYK" => Some(ImageColorSpace::Cmyk),
+            _ => None,
+        },
+        RawPdfObject::Array(arr) => {
+            let family = arr
+                .first()
+                .map(|o| doc.resolve(o))
+                .and_then(|o| o.as_name())?;
+            match family {
+                b"CalGray" => Some(ImageColorSpace::Gray),
+                b"CalRGB" => Some(ImageColorSpace::Rgb),
+                b"ICCBased" => {
+                    let profile = doc.resolve(arr.get(1)?).as_stream()?;
+                    raw_dict_get(&profile.dict, b"N")
+                        .and_then(|n| doc.resolve(n).as_i64())
+                        .and_then(by_components)
+                        .or_else(|| {
+                            raw_dict_get(&profile.dict, b"Alternate")
+                                .and_then(|alt| resolve_image_color_space(doc, alt, depth + 1))
+                        })
+                }
+                b"Indexed" | b"I" => {
+                    let base = resolve_image_color_space(doc, arr.get(1)?, depth + 1)?;
+                    if matches!(base, ImageColorSpace::Indexed { .. }) {
+                        return None; // ISO 32000-1 §8.6.6.3: the base cannot be Indexed
+                    }
+                    let hival = doc.resolve(arr.get(2)?).as_i64()?.clamp(0, 255) as u8;
+                    let lookup = match doc.resolve(arr.get(3)?) {
+                        RawPdfObject::Str(bytes) => bytes.clone(),
+                        RawPdfObject::Stream(stream) => raw_stream::decompress(stream).ok()?,
+                        _ => return None,
+                    };
+                    Some(ImageColorSpace::Indexed {
+                        base: Box::new(base),
+                        hival,
+                        lookup,
+                    })
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// An array of numbers (`/Decode [1 0 1 0]`).
+fn numbers_from(doc: &RawDocument, obj: &RawPdfObject) -> Option<Vec<f32>> {
+    let RawPdfObject::Array(items) = doc.resolve(obj) else {
+        return None;
+    };
+    items
+        .iter()
+        .map(|item| match doc.resolve(item) {
+            RawPdfObject::Integer(i) => Some(*i as f32),
+            RawPdfObject::Real(r) => Some(*r as f32),
+            _ => None,
+        })
+        .collect()
+}
+
 fn resolve_color_space_name(doc: &RawDocument, cs: &RawPdfObject) -> Option<String> {
     match cs {
         RawPdfObject::Name(n) => Some(String::from_utf8_lossy(n).to_string()),

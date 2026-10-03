@@ -1,9 +1,8 @@
 //! `/FlateDecode` embedded images are re-encoded as PNG rather than unconditionally
-//! dropped. Stage 1 scope: 8-bit `DeviceGray`/`DeviceRGB` (including `ICCBased`
-//! resolved to an equivalent component count), no `/DecodeParms` predictor beyond what the
-//! existing stream decompressor already reverses. Anything outside that scope must still be
-//! dropped (unchanged behavior) but counted as an "unsupported image" quality signal instead of
-//! silently vanishing.
+//! dropped: gray, RGB, CMYK (converted to RGB) and Indexed images (looked up in their palette),
+//! including `ICCBased` resolved by component count, at 1 to 16 bits per component. A color
+//! space outside that (`Lab`, `Separation`, `DeviceN`) is still dropped, but counted as an
+//! "unsupported image" quality signal instead of silently vanishing.
 
 use std::io::Write;
 
@@ -160,14 +159,78 @@ fn flatedecode_iccbased_rgb_image_resolves_component_count_and_reencodes() {
     );
 }
 
+/// The single PNG resource `bytes` yields, decoded: (colour type, pixels).
+fn only_png(bytes: &[u8]) -> (png::ColorType, Vec<u8>) {
+    let options = ParseOptions {
+        extract_resources: true,
+        min_image_dimension: 0,
+        ..Default::default()
+    };
+    let doc = PdfParser::from_bytes_with_options(bytes, options)
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert_eq!(doc.extraction_quality.unsupported_image_count, 0);
+    assert_eq!(doc.resources.len(), 1);
+    let resource = doc.resources.values().next().unwrap();
+    assert_eq!(resource.mime_type, "image/png");
+
+    let decoder = png::Decoder::new(std::io::Cursor::new(resource.data.as_slice()));
+    let mut reader = decoder.read_info().expect("valid PNG");
+    let mut buf = vec![0u8; reader.output_buffer_size().expect("fits")];
+    let info = reader.next_frame(&mut buf).unwrap();
+    buf.truncate(info.buffer_size());
+    (info.color_type, buf)
+}
+
 #[test]
-fn flatedecode_unsupported_colorspace_is_dropped_and_counted() {
-    // DeviceCMYK is out of stage-1 scope — 4 bytes/pixel, 2x2 = 16 bytes.
-    let pixels = vec![0u8; 16];
-    let compressed = deflate(&pixels);
+fn flatedecode_cmyk_image_is_converted_to_rgb() {
+    // cyan, magenta / yellow, black
+    let samples = [255u8, 0, 0, 0, 0, 255, 0, 0, 0, 0, 255, 0, 0, 0, 0, 255];
+    let compressed = deflate(&samples);
     let image_obj = stream_object(
         &format!(
             "<</Type/XObject/Subtype/Image/Width 2/Height 2/ColorSpace/DeviceCMYK\
+              /BitsPerComponent 8/Filter/FlateDecode/Length {}>>",
+            compressed.len()
+        ),
+        &compressed,
+    );
+
+    let (color_type, pixels) = only_png(&one_page_with_image(image_obj, None));
+    assert_eq!(color_type, png::ColorType::Rgb);
+    assert_eq!(pixels, [0, 255, 255, 255, 0, 255, 255, 255, 0, 0, 0, 0]);
+}
+
+#[test]
+fn flatedecode_indexed_image_is_looked_up_in_its_palette() {
+    // 1-bit indices into a two-entry RGB palette held in a hex string: 0 = red, 1 = blue.
+    let samples = [0b0100_0000u8, 0b1000_0000];
+    let compressed = deflate(&samples);
+    let image_obj = stream_object(
+        &format!(
+            "<</Type/XObject/Subtype/Image/Width 2/Height 2\
+              /ColorSpace[/Indexed/DeviceRGB 1<FF00000000FF>]\
+              /BitsPerComponent 1/Filter/FlateDecode/Length {}>>",
+            compressed.len()
+        ),
+        &compressed,
+    );
+
+    let (color_type, pixels) = only_png(&one_page_with_image(image_obj, None));
+    assert_eq!(color_type, png::ColorType::Rgb);
+    assert_eq!(pixels, [255, 0, 0, 0, 0, 255, 0, 0, 255, 255, 0, 0]);
+}
+
+#[test]
+fn flatedecode_unsupported_colorspace_is_dropped_and_counted() {
+    // Lab is not converted -- 3 bytes/pixel, 2x2 = 12 bytes.
+    let pixels = vec![0u8; 12];
+    let compressed = deflate(&pixels);
+    let image_obj = stream_object(
+        &format!(
+            "<</Type/XObject/Subtype/Image/Width 2/Height 2\
+              /ColorSpace[/Lab<</WhitePoint[0.9505 1 1.089]>>]\
               /BitsPerComponent 8/Filter/FlateDecode/Length {}>>",
             compressed.len()
         ),
