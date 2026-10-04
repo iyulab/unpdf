@@ -98,15 +98,17 @@ public class ParseOptions
             || SuppressLowConfidenceOcr.HasValue;
         if (!set) return null;
 
-        var payload = new Dictionary<string, object?>();
-        if (Strict.HasValue) payload["error_mode"] = Strict.Value ? "strict" : "lenient";
-        if (ExtractText.HasValue) payload["extract_text"] = ExtractText.Value;
-        if (ExtractResources.HasValue) payload["extract_resources"] = ExtractResources.Value;
-        if (MinImageDimension.HasValue) payload["min_image_dimension"] = MinImageDimension.Value;
-        if (Parallel.HasValue) payload["parallel"] = Parallel.Value;
-        if (Password is not null) payload["password"] = Password;
-        if (SuppressLowConfidenceOcr.HasValue) payload["suppress_low_confidence_ocr"] = SuppressLowConfidenceOcr.Value;
-        return JsonSerializer.Serialize(payload);
+        var payload = new ParseOptionsPayload
+        {
+            ErrorMode = Strict.HasValue ? (Strict.Value ? "strict" : "lenient") : null,
+            ExtractText = ExtractText,
+            ExtractResources = ExtractResources,
+            MinImageDimension = MinImageDimension,
+            Parallel = Parallel,
+            Password = Password,
+            SuppressLowConfidenceOcr = SuppressLowConfidenceOcr,
+        };
+        return JsonSerializer.Serialize(payload, UnpdfJsonContext.Default.ParseOptionsPayload);
     }
 }
 
@@ -434,7 +436,7 @@ public class UnpdfDocument : IDisposable
         try
         {
             var json = PtrToStringUtf8(ptr);
-            return JsonSerializer.Deserialize<ExtractionQuality>(json)
+            return JsonSerializer.Deserialize(json, UnpdfJsonContext.Default.ExtractionQuality)
                 ?? throw new UnpdfException("Failed to deserialize extraction quality");
         }
         finally
@@ -470,7 +472,7 @@ public class UnpdfDocument : IDisposable
         try
         {
             var json = PtrToStringUtf8(ptr);
-            return JsonSerializer.Deserialize<PageStats>(json)
+            return JsonSerializer.Deserialize(json, UnpdfJsonContext.Default.PageStats)
                 ?? throw new UnpdfException("Failed to deserialize page stats");
         }
         finally
@@ -546,7 +548,7 @@ public class UnpdfDocument : IDisposable
         try
         {
             var json = PtrToStringUtf8(ptr);
-            return JsonSerializer.Deserialize<string[]>(json) ?? Array.Empty<string>();
+            return JsonSerializer.Deserialize(json, UnpdfJsonContext.Default.StringArray) ?? Array.Empty<string>();
         }
         finally
         {

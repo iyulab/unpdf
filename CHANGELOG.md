@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **.NET:** the binding works in apps that disable reflection-based `System.Text.Json`
+  serialization — trimmed and Native AOT apps, and file-based apps (`dotnet run app.cs`).
+  `ParseFile`/`ParseBytes` with `ParseOptions`, `GetExtractionQuality`, `GetPageStats` and
+  `GetResourceIds` threw `InvalidOperationException` there. The binding now uses
+  source-generated serialization and is marked `IsAotCompatible`, so the trim and AOT
+  analyzers keep it that way.
+
 ## 0.25.0 — 2026-10-03
 
 ### Changed

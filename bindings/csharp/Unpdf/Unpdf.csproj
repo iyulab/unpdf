@@ -8,6 +8,10 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <AssemblyName>Unpdf.Net</AssemblyName>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <!-- Usable from trimmed and Native AOT apps. Turns on the trim / AOT / single-file analyzers;
+         their warnings fail the build so reflection cannot creep back in. -->
+    <IsAotCompatible>true</IsAotCompatible>
+    <WarningsAsErrors>$(WarningsAsErrors);IL2026;IL2067;IL2070;IL2072;IL2075;IL2087;IL2091;IL3000;IL3001;IL3002;IL3050;IL3051</WarningsAsErrors>
 
     <!-- Package metadata -->
     <PackageId>Unpdf</PackageId>

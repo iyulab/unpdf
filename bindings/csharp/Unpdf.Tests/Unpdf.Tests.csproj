@@ -6,6 +6,10 @@
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
+    <!-- Run the whole suite the way a trimmed / Native AOT / file-based app runs the binding:
+         with reflection-based System.Text.Json disabled. Any reflection-based (de)serialization
+         left in the binding fails here instead of in the consumer's app. -->
+    <JsonSerializerIsReflectionEnabledByDefault>false</JsonSerializerIsReflectionEnabledByDefault>
   </PropertyGroup>
 
   <ItemGroup>
