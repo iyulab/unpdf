@@ -92,10 +92,86 @@ fn xycut_recursive(blocks: &[Block], config: &XyCutConfig, result: &mut Vec<Vec<
             xycut_recursive(&left, config, result);
             xycut_recursive(&right, config, result);
         }
-        (None, None) => {
-            result.push(blocks.to_vec());
+        (None, None) => match split_at_spanning_block(blocks, min_x, max_x, config) {
+            Some(bands) => {
+                for band in bands {
+                    xycut_recursive(&band, config, result);
+                }
+            }
+            None => result.push(blocks.to_vec()),
+        },
+    }
+}
+
+/// When a block that spans a column gutter is all that keeps a region from splitting,
+/// cut the region into bands at that block: above it, its own line, below it.
+///
+/// A caption, title or running head set across both columns fills the gutter channel
+/// on its line, so no vertical cut exists — and when it sits a line away from the
+/// text, no horizontal one either; the columns were then read line by line across.
+/// The gutter is found among the region's *narrow* blocks (at most half its width),
+/// which must be the majority — in single-column text the wide lines are, and
+/// nothing is banded. Returns `None` when there is no such gutter, nothing crosses
+/// it, or banding would not make the region smaller.
+fn split_at_spanning_block(
+    blocks: &[Block],
+    min_x: f32,
+    max_x: f32,
+    config: &XyCutConfig,
+) -> Option<Vec<Vec<Block>>> {
+    let range = max_x - min_x;
+    let narrow: Vec<Block> = blocks
+        .iter()
+        .copied()
+        .filter(|b| b.width <= range * 0.5)
+        .collect();
+    if narrow.len() * 2 <= blocks.len() {
+        return None;
+    }
+    let narrow_min = narrow.iter().map(|b| b.x).fold(f32::MAX, f32::min);
+    let narrow_max = narrow.iter().map(|b| b.right()).fold(f32::MIN, f32::max);
+    let (gutter, _) = find_best_vertical_gap(&narrow, narrow_min, narrow_max, config)?;
+
+    // Lines of a text column fill most of their column; the fragments a table of
+    // contents (entries | page numbers) or a chart's labels leave either side of a
+    // channel do not. Each side's median line must span a quarter of the region.
+    let median_width = |left: bool| {
+        let mut widths: Vec<f32> = narrow
+            .iter()
+            .filter(|b| (b.x + b.width / 2.0 < gutter) == left)
+            .map(|b| b.width)
+            .collect();
+        widths.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        widths.get(widths.len() / 2).copied().unwrap_or(0.0)
+    };
+    if median_width(true) < range * 0.25 || median_width(false) < range * 0.25 {
+        return None;
+    }
+
+    let spanning = blocks
+        .iter()
+        .filter(|b| b.x < gutter && b.right() > gutter)
+        .max_by(|a, b| a.y.partial_cmp(&b.y).unwrap_or(std::cmp::Ordering::Equal))?;
+    let (band_top, band_bottom) = (spanning.y, spanning.bottom());
+
+    let mut above = Vec::new();
+    let mut band = Vec::new();
+    let mut below = Vec::new();
+    for block in blocks {
+        let center = block.y - block.height / 2.0;
+        if center > band_top {
+            above.push(*block);
+        } else if center < band_bottom {
+            below.push(*block);
+        } else {
+            band.push(*block);
         }
     }
+    let parts: Vec<Vec<Block>> = [above, band, below]
+        .into_iter()
+        .filter(|p| !p.is_empty())
+        .collect();
+    (parts.len() > 1).then_some(parts)
 }
 
 fn find_best_vertical_gap(

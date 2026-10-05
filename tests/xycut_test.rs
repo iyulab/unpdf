@@ -138,3 +138,67 @@ fn test_extraction_quality_serializes_is_scan_pdf() {
     );
     assert!(json.contains("true"), "is_scan_pdf should be true: {json}");
 }
+
+/// A caption spanning both columns blocks the gutter channel, so neither a vertical
+/// nor a horizontal cut is clean. The columns above and below it are still columns:
+/// the region splits into bands at the spanning block and each band reads left
+/// column, then right.
+#[test]
+fn a_block_spanning_the_gutter_splits_the_page_into_bands() {
+    let mut blocks = Vec::new();
+    for i in 0..4 {
+        let y = 700.0 - i as f32 * 13.0;
+        blocks.push(make_block(72.0, y, 220.0, 11.0));
+        blocks.push(make_block(306.0, y, 220.0, 11.0));
+    }
+    // The caption sits one line below the band above — no 36pt band of whitespace.
+    blocks.push(make_block(72.0, 635.0, 454.0, 11.0));
+    for i in 0..4 {
+        let y = 622.0 - i as f32 * 13.0;
+        blocks.push(make_block(72.0, y, 220.0, 11.0));
+        blocks.push(make_block(306.0, y, 220.0, 11.0));
+    }
+    let groups = xycut_segment(&blocks, &BODY_11PT);
+    let order: Vec<(f32, f32)> = groups.iter().map(|g| (g[0].x, g[0].y)).collect();
+    assert_eq!(
+        order,
+        vec![
+            (72.0, 700.0),
+            (306.0, 700.0),
+            (72.0, 635.0),
+            (72.0, 622.0),
+            (306.0, 622.0)
+        ],
+        "{groups:?}"
+    );
+}
+
+/// Single-column text whose short lines (paragraph ends) happen to leave a channel:
+/// the short lines are a minority, so wide lines are not cut into bands.
+#[test]
+fn single_column_text_with_short_lines_is_not_banded() {
+    let mut blocks = Vec::new();
+    for i in 0..10 {
+        let y = 700.0 - i as f32 * 13.0;
+        let w = if i % 3 == 2 { 150.0 } else { 454.0 };
+        blocks.push(make_block(72.0, y, w, 11.0));
+    }
+    let groups = xycut_segment(&blocks, &BODY_11PT);
+    assert_eq!(groups.len(), 1, "{groups:?}");
+}
+
+/// A table of contents: entries on the left, page numbers far right, one entry long
+/// enough to run across the channel between them. The page numbers are not a text
+/// column, so the long entry is not a spanning block to band at.
+#[test]
+fn a_table_of_contents_is_not_banded_at_its_long_entry() {
+    let mut blocks = Vec::new();
+    for i in 0..8 {
+        let y = 700.0 - i as f32 * 13.0;
+        let w = if i == 4 { 440.0 } else { 160.0 };
+        blocks.push(make_block(72.0, y, w, 11.0));
+        blocks.push(make_block(516.0, y, 10.0, 11.0));
+    }
+    let groups = xycut_segment(&blocks, &BODY_11PT);
+    assert_eq!(groups.len(), 1, "{groups:?}");
+}
