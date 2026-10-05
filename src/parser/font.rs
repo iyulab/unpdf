@@ -71,6 +71,30 @@ impl ToUnicodeMap {
         }
         result
     }
+
+    /// Decode a simple font's single-byte codes, using `fallback` (the font's
+    /// `/Encoding`) for each code this CMap leaves unmapped.
+    ///
+    /// The fallback is per code, not per string: a ToUnicode CMap that maps one
+    /// glyph to a "no mapping" sentinel would otherwise silently drop that glyph
+    /// from a run whose other codes decode (`314` read back as `34`), while the
+    /// encoding still names it (`/one.SP`).
+    pub(crate) fn decode_with_fallback(
+        &self,
+        bytes: &[u8],
+        fallback: &HashMap<u8, char>,
+    ) -> String {
+        debug_assert_eq!(self.code_width, 1);
+        let mut result = String::new();
+        for &b in bytes {
+            if let Some(s) = self.mappings.get(&u32::from(b)) {
+                result.push_str(s);
+            } else if let Some(&ch) = fallback.get(&b) {
+                result.push(ch);
+            }
+        }
+        result
+    }
 }
 
 /// Parse a hex string like "0048" into a u32 value.
@@ -856,6 +880,27 @@ endbfchar";
         assert_eq!(
             result, "AB",
             "the unmapped sentinel code must be skipped, not tofu'd"
+        );
+    }
+
+    /// A code the CMap leaves unmapped (here: mapped to the U+FFFD sentinel) is
+    /// decoded through the encoding, while mapped codes keep the CMap's answer.
+    #[test]
+    fn test_to_unicode_map_decode_with_fallback_fills_unmapped_codes() {
+        let cmap = b"1 begincodespacerange
+<00> <FF>
+endcodespacerange
+3 beginbfchar
+<0D> <0033>
+<13> <FFFD>
+<0A> <0034>
+endbfchar";
+        let map = parse_to_unicode_cmap(cmap).unwrap();
+        let encoding: HashMap<u8, char> = [(0x13, '1'), (0x0D, 'x')].into_iter().collect();
+        assert_eq!(map.decode(&[0x0D, 0x13, 0x0A]), "34");
+        assert_eq!(
+            map.decode_with_fallback(&[0x0D, 0x13, 0x0A], &encoding),
+            "314"
         );
     }
 

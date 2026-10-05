@@ -709,8 +709,22 @@ const STANDARD_ENC: [Option<char>; 256] = {
 /// Look up a glyph name in the Adobe Glyph List, returning its Unicode character.
 ///
 /// Handles both the static AGL table and the algorithmic `uni`/`u` naming
-/// conventions per the AGL specification.
+/// conventions per the AGL specification, including its first step: a suffix
+/// after the first period names a variant of the same character (`one.SP`,
+/// `a.smcp`, `uni0041.alt`), so it is dropped before the lookup. A name that is
+/// nothing but a suffix (`.notdef`) maps to no character.
 pub(crate) fn glyph_name_to_unicode(name: &str) -> Option<char> {
+    let base = match name.find('.') {
+        Some(dot) => &name[..dot],
+        None => name,
+    };
+    if base.is_empty() {
+        return None;
+    }
+    agl_component_to_unicode(base)
+}
+
+fn agl_component_to_unicode(name: &str) -> Option<char> {
     // Handle "uniXXXX" convention (exactly 4 hex digits)
     if let Some(hex) = name.strip_prefix("uni") {
         if hex.len() == 4 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -1033,6 +1047,24 @@ mod tests {
         assert_eq!(glyph_name_to_unicode("u20AC"), Some('\u{20AC}'));
         // Unknown name
         assert_eq!(glyph_name_to_unicode("nonexistentglyph"), None);
+    }
+
+    /// AGL spec step 1: a variant suffix after the first period does not change
+    /// the character — lining/old-style figures and small caps are the common case.
+    #[test]
+    fn test_glyph_name_to_unicode_drops_variant_suffix() {
+        assert_eq!(glyph_name_to_unicode("one.SP"), Some('1'));
+        assert_eq!(glyph_name_to_unicode("three.OT"), Some('3'));
+        assert_eq!(glyph_name_to_unicode("a.smcp"), Some('a'));
+        assert_eq!(glyph_name_to_unicode("uni0041.alt"), Some('A'));
+        assert_eq!(glyph_name_to_unicode(".notdef"), None);
+        assert_eq!(glyph_name_to_unicode("nonexistent.sc"), None);
+    }
+
+    #[test]
+    fn test_difference_with_variant_suffix_resolves() {
+        let map = build_encoding_map(Some(BaseEncoding::WinAnsi), &[(0x13, "one.SP".to_string())]);
+        assert_eq!(map.get(&0x13), Some(&'1'));
     }
 
     #[test]
