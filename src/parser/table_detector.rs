@@ -234,6 +234,21 @@ impl TableDetector {
                     continue;
                 }
 
+                // Reject text columns set side by side: their lines run on into
+                // the next row, which a table cell does not do.
+                let cells = Self::column_texts(&table_rows, &table_columns);
+                if Self::columns_read_as_prose(&cells) {
+                    log::debug!("TableDetector: skipping region — columns flow as prose");
+                    continue;
+                }
+
+                // Reject a table of contents: entries against page numbers that
+                // never go down.
+                if Self::is_table_of_contents(&cells) {
+                    log::debug!("TableDetector: skipping region — table of contents");
+                    continue;
+                }
+
                 // Reject sparse tables: if any column is occupied by fewer than
                 // 25% of rows (and the region has > 5 rows), the structure is
                 // likely a single text column with occasional indented spans,
@@ -716,6 +731,97 @@ impl TableDetector {
             any_sparse
         );
         any_sparse
+    }
+
+    /// The text of each row, split into the region's columns (same assignment rule as
+    /// [`Self::is_sparse_misdetection`]). Runs that land in one cell are joined by a space.
+    fn column_texts(rows: &[TableRowData], columns: &[f32]) -> Vec<Vec<String>> {
+        rows.iter()
+            .map(|row| {
+                let mut cells = vec![String::new(); columns.len()];
+                for span in &row.spans {
+                    let col = columns
+                        .iter()
+                        .rposition(|&cs| span.x >= cs - 5.0)
+                        .unwrap_or(0);
+                    let text = span.text.trim();
+                    if text.is_empty() {
+                        continue;
+                    }
+                    if !cells[col].is_empty() {
+                        cells[col].push(' ');
+                    }
+                    cells[col].push_str(text);
+                }
+                cells
+            })
+            .collect()
+    }
+
+    /// Whether the region's columns read as running text rather than as cells.
+    ///
+    /// For each pair of vertically adjacent non-empty cells in a column, the upper one
+    /// *runs on* into the lower one when it ends in a hyphen, or ends without closing
+    /// punctuation while the lower one starts in lowercase. A table cell is complete in
+    /// itself; a line of a text column is not. Measured on born-digital pages, real
+    /// tables stay at or below a third of their pairs running on, and text columns laid
+    /// side by side sit above half.
+    fn columns_read_as_prose(cells: &[Vec<String>]) -> bool {
+        let num_columns = cells.first().map_or(0, Vec::len);
+        let mut pairs = 0usize;
+        let mut run_on = 0usize;
+        for col in 0..num_columns {
+            for window in cells.windows(2) {
+                let (upper, lower) = (window[0][col].as_str(), window[1][col].as_str());
+                if upper.is_empty() || lower.is_empty() {
+                    continue;
+                }
+                pairs += 1;
+                let ends_closed = upper.ends_with(['.', ':', ';', '!', '?', ')', ']']);
+                let starts_lower = lower.chars().next().is_some_and(char::is_lowercase);
+                if upper.ends_with('-') || (!ends_closed && starts_lower) {
+                    run_on += 1;
+                }
+            }
+        }
+        pairs >= 2 && run_on * 2 > pairs
+    }
+
+    /// Whether the region is a table of contents: the last column holds page
+    /// references — arabic numbers that never decrease, or roman numerals for front
+    /// matter — on most rows, and the entries before them are text.
+    fn is_table_of_contents(cells: &[Vec<String>]) -> bool {
+        let Some(last) = cells.first().map(|r| r.len().saturating_sub(1)) else {
+            return false;
+        };
+        if last == 0 {
+            return false;
+        }
+        let is_roman = |s: &str| {
+            !s.is_empty()
+                && s.chars()
+                    .all(|c| matches!(c.to_ascii_lowercase(), 'i' | 'v' | 'x' | 'l' | 'c'))
+        };
+        let mut pages: Vec<u32> = Vec::new();
+        let mut referenced_rows = 0usize;
+        for row in cells {
+            let page = row[last].as_str();
+            if page.is_empty() {
+                continue;
+            }
+            if let Ok(n) = page.parse::<u32>() {
+                pages.push(n);
+            } else if !is_roman(page) {
+                return false;
+            }
+            if row[..last].iter().all(String::is_empty) {
+                return false;
+            }
+            referenced_rows += 1;
+        }
+        pages.len() >= 3
+            && referenced_rows * 4 >= cells.len() * 3
+            && pages.windows(2).all(|w| w[0] <= w[1])
     }
 
     /// Check if the detected table actually represents a multi-column page layout.
@@ -1259,6 +1365,90 @@ mod tests {
             "Two-column layout should not be detected as a table, got {} tables",
             tables.len()
         );
+    }
+
+    /// Two text columns of a page set side by side: each column's lines run on into
+    /// the next row (no closing punctuation, next line starts lowercase or the line
+    /// ends in a hyphen). Table cells are independent of the cell below them.
+    #[test]
+    fn side_by_side_prose_columns_are_not_a_table() {
+        let detector = TableDetector::new();
+        let left = [
+            "the model is first trained on",
+            "a large corpus of web text and",
+            "then adapted to the target do-",
+            "main with a smaller learning",
+            "rate, which keeps the general",
+            "knowledge it acquired earlier.",
+        ];
+        let right = [
+            "whereas the second approach",
+            "starts from scratch and relies",
+            "on curated data alone; it is",
+            "slower but avoids inheriting",
+            "the biases of the larger cor-",
+            "pus that the first one uses.",
+        ];
+        let mut spans = Vec::new();
+        for i in 0..6 {
+            let y = 700.0 - i as f32 * 14.0;
+            spans.push(measured(left[i], 72.0, y, 150.0));
+            spans.push(measured(right[i], 320.0, y, 150.0));
+        }
+        let (tables, remaining) = detector.detect(spans);
+        assert!(
+            tables.is_empty(),
+            "prose columns must not become a table: {tables:?}"
+        );
+        assert_eq!(remaining.len(), 12);
+    }
+
+    /// A table of contents lines entries up against page numbers, but it is a list of
+    /// references in reading order, not a grid: its page column never goes down.
+    #[test]
+    fn table_of_contents_is_not_a_table() {
+        let detector = TableDetector::new();
+        let entries = [
+            ("Executive Summary", "4"),
+            ("Legal Framework", "6"),
+            ("Election Administration", "11"),
+            ("Campaign", ""),
+            ("Media Freedom", "25"),
+            ("Recommendations", "39"),
+        ];
+        let mut spans = Vec::new();
+        for (i, (title, page)) in entries.iter().enumerate() {
+            let y = 700.0 - i as f32 * 14.0;
+            spans.push(measured(title, 72.0, y, 120.0));
+            if !page.is_empty() {
+                spans.push(measured(page, 400.0, y, 10.0));
+            }
+        }
+        let (tables, _) = detector.detect(spans);
+        assert!(
+            tables.is_empty(),
+            "a table of contents is not a table: {tables:?}"
+        );
+    }
+
+    /// A count column that happens to be sorted is still data when it descends.
+    #[test]
+    fn a_ranked_count_table_stays_a_table() {
+        let detector = TableDetector::new();
+        let rows = [
+            ("Alpha", "17,266"),
+            ("Beta", "9,835"),
+            ("Gamma", "711"),
+            ("Delta", "46"),
+        ];
+        let mut spans = Vec::new();
+        for (i, (name, count)) in rows.iter().enumerate() {
+            let y = 700.0 - i as f32 * 14.0;
+            spans.push(measured(name, 72.0, y, 40.0));
+            spans.push(measured(count, 300.0, y, 30.0));
+        }
+        let (tables, _) = detector.detect(spans);
+        assert_eq!(tables.len(), 1);
     }
 
     #[test]
