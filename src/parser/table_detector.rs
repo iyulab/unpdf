@@ -159,17 +159,31 @@ impl TableDetector {
             columns
         );
 
-        if columns.len() < self.config.min_columns {
+        // Step 3: Find table regions — contiguous rows aligned with the page-wide
+        // columns, plus runs of multi-span rows those columns miss. A table that fills
+        // a small part of the page never contributes enough edges to page-wide
+        // columns; its own rows are judged on their own columns in step 4.
+        let mut table_regions = if columns.len() >= self.config.min_columns {
+            self.find_table_regions(&rows, &columns)
+        } else {
             log::debug!(
-                "TableDetector: not enough columns ({} < {})",
+                "TableDetector: not enough page-wide columns ({} < {})",
                 columns.len(),
                 self.config.min_columns
             );
-            return (vec![], spans);
+            Vec::new()
+        };
+        let mut local_regions = std::collections::HashSet::new();
+        for local in self.find_multi_span_runs(&rows) {
+            let overlaps = table_regions
+                .iter()
+                .any(|&(s, e)| local.0 <= e && s <= local.1);
+            if !overlaps {
+                table_regions.push(local);
+                local_regions.insert(local);
+            }
         }
-
-        // Step 3: Find table regions (contiguous rows with consistent column alignment)
-        let table_regions = self.find_table_regions(&rows, &columns);
+        table_regions.sort_unstable();
         log::debug!("TableDetector: found {} table regions", table_regions.len());
 
         if table_regions.is_empty() {
@@ -237,6 +251,14 @@ impl TableDetector {
                 // Reject text columns set side by side: their lines run on into
                 // the next row, which a table cell does not do.
                 let cells = Self::column_texts(&table_rows, &table_columns);
+
+                // A region found only as a run of multi-span rows has no page-wide
+                // alignment behind it, so it must look like a grid on its own.
+                if local_regions.contains(&(start_row, end_row)) && !Self::reads_as_grid(&cells) {
+                    log::debug!("TableDetector: skipping local region — not grid-like");
+                    continue;
+                }
+
                 if Self::columns_read_as_prose(&cells) {
                     log::debug!("TableDetector: skipping region — columns flow as prose");
                     continue;
@@ -554,6 +576,28 @@ impl TableDetector {
         regions
     }
 
+    /// Runs of at least `min_rows` consecutive rows that each hold two or more spans —
+    /// the rows a table occupies, whatever the rest of the page looks like.
+    fn find_multi_span_runs(&self, rows: &[TableRowData]) -> Vec<(usize, usize)> {
+        let mut runs = Vec::new();
+        let mut start: Option<usize> = None;
+        for (i, row) in rows.iter().enumerate() {
+            if row.spans.len() >= self.config.min_columns {
+                start.get_or_insert(i);
+            } else if let Some(s) = start.take() {
+                if i - s >= self.config.min_rows {
+                    runs.push((s, i - 1));
+                }
+            }
+        }
+        if let Some(s) = start {
+            if rows.len() - s >= self.config.min_rows {
+                runs.push((s, rows.len() - 1));
+            }
+        }
+        runs
+    }
+
     /// Calculate how well a row aligns with the detected columns.
     fn calculate_alignment_score(&self, row: &TableRowData, columns: &[f32]) -> f32 {
         if row.spans.is_empty() || columns.is_empty() {
@@ -756,6 +800,22 @@ impl TableDetector {
                 cells
             })
             .collect()
+    }
+
+    /// Whether cells look like a grid's: at least three rows, three quarters of the
+    /// cells filled, and short cells — at most four words on average. Measured on
+    /// born-digital pages, tables found this way average one to three and a half words
+    /// a cell; the text columns, reference lists and diagram labels that also come as
+    /// runs of multi-span rows average five to eleven, or leave a third of their cells
+    /// empty.
+    fn reads_as_grid(cells: &[Vec<String>]) -> bool {
+        let total = cells.iter().map(Vec::len).sum::<usize>();
+        let filled: Vec<&String> = cells.iter().flatten().filter(|c| !c.is_empty()).collect();
+        if cells.len() < 3 || total == 0 || filled.len() * 4 < total * 3 {
+            return false;
+        }
+        let words: usize = filled.iter().map(|c| c.split_whitespace().count()).sum();
+        words <= filled.len() * 4
     }
 
     /// Whether the region's columns read as running text rather than as cells.
@@ -1429,6 +1489,86 @@ mod tests {
             tables.is_empty(),
             "a table of contents is not a table: {tables:?}"
         );
+    }
+
+    /// A small table on a page of single-column text: its column edges recur on only a
+    /// handful of the page's rows, too few to count as page-wide columns, but within
+    /// its own rows they are on every one.
+    #[test]
+    fn a_small_table_among_body_text_is_found() {
+        let detector = TableDetector::new();
+        let mut spans = Vec::new();
+        let mut y = 760.0;
+        for i in 0..14 {
+            spans.push(measured(
+                &format!("Body line {i} of the procedure that runs across the page"),
+                72.0,
+                y,
+                400.0,
+            ));
+            y -= 14.0;
+        }
+        for row in [
+            ["Tube", "Water", "Glucose", "Yeast"],
+            ["1", "8 ml", "6 ml", "0 ml"],
+            ["2", "12 ml", "0 ml", "2 ml"],
+            ["3", "6 ml", "6 ml", "2 ml"],
+            ["4", "2 ml", "6 ml", "6 ml"],
+        ] {
+            for (j, cell) in row.iter().enumerate() {
+                spans.push(measured(cell, 72.0 + j as f32 * 110.0, y, 30.0));
+            }
+            y -= 14.0;
+        }
+        for i in 0..6 {
+            spans.push(measured(
+                &format!("More body text {i} after the table"),
+                72.0,
+                y,
+                400.0,
+            ));
+            y -= 14.0;
+        }
+        let (tables, _) = detector.detect(spans);
+        assert_eq!(tables.len(), 1, "{tables:?}");
+        assert_eq!(tables[0].columns.len(), 4);
+        assert_eq!(tables[0].rows.len(), 5);
+    }
+
+    /// Two columns of references side by side also come as a run of two-span rows, and
+    /// their entries close with a period, so they do not read as running text — but
+    /// their cells are far longer than a grid's.
+    #[test]
+    fn side_by_side_reference_entries_are_not_a_table() {
+        let detector = TableDetector::new();
+        let mut spans = Vec::new();
+        for i in 0..14 {
+            spans.push(measured(
+                &format!("Body line {i} of the discussion that runs across the page"),
+                72.0,
+                760.0 - i as f32 * 14.0,
+                440.0,
+            ));
+        }
+        let left = [
+            "Jack Rae, Sebastian Borgeaud, Trevor Cai.",
+            "Millican Jordan Hoffmann and Francis Song.",
+            "Scaling language models: methods and analysis.",
+            "Alec Radford, Jeffrey Wu, Rewon Child et al.",
+        ];
+        let right = [
+            "Nazneen Rajani, Kashif Rasul, Younes Belkada.",
+            "Shengyi Huang, Leandro von Werra et al.",
+            "Zephyr: direct distillation of alignment.",
+            "Hugo Touvron, Louis Martin, Kevin Stone et al.",
+        ];
+        for i in 0..4 {
+            let y = 550.0 - i as f32 * 14.0;
+            spans.push(measured(left[i], 72.0, y, 210.0));
+            spans.push(measured(right[i], 300.0, y, 210.0));
+        }
+        let (tables, _) = detector.detect(spans);
+        assert!(tables.is_empty(), "{tables:?}");
     }
 
     /// A count column that happens to be sorted is still data when it descends.
