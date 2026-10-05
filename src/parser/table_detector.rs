@@ -514,24 +514,37 @@ impl TableDetector {
     /// crossing row is tolerated (a spanning title or a merged cell); prose, where
     /// nearly every row runs through, is not. Runs without a measured or estimated
     /// width cannot cross anything, which keeps the previous behaviour for them.
+    ///
+    /// A header is the other place a table's text crosses its channels: group labels
+    /// span the columns they head, and a header set over several lines (or with
+    /// subscripts, which form rows of their own) crosses on each of them. So the rows
+    /// of a crossing run at the very top — at most [`MAX_HEADER_ROWS`], and fewer than
+    /// half the rows — are not counted, as long as rows below them keep the channel.
     fn keep_whitespace_channels(rows: &[TableRowData], edges: Vec<f32>) -> Vec<f32> {
         // Edges are bucketed to 5 pt, so a run starting at an edge may sit up to 2.5 pt
         // either side of it; only a run clearly through the edge counts as crossing.
         const MARGIN: f32 = 3.0;
-        let allowed = (rows.len() / 10).max(1);
+        const MAX_HEADER_ROWS: usize = 4;
+        let crosses = |row: &TableRowData, edge: f32| {
+            row.spans
+                .iter()
+                .any(|s| s.width > 0.0 && s.x < edge - MARGIN && s.x + s.width > edge + MARGIN)
+        };
+        let header_rows = rows
+            .iter()
+            .take_while(|row| edges.iter().any(|&edge| crosses(row, edge)))
+            .count();
+        let header_rows = if header_rows <= MAX_HEADER_ROWS && header_rows * 2 < rows.len() {
+            header_rows
+        } else {
+            0
+        };
+        let body = &rows[header_rows..];
+        let allowed = (body.len() / 10).max(1);
         edges
-            .into_iter()
-            .filter(|&edge| {
-                let crossing = rows
-                    .iter()
-                    .filter(|row| {
-                        row.spans.iter().any(|s| {
-                            s.width > 0.0 && s.x < edge - MARGIN && s.x + s.width > edge + MARGIN
-                        })
-                    })
-                    .count();
-                crossing <= allowed
-            })
+            .iter()
+            .copied()
+            .filter(|&edge| body.iter().filter(|row| crosses(row, edge)).count() <= allowed)
             .collect()
     }
 
@@ -1533,6 +1546,57 @@ mod tests {
         assert_eq!(tables.len(), 1, "{tables:?}");
         assert_eq!(tables[0].columns.len(), 4);
         assert_eq!(tables[0].rows.len(), 5);
+    }
+
+    /// A header set over two lines whose group labels span several columns crosses
+    /// the column channels — on its own rows only; the body below keeps them clear.
+    /// Coordinates are a real page's: the header's subscripts (`r` with `t` below it)
+    /// each make a row of their own, so more than one row crosses each channel.
+    #[test]
+    fn a_multi_line_spanning_header_keeps_the_body_columns() {
+        let detector = TableDetector::new();
+        let sized = |text: &str, x: f32, y: f32, width: f32, size: f32| TextSpan {
+            width,
+            ..make_span_w(text, x, y, size)
+        };
+        let mut spans = vec![
+            sized("Observed returns on the firm's ", 112.6, 649.2, 140.3, 9.0),
+            sized(
+                "Observed returns on a potential new investment ",
+                277.8,
+                649.2,
+                221.1,
+                9.0,
+            ),
+            sized("Time ", 58.0, 644.0, 24.8, 9.0),
+            sized("t ", 82.9, 644.0, 6.0, 9.0),
+            sized("p ", 225.2, 643.1, 6.8, 7.2),
+            sized("j ", 419.3, 643.1, 3.9, 7.2),
+            sized("portfolio over time ", 133.0, 638.8, 85.7, 9.0),
+            sized("r", 218.7, 638.8, 3.6, 9.0),
+            sized("for the firm's ", 352.9, 638.8, 59.9, 9.0),
+            sized("r", 412.8, 638.8, 3.6, 9.0),
+            sized("t", 222.3, 637.6, 2.9, 7.2),
+            sized("t", 416.4, 637.6, 2.9, 7.2),
+        ];
+        for (i, (year, a, b)) in [
+            ("2012 ", "10% ", "7% "),
+            ("2013 ", "6% ", "8% "),
+            ("2014 ", "7% ", "5% "),
+            ("2015 ", "3% ", "2% "),
+            ("2016 ", "5% ", "3% "),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let y = 620.8 - i as f32 * 18.0;
+            spans.push(sized(year, 58.0, y, 21.7, 9.0));
+            spans.push(sized(a, 175.2, y, 15.1, 9.0));
+            spans.push(sized(b, 380.8, y, 15.0, 9.0));
+        }
+        let (tables, _) = detector.detect(spans);
+        assert_eq!(tables.len(), 1, "{tables:?}");
+        assert_eq!(tables[0].columns.len(), 3, "{:?}", tables[0].columns);
     }
 
     /// Two columns of references side by side also come as a run of two-span rows, and
