@@ -1279,19 +1279,25 @@ impl<'a> LayoutAnalyzer<'a> {
         // layouts — not on intra-table cell gaps or bulleted list
         // indentation, which previously fragmented pages into dozens of
         // groups on Hancom-produced PDFs.
+        //
+        // A column gutter is far narrower than that, so a narrower channel still
+        // splits — but only when text of real width lies on both sides of it (see
+        // `XyCutConfig::min_gutter`), which list markers and indents never do.
         let median_font = median_font_size(&spans);
-        let min_x_gap = (median_font * 5.0).max(60.0);
-        let min_y_gap = (median_font * 3.0).max(36.0);
+        let config = super::xycut::XyCutConfig {
+            min_x_gap: (median_font * 5.0).max(60.0),
+            min_y_gap: (median_font * 3.0).max(36.0),
+            min_gutter: median_font.max(8.0),
+        };
 
-        let groups = super::xycut::xycut_segment(&blocks, min_x_gap, min_y_gap);
+        let groups = super::xycut::xycut_segment(&blocks, &config);
 
         log::debug!(
-            "XY-Cut segmented {} spans into {} groups (median_font={:.1}, min_x_gap={:.1}, min_y_gap={:.1})",
+            "XY-Cut segmented {} spans into {} groups (median_font={:.1}, {:?})",
             spans.len(),
             groups.len(),
             median_font,
-            min_x_gap,
-            min_y_gap,
+            config,
         );
 
         if groups.len() <= 1 {
