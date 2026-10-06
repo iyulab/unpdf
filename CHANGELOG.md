@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A short bold line titling what follows is a heading.** A line in the body face's bold,
+  at body size, a dozen words at most and not ending a sentence, standing between plain lines
+  and followed by plain body text ("Procedure:", "Steps for Using the Microscope") now comes
+  out as a heading. A bold line next to mostly-bold lines — a list of names, a bold paragraph,
+  a contents page's entries — stays text.
+- **Numbered titles with a separator after the number are headings.** "01 - Introduction",
+  "02- Methods" and "3) Results" in the body face's bold are now recognised like "5. The
+  dynamics"; a sentence that merely opens with a number still is not.
+
 ## 0.30.0 — 2026-10-07
 
 ### Fixed

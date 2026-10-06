@@ -452,7 +452,15 @@ impl PageTextLayerSignals {
 fn section_number_depth(text: &str) -> Option<usize> {
     let text = text.trim();
     let (number, rest) = text.split_once(char::is_whitespace)?;
+    // A dash, colon or closing parenthesis may separate the number from the title, against
+    // either ("01 - Introduction", "02- Methods", "3) Results").
+    const SEPARATORS: [char; 5] = ['-', '–', '—', ':', ')'];
+    let number = number.trim_end_matches(SEPARATORS);
     let rest = rest.trim_start();
+    let rest = match rest.strip_prefix(SEPARATORS) {
+        Some(after) if after.starts_with(char::is_whitespace) => after.trim_start(),
+        _ => rest,
+    };
 
     let is_roman = number.strip_suffix('.').is_some_and(|r| {
         !r.is_empty() && r.len() <= 6 && r.chars().all(|c| matches!(c, 'I' | 'V' | 'X' | 'L' | 'C'))
@@ -475,6 +483,28 @@ fn section_number_depth(text: &str) -> Option<usize> {
     let sentence_end = rest.ends_with(['.', ',', ';']);
     let words = rest.split_whitespace().count();
     (title_start && !sentence_end && words <= 16).then_some(depth)
+}
+
+/// Whether `line` could title what follows as a run-in title in the body face: bold
+/// throughout, the body's size, a dozen words at most, and not a sentence (it may end in a
+/// colon, not a full stop). A line that opens with a number is a section title only by its
+/// section number (`section_number_depth`), so it is left to that test.
+fn is_bold_run_in_title(line: &TextLine, text: &str, body_size: f32) -> bool {
+    let text = text.trim_end();
+    line.is_all_bold()
+        && (line.font_size - body_size).abs() <= 1.0
+        && !text.starts_with(|c: char| c.is_ascii_digit())
+        && text.split_whitespace().count() <= 12
+        && !text.ends_with(['.', '!', '?', ',', ';'])
+}
+
+/// Whether the line after `i` is plain text of the body's size, mostly not bold — what a
+/// title stands over.
+fn lines_follow_as_body(sizes: &[f32], has_bold: &[bool], i: usize, body_size: f32) -> bool {
+    match (sizes.get(i + 1), has_bold.get(i + 1)) {
+        (Some(&size), Some(&bold)) => !bold && (size - body_size).abs() <= 1.0,
+        _ => false,
+    }
 }
 
 /// Whether a character marks the line it opens as a list item rather than a heading.
@@ -1256,6 +1286,8 @@ impl<'a> LayoutAnalyzer<'a> {
         // Snapshot each line's font size so neighbour lookups aren't polluted
         // by mutations inside the loop.
         let sizes: Vec<f32> = lines.iter().map(|l| l.font_size).collect();
+        // Whether each line is mostly bold.
+        let has_bold: Vec<bool> = lines.iter().map(TextLine::is_bold).collect();
         let body_size = font_stats.body_size;
 
         for (i, line) in lines.iter_mut().enumerate() {
@@ -1301,6 +1333,16 @@ impl<'a> LayoutAnalyzer<'a> {
                 // number on a line that is bold throughout does the work. The number's
                 // depth gives the level, below a size-tier title.
                 ((depth + 1).min(4) as u8, false)
+            } else if is_bold_run_in_title(line, trimmed, body_size)
+                && (i == 0 || !has_bold[i - 1])
+                && lines_follow_as_body(&sizes, &has_bold, i, body_size)
+            {
+                // A short line in the body face's bold, standing between plain lines and
+                // followed by plain body text, titles what follows ("Procedure:",
+                // "Steps for Using the Microscope"). A bold line next to lines mostly in bold
+                // (a list of names, a bold paragraph, a contents page's bold entries) or one
+                // ending a sentence does not.
+                (3, false)
             } else {
                 continue;
             };
@@ -2743,6 +2785,72 @@ mod tests {
         );
     }
 
+    /// A short line in the body face's bold, between plain lines, titles what follows.
+    #[test]
+    fn test_detect_headings_promotes_a_bold_run_in_title() {
+        let stats = body_12pt_stats(&[20.0]);
+        for title in [
+            "Procedure:",
+            "Steps for Using the Microscope",
+            "Our Mission",
+        ] {
+            let result = LayoutAnalyzer::detect_headings(
+                &stats,
+                vec![
+                    line_at("Body text before it.", 100.0, 12.0, "Helvetica"),
+                    line_at(title, 80.0, 12.0, "Helvetica-Bold"),
+                    line_at("Body text after it.", 60.0, 12.0, "Helvetica"),
+                ],
+            );
+            assert!(result[1].is_heading, "{title:?}");
+            assert_eq!(result[1].heading_level, 3, "{title:?}");
+        }
+    }
+
+    /// What a bold run-in title is not: a sentence, a line among bold lines (names, a bold
+    /// paragraph, a contents page's entries), a line over another bold line, or a long one.
+    #[test]
+    fn test_detect_headings_leaves_other_bold_lines_as_text() {
+        let stats = body_12pt_stats(&[20.0]);
+        let cases: [(&str, &str, &str, &str); 4] = [
+            (
+                "Helvetica",
+                "Note that this is a sentence.",
+                "Helvetica",
+                "a sentence",
+            ),
+            (
+                "Helvetica-Bold",
+                "Campaign",
+                "Helvetica",
+                "after a bold line",
+            ),
+            (
+                "Helvetica",
+                "Campaign",
+                "Helvetica-Bold",
+                "before a bold line",
+            ),
+            (
+                "Helvetica",
+                "A bold line that runs on for well over a dozen words of text here",
+                "Helvetica",
+                "a long line",
+            ),
+        ];
+        for (before, title, after, why) in cases {
+            let result = LayoutAnalyzer::detect_headings(
+                &stats,
+                vec![
+                    line_at("Body text before it", 100.0, 12.0, before),
+                    line_at(title, 80.0, 12.0, "Helvetica-Bold"),
+                    line_at("Body text after it", 60.0, 12.0, after),
+                ],
+            );
+            assert!(!result[1].is_heading, "{why}");
+        }
+    }
+
     /// A numbered section title set in the body face's bold at body size: no size signal,
     /// but the section number plus a line that is bold throughout marks it. The level
     /// follows the number's depth.
@@ -2755,6 +2863,9 @@ mod tests {
             ("III. Regulatory cholesterol", 2),
             ("3.1. Status of Business Operations", 3),
             ("3.2.6. SDGs Dissemination in Social Media", 4),
+            ("01 - Find Open Educational Resources", 2),
+            ("02- Prepare Your Content", 2),
+            ("3) Results", 2),
         ] {
             let lines = vec![
                 line_at("Body text before.", 100.0, 12.0, "Helvetica"),
