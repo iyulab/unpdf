@@ -1624,7 +1624,11 @@ impl<'a> LayoutAnalyzer<'a> {
             if should_break {
                 // Create block from current lines
                 if !current_block_lines.is_empty() {
-                    blocks.push(Self::finish_block(std::mem::take(&mut current_block_lines)));
+                    Self::push_block(
+                        &mut blocks,
+                        std::mem::take(&mut current_block_lines),
+                        avg_spacing,
+                    );
                 }
             }
 
@@ -1633,10 +1637,40 @@ impl<'a> LayoutAnalyzer<'a> {
 
         // Don't forget the last block
         if !current_block_lines.is_empty() {
-            blocks.push(Self::finish_block(current_block_lines));
+            Self::push_block(&mut blocks, current_block_lines, avg_spacing);
         }
 
         blocks
+    }
+
+    /// Finish `lines` as a block and append it — or, when it is a lone number that
+    /// nothing continued, append it to the block before.
+    ///
+    /// A line starting `N.` opens a new block so that each list item is its own
+    /// block. A marker alone on its line (`01.` with the item text on the lines
+    /// below) is still an item when the lines after it join its block. When none
+    /// do, the "marker" is the end of the previous block's text — the second half
+    /// of a page range wrapped onto its own line (`432: 298-` / `306.`) — and as a
+    /// list item it would be stripped to nothing and dropped.
+    fn push_block(blocks: &mut Vec<TextBlock>, lines: Vec<TextLine>, avg_spacing: f32) {
+        if let [line] = lines.as_slice() {
+            let text = line.text();
+            let is_bare_number = detect_list_marker(&text)
+                .is_some_and(|m| m.ordered_number.is_some() && m.prefix_len >= text.len());
+            if is_bare_number {
+                if let Some(prev) = blocks.last_mut() {
+                    let close = prev
+                        .lines
+                        .last()
+                        .is_some_and(|p| (p.y - line.y).abs() <= avg_spacing * 1.5);
+                    if close && prev.block_type != BlockType::Heading {
+                        prev.lines.extend(lines);
+                        return;
+                    }
+                }
+            }
+        }
+        blocks.push(Self::finish_block(lines));
     }
 
     /// Classify a finished run of lines into a [`TextBlock`], deriving the
@@ -1666,7 +1700,12 @@ impl<'a> LayoutAnalyzer<'a> {
             let mut block = TextBlock::new(lines, BlockType::ListItem);
             block.list_item_number = marker.ordered_number;
             block.list_marker_len = marker.prefix_len;
-            return block;
+            // An item is its text; with the marker stripped this one has none, and
+            // would be dropped. What is left is a number standing on its own.
+            if !block.list_item_text().trim().is_empty() {
+                return block;
+            }
+            return TextBlock::new(block.lines, BlockType::Paragraph);
         }
 
         TextBlock::new(lines, BlockType::Paragraph)
@@ -2635,6 +2674,75 @@ mod tests {
         assert_eq!(block.block_type, BlockType::ListItem);
         assert_eq!(block.list_item_number, Some(3));
         assert_eq!(block.list_item_text(), "Third step");
+    }
+
+    /// The second half of a page range wrapped onto its own line reads like an
+    /// ordered marker (`306.`). Nothing continues it, so it is the end of the
+    /// previous item — as an item of its own it was stripped to nothing and lost.
+    #[test]
+    fn test_push_block_keeps_a_lone_number_with_the_block_before() {
+        let mut blocks = Vec::new();
+        let item = |text: &str, y: f32| vec![line_at(text, y, 9.0, "Times")];
+        LayoutAnalyzer::push_block(
+            &mut blocks,
+            item("24. Massagué J. Nature 2004; 432: 298-", 600.0),
+            14.0,
+        );
+        LayoutAnalyzer::push_block(&mut blocks, item("306.", 586.0), 14.0);
+        LayoutAnalyzer::push_block(
+            &mut blocks,
+            item("25. Wakefield LM, Roberts AB.", 572.0),
+            14.0,
+        );
+
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0].list_item_number, Some(24));
+        assert!(
+            blocks[0].text().ends_with("298- 306."),
+            "{}",
+            blocks[0].text()
+        );
+        assert_eq!(blocks[1].list_item_number, Some(25));
+    }
+
+    /// A marker on its own line whose item text follows on the next lines is still
+    /// an item: those lines joined its block before `push_block` saw it.
+    #[test]
+    fn test_push_block_keeps_a_marker_line_that_its_text_continues() {
+        let mut blocks = Vec::new();
+        LayoutAnalyzer::push_block(
+            &mut blocks,
+            vec![line_at("Intro text.", 600.0, 9.0, "Times")],
+            14.0,
+        );
+        LayoutAnalyzer::push_block(
+            &mut blocks,
+            vec![
+                line_at("01.", 586.0, 9.0, "Times"),
+                line_at("Item text", 572.0, 9.0, "Times"),
+            ],
+            14.0,
+        );
+
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[1].block_type, BlockType::ListItem);
+        assert_eq!(blocks[1].list_item_number, Some(1));
+    }
+
+    /// A lone number far below the block before is not its continuation.
+    #[test]
+    fn test_push_block_does_not_reach_across_a_paragraph_gap() {
+        let mut blocks = Vec::new();
+        LayoutAnalyzer::push_block(
+            &mut blocks,
+            vec![line_at("Body text.", 600.0, 9.0, "Times")],
+            14.0,
+        );
+        LayoutAnalyzer::push_block(&mut blocks, vec![line_at("12.", 500.0, 9.0, "Times")], 14.0);
+        assert_eq!(blocks.len(), 2);
+        // Kept as text, not as an item that strips to nothing.
+        assert_eq!(blocks[1].block_type, BlockType::Paragraph);
+        assert_eq!(blocks[1].text(), "12.");
     }
 
     /// A numbered *heading* ("1. Introduction", large font) must stay a heading —

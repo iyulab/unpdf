@@ -337,7 +337,12 @@ impl CleanupPipeline {
         // "end-to-end") has no whitespace after it and must be preserved, while
         // the line-break/space artifacts above always do.
         let re = Regex::new(r"([a-zA-Z])-\s+([a-z])").unwrap();
-        re.replace_all(text, "$1$2").to_string()
+        let text = re.replace_all(text, "$1$2");
+
+        // A number range broken at its hyphen ("432: 298-\n306.") keeps the
+        // hyphen — it is the range — and loses only the break.
+        let re_range = Regex::new(r"(\d)-\s+(\d)").unwrap();
+        re_range.replace_all(&text, "$1-$2").to_string()
     }
 
     /// Drop standalone lines that contain no alphanumeric / CJK / Hangul /
@@ -465,35 +470,32 @@ impl CleanupPipeline {
     }
 
     fn merge_list_markers(&self, text: &str) -> String {
-        // Merge list markers with following content
-        // Handles:
+        // Merge a list marker standing alone on its line with the content below it:
         // - "• \n내용" → "• 내용"
         // - "01. \n내용" → "01. 내용"
         // - "1) \n내용" → "1) 내용"
         // - "(1) \n내용" → "(1) 내용"
+        // - "가. \n내용" → "가. 내용"
         // - "■\n내용" → "■ 내용"
+        //
+        // The marker must be the whole line. Matched anywhere, these patterns took
+        // the line break out of ordinary text: a sentence ending in a number
+        // ("… 21: 866-75.\n23. Koorstra" → "866-75.23. Koorstra"), every Korean
+        // sentence end ("…합니다.\n다음" → "…합니다.다음"), and a line ending in a
+        // hyphen ("298-\n306." → "298- 306.").
+        const MARKERS: [&str; 5] = [
+            r"[•\-■□▪▸►◆◇➤✓✗]",
+            r"\d{1,3}[.)]",
+            r"\(\d{1,3}\)",
+            r"[가-힣][.)]",
+            r"[❶-❿]",
+        ];
 
         let mut result = text.to_string();
-
-        // Bullet markers followed by newline (• \n, - \n, ■\n, etc.)
-        let re_bullet = Regex::new(r"([•\-■□▪▸►◆◇➤✓✗])\s*\n\s*").unwrap();
-        result = re_bullet.replace_all(&result, "$1 ").to_string();
-
-        // Numbered list markers: "01. \n", "1. \n", "1) \n", "(1) \n"
-        let re_number = Regex::new(r"(\d{1,3}[.)]\s*)\n\s*").unwrap();
-        result = re_number.replace_all(&result, "$1").to_string();
-
-        let re_paren_number = Regex::new(r"(\(\d{1,3}\)\s*)\n\s*").unwrap();
-        result = re_paren_number.replace_all(&result, "$1").to_string();
-
-        // Korean list markers: "가. \n", "나. \n", etc.
-        let re_korean = Regex::new(r"([가-힣][.)]\s*)\n\s*").unwrap();
-        result = re_korean.replace_all(&result, "$1").to_string();
-
-        // Circled numbers: ❶, ❷, etc.
-        let re_circled = Regex::new(r"([❶-❿])\s*\n\s*").unwrap();
-        result = re_circled.replace_all(&result, "$1 ").to_string();
-
+        for marker in MARKERS {
+            let re = Regex::new(&format!(r"(?m)^([ \t]*{marker})[ \t]*\n\s*")).unwrap();
+            result = re.replace_all(&result, "$1 ").to_string();
+        }
         result
     }
 
@@ -698,6 +700,30 @@ mod tests {
             "Expected number merged, got: {}",
             result
         );
+    }
+
+    #[test]
+    fn test_hyphenation_fix_rejoins_a_broken_number_range() {
+        let pipeline = CleanupPipeline::from_preset(CleanupPreset::Standard);
+        let result = pipeline.process("Nature 2004; 432: 298-\n306.");
+        assert!(result.contains("432: 298-306."), "{}", result);
+        // A spaced dash between numbers is prose, not a broken range.
+        let result = pipeline.process("from 10 - 20 units");
+        assert!(result.contains("10 - 20"), "{}", result);
+    }
+
+    /// A number or hyphen that merely ends a line is not a marker: the break stays,
+    /// and becomes the usual space.
+    #[test]
+    fn test_merge_list_markers_leaves_line_ends_alone() {
+        let pipeline = CleanupPipeline::from_preset(CleanupPreset::Standard);
+        let result = pipeline.process("Mod Pathol 2008; 21: 866-75.\n23. Koorstra JB.");
+        assert!(!result.contains("75.23."), "{}", result);
+        assert!(result.contains("866-75."), "{}", result);
+        assert!(result.contains("23. Koorstra"), "{}", result);
+
+        let result = pipeline.process("주의하십시오.\n다음 항목을 확인합니다.");
+        assert!(!result.contains("주의하십시오.다음"), "{}", result);
     }
 
     #[test]
