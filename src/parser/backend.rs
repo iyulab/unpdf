@@ -2190,7 +2190,8 @@ impl RawFontResolver {
     /// when the font dictionary gives no `/Encoding`, and the base `/Differences` apply to
     /// when it names no `/BaseEncoding` (ISO 32000-1 §9.6.6.1 — for an embedded program the
     /// implicit base is the program's own encoding, not StandardEncoding). Read for a Type 1
-    /// program (`/FontFile`); `None` for any other font.
+    /// program (`/FontFile`) and a bare CFF one (`/FontFile3 /Type1C`); `None` for any
+    /// other font.
     fn program_encoding(
         &self,
         doc: &RawDocument,
@@ -2214,6 +2215,7 @@ impl RawFontResolver {
             .and_then(|dict| embedded_font_program(doc, dict))
             .and_then(|(format, data)| match format {
                 FontFormat::Type1 => super::type1::builtin_encoding_chars(&data),
+                FontFormat::Cff => super::cff::builtin_encoding_chars(&data),
                 _ => None,
             });
         self.program_encoding_cache
@@ -2268,7 +2270,8 @@ impl RawFontResolver {
     }
 
     /// An encoding dictionary's map: its `/Differences` over its `/BaseEncoding` — or, when
-    /// it names none, over the embedded program's own encoding if the font has one, else
+    /// it names none, over the font's own encoding (§9.6.6.1): its embedded program's, else a
+    /// standard 14 font's built-in one (Symbol's and ZapfDingbats' are their own), else
     /// StandardEncoding.
     fn encoding_over_base(
         &self,
@@ -2281,7 +2284,11 @@ impl RawFontResolver {
             .and_then(|b| b.as_name())
             .and_then(BaseEncoding::from_name);
         if named.is_none() {
-            if let Some(mut map) = self.program_encoding(doc, font_obj_id) {
+            let own = self.program_encoding(doc, font_obj_id).or_else(|| {
+                self.standard_font(doc, font_obj_id)
+                    .map(|standard| standard.builtin_encoding().clone())
+            });
+            if let Some(mut map) = own {
                 for (code, name) in differences {
                     if let Some(ch) = glyph_name_to_unicode(name) {
                         map.insert(*code, ch);

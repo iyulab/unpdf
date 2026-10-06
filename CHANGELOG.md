@@ -4,12 +4,16 @@
 
 ### Fixed
 
-- **Text in fonts that embed a Type 1 program reads through the program's own encoding.** A
-  font with no `/Encoding` now uses its program's built-in encoding, and an encoding dictionary
-  with no `/BaseEncoding` applies its `/Differences` to it (ISO 32000-1 §9.6.6.1) — before,
-  both fell back to StandardEncoding or a Latin-1 guess. TeX's fonts are the common case: they
+- **Text in fonts that embed their program reads through the program's own encoding.** A font
+  embedding a Type 1 program or a bare CFF one (`/FontFile3 /Type1C`) with no `/Encoding` now
+  uses the program's built-in encoding, and an encoding dictionary with no `/BaseEncoding`
+  applies its `/Differences` to it (ISO 32000-1 §9.6.6.1) — before, both fell back to
+  StandardEncoding or a Latin-1 guess. A standard 14 font named without a program likewise
+  takes its own built-in encoding as that base, so Symbol's and ZapfDingbats' codes keep their
+  meaning under a `/Differences`-only encoding. TeX's fonts are the common case: they
   put ligatures, quotes and dashes at codes no Latin encoding has there, so `coefficient` came
-  out as `coecient`, `“fair”` as `\fair"` and `23.5–54` as `23.5{54`.
+  out as `coecient`, `“fair”` as `\fair"` and `23.5–54` as `23.5{54`; in their math fonts
+  `ψ` came out as `Ã` and `−` as `¡`.
 - **Every name in the Adobe Glyph List resolves.** Glyph names were looked up in a hand-kept
   subset of the list; `ff`, `ffi`, `ffl`, Greek letters and most of the other 4,000-odd names
   were missing, so a `/Differences` entry or a font program naming them lost the character.

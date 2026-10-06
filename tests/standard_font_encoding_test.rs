@@ -50,3 +50,29 @@ fn a_latin_standard_font_uses_standard_encoding() {
         "the apostrophe is the glyph StandardEncoding draws, got {text:?}"
     );
 }
+
+#[test]
+fn symbol_differences_apply_to_symbols_own_encoding() {
+    // An encoding dictionary with `/Differences` and no `/BaseEncoding`: the codes it does
+    // not rename keep Symbol's own meaning (§9.6.6.1), not StandardEncoding's.
+    let content = b"BT /F1 12 Tf 72 700 Td (ab\\310) Tj ET\n";
+    let pdf = common::assemble(vec![
+        b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+        b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Resources<</Font<</F1 5 0 R>>>>\
+          /Contents 4 0 R>>"
+            .to_vec(),
+        common::stream_object(&format!("<</Length {}>>", content.len()), content),
+        b"<</Type/Font/Subtype/Type1/BaseFont/Symbol\
+          /Encoding<</Type/Encoding/Differences[200/gamma]>>>>"
+            .to_vec(),
+    ]);
+    let doc = PdfParser::from_bytes(&pdf)
+        .and_then(|p| p.parse())
+        .expect("synthetic PDF should parse");
+    let text = to_text(&doc, &RenderOptions::default()).expect("text renders");
+    assert!(
+        text.contains("\u{03B1}\u{03B2}\u{03B3}"),
+        "alpha, beta from Symbol's encoding, gamma from /Differences, got {text:?}"
+    );
+}
