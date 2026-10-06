@@ -189,3 +189,39 @@ fn utf16be_metadata_titles_are_decoded_with_and_without_the_mark() {
         Some("Report 2026")
     );
 }
+
+/// Title of a one-page document whose `/Info` dictionary is `info`.
+fn info_title(info: &str) -> Option<String> {
+    let data = assemble(
+        &[
+            "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>".to_string(),
+            info.to_string(),
+        ],
+        "/Info 4 0 R",
+    );
+    PdfParser::from_bytes(&data)
+        .expect("fixture should load")
+        .parse()
+        .expect("fixture should parse")
+        .metadata
+        .title
+}
+
+/// Korean producers write the title as raw CP949 bytes with no byte-order mark. Read as
+/// a single-byte encoding it came back as `2024³â 3¿ù …`.
+#[test]
+fn a_cp949_info_title_decodes_as_korean() {
+    // "2024년 3월 업무 보고서" in CP949.
+    let title = info_title("<< /Title <32303234B3E22033BFF920BEF7B9AB20BAB8B0EDBCAD> >>");
+    assert_eq!(title.as_deref(), Some("2024년 3월 업무 보고서"));
+}
+
+/// An unmarked string that is not a legacy code page is PDFDocEncoding, not Latin-1:
+/// `0x84` is an em dash and `0xA0` the euro sign there, C1 controls in Latin-1.
+#[test]
+fn an_unmarked_info_title_is_pdf_doc_encoded() {
+    let title = info_title("<< /Title <50726963652084203130A0> >>");
+    assert_eq!(title.as_deref(), Some("Price \u{2014} 10\u{20AC}"));
+}

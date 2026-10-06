@@ -63,6 +63,10 @@ cbc = "0.2"
 regex = "1.11"
 unicode-bidi = "0.3"
 unicode-normalization = "0.1"
+# Metadata and outline strings written in a legacy CJK code page without a byte-order
+# mark (CP949, Shift_JIS, GBK, Big5) — detection and decoding.
+chardetng = "1.0"
+encoding_rs = "0.8"
 
 # Date/time
 chrono = { version = "0.4", features = ["serde", "wasmbind"] }

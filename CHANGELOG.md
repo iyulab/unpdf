@@ -10,6 +10,20 @@
   `GetResourceIds` threw `InvalidOperationException` there. The binding now uses
   source-generated serialization and is marked `IsAotCompatible`, so the trim and AOT
   analyzers keep it that way.
+- Document metadata (title, author, subject, keywords, …), outline titles and form field
+  names and values written in a legacy CJK code page without a byte-order mark — CP949,
+  GB 2312/GBK, Big5, Shift_JIS, EUC-JP, as Korean and Japanese tools commonly write the
+  title — are decoded in that code page instead of coming back as Latin mojibake
+  (`2024³â 3¿ù …` for `2024년 3월 …`). A character the producer damaged decodes as U+FFFD
+  rather than as a plausible wrong one. Very short strings (a two-character title) can
+  carry too little evidence to tell, and keep the single-byte reading.
+- Text strings without a byte-order mark that are not UTF-8 are decoded as PDFDocEncoding,
+  as the PDF specification defines them, instead of as Latin-1. The two differ in
+  `0x18`–`0x1F` and `0x80`–`0xA0`, where PDFDocEncoding has the bullet, dashes,
+  typographic quotes, `™` and `€`; those used to come back as control characters and
+  were then dropped. Form field strings took a third path that turned every such byte
+  into U+FFFD.
+- A text string marked as UTF-8 (`EF BB BF`, PDF 2.0) is decoded as UTF-8.
 
 ## 0.25.0 — 2026-10-03
 

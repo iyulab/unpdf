@@ -24,6 +24,7 @@ pub mod stream;
 mod table_detector;
 #[cfg(test)]
 pub(crate) mod test_pdf;
+mod text_string;
 mod vector_graphics;
 pub mod xycut;
 
