@@ -201,6 +201,12 @@ if (quality.PagesIncomplete)
 `SuppressedTextRuns`, `UndecodableContentStreams`. Text and images a page paints
 through Form XObjects count as the page's own; `FormOpCount` counts the form paints.
 
+How well the page was read: `Rotation` (its `/Rotate`), `ImageCoverage` (share of the
+page painted by images, 0–1 — a full-page scan is near 1, a logo a few hundredths),
+`RotatedTextRuns`, `RuledGrids` / `RuledTables` (ruling-line grids drawn vs. tables built
+from them), `ReadingRegions`, `ColumnCount` and `AmbiguousLayoutRegions` (regions read
+across although their text looked like two columns — where the reading order guessed).
+
 ### `UnpdfException`
 
 `Message` plus `Kind` (`UnpdfErrorKind`) — see "Handling failures".

@@ -197,21 +197,33 @@ char* unpdf_get_author(const UnpdfDocument* doc);
 char* unpdf_get_extraction_quality(const UnpdfDocument* doc);
 
 /**
- * Per-page content-stream operator statistics as a JSON object:
- * {"page":N,"text_op_count":N,"image_op_count":N,"ocr_text_suppressed":bool,
- *  "suppressed_text_runs":N,"undecodable_content_streams":N}
+ * Per-page statistics as a JSON object:
+ * {"page":N,"rotation":N,"text_op_count":N,"image_op_count":N,"form_op_count":N,
+ *  "ocr_text_suppressed":bool,"suppressed_text_runs":N,"undecodable_content_streams":N,
+ *  "image_coverage":F,"rotated_text_runs":N,"ruled_grids":N,"ruled_tables":N,
+ *  "reading_regions":N,"column_count":N,"ambiguous_layout_regions":N}
  *
- * The last two are this page's share of the document-level counts of the same
- * name in unpdf_get_extraction_quality.
+ * suppressed_text_runs and undecodable_content_streams are this page's share
+ * of the document-level counts of the same name in
+ * unpdf_get_extraction_quality.
  *
  * text_op_count counts text-showing operators (Tj/TJ/'/"); image_op_count
- * counts XObject Do invocations (mostly images; may include form XObjects).
- * Both 0 -> genuinely blank page. text_op_count == 0 with image_op_count > 0
- * -> image-only (scanned) page, OCR required.
+ * counts image paints (Do of anything but a Form XObject, and inline images);
+ * form_op_count counts Form XObject paints. All include what the forms a page
+ * paints hold. text 0 and image 0 -> genuinely blank page. text 0 with
+ * image > 0 -> image-only (scanned) page, OCR required.
  *
  * Note: a *searchable* scan (page image plus an invisible OCR text layer)
  * reports text_op_count > 0 — combine with ocr_text_suppressed to detect
  * scans whose OCR layer was dropped as unreadable.
+ *
+ * rotation is the page's /Rotate (0, 90, 180, 270 degrees clockwise).
+ * image_coverage is the share of the page painted by images (0 to 1).
+ * rotated_text_runs counts text not set horizontally left to right.
+ * ruled_grids / ruled_tables: ruling-line grids drawn, tables built from them.
+ * reading_regions: text regions read one after another; column_count: the
+ * most of them side by side at any height; ambiguous_layout_regions: regions
+ * read across although their text looked like two columns.
  *
  * @param page_number 1-indexed page number.
  * @return JSON string (must be freed with unpdf_free_string), or NULL if the

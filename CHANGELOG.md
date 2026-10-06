@@ -1,5 +1,47 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Page statistics say how well a page was read, not only what it holds — in `Page`, the
+  JSON output and the page stats of the C ABI, .NET (`PageStats`) and Python bindings:
+  - `image_coverage` — the share of the page painted by images, 0 to 1: the union of the
+    image paints' rectangles, clipped to the page. A full-page scan is near 1, a logo a few
+    hundredths, though both are one image paint.
+  - `reading_regions` and `column_count` — the text regions the reading order read one after
+    another, and the most of them side by side at any height.
+  - `ambiguous_layout_regions` — regions read line by line across although a whitespace
+    channel divided their text into two sides that each looked like a column of text: the
+    rules that split columns declined, and the reading order there is a guess.
+  - `rotated_text_runs` — text not set horizontally left to right, which the reading order
+    treats as horizontal.
+  - `ruled_grids` and `ruled_tables` — ruling-line grids drawn on the page, and tables built
+    from them. More grids than tables means a drawn grid produced no table.
+  - `rotation` in the page stats of the bindings.
+- `parser::xycut::xycut_partition` segments blocks by index and reports the regions it could
+  not decide; `Segmentation::column_count` counts the regions side by side.
+
+### Fixed
+
+- A page whose `/MediaBox` does not start at the origin had the wrong size — the box's
+  upper-right corner was taken for its width and height — and its page-number margins were
+  measured from the wrong edge.
+- `Page::rotation` is the page's `/Rotate` (inherited from the page tree, normalized to 0,
+  90, 180 or 270). It was always 0.
+- Inline images (`BI … EI`) count as image paints: in `image_op_count`, in the document's
+  scanned-PDF signal, and in deciding whether an image covers the page.
+- Whether an image covers the page (which, with an invisible text layer, marks an OCR scan)
+  is decided from where the image lands, clipped to the page — not from its size alone.
+- A `/Parent` cycle in a damaged page tree no longer recurses without bound while looking up
+  an inherited page box.
+- Text drawn twice at the same spot on a multi-column page is placed in one reading-order
+  region; matching spans back to regions by position could put it in two, or none.
+
+### Removed
+
+- `parser::Column`, the type of a column-detection pass the reading order no longer used.
+
 ## 0.26.2 — 2026-10-06
 
 ### Fixed

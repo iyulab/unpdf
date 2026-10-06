@@ -818,15 +818,20 @@ unparser_shared::export_string_getter!(
 unparser_shared::export_string_getter!(
     /// Get per-page content-stream operator statistics as a JSON object.
     ///
-    /// Returns `{"page":N,"text_op_count":N,"image_op_count":N,"form_op_count":N,
-    /// "ocr_text_suppressed":bool,"suppressed_text_runs":N,"undecodable_content_streams":N}`.
+    /// Returns `{"page":N,"rotation":N,"text_op_count":N,"image_op_count":N,"form_op_count":N,
+    /// "ocr_text_suppressed":bool,"suppressed_text_runs":N,"undecodable_content_streams":N,
+    /// "image_coverage":F,"rotated_text_runs":N,"ruled_grids":N,"ruled_tables":N,
+    /// "reading_regions":N,"column_count":N,"ambiguous_layout_regions":N}`.
+    ///
+    /// The counts say what the page holds; the rest say how well it was read. Thresholds
+    /// are the caller's.
     ///
     /// - `suppressed_text_runs` / `undecodable_content_streams`: this page's share of the
     ///   document-level counts of the same name in `unpdf_get_extraction_quality`.
     /// - `text_op_count`: number of text-showing operators (`Tj`/`TJ`/`'`/`"`),
     ///   including those inside the Form XObjects the page paints.
-    /// - `image_op_count`: number of image paints (`Do` of anything but a Form XObject),
-    ///   including those inside the forms the page paints.
+    /// - `image_op_count`: number of image paints (`Do` of anything but a Form XObject,
+    ///   and inline images), including those inside the forms the page paints.
     /// - `form_op_count`: number of Form XObject paints. A form's content is part of the
     ///   page and is already counted above; this says how the page was assembled.
     /// - Both `0` → genuinely blank page. `text_op_count == 0` with
@@ -834,6 +839,18 @@ unparser_shared::export_string_getter!(
     /// - Note: a *searchable* scan (page image plus an invisible OCR text layer)
     ///   reports `text_op_count > 0` — combine with `ocr_text_suppressed` to
     ///   detect scans whose OCR layer was dropped as unreadable.
+    /// - `rotation`: the page's `/Rotate` — 0, 90, 180 or 270 degrees clockwise.
+    /// - `image_coverage`: share of the page painted by images, 0 to 1 (the union of the
+    ///   image paints' rectangles, clipped to the page). Tells a full-page scan (near 1)
+    ///   from a logo (a few hundredths) when both report one image paint.
+    /// - `rotated_text_runs`: text runs not set horizontally left to right. The reading
+    ///   order treats them as horizontal, so their order may be wrong.
+    /// - `ruled_grids` / `ruled_tables`: ruling-line grids drawn on the page, and tables
+    ///   built from them. More grids than tables means a drawn grid produced no table.
+    /// - `reading_regions`: text regions read one after another. `column_count`: the most
+    ///   of them side by side at any height (1 for single-column text).
+    /// - `ambiguous_layout_regions`: regions read line by line across although their text
+    ///   looked like two columns — where the reading order had to guess.
     ///
     /// # Safety
     ///
@@ -861,12 +878,20 @@ unparser_shared::export_string_getter!(
             })?;
         serde_json::to_string(&serde_json::json!({
             "page": page.number,
+            "rotation": page.rotation,
             "text_op_count": page.text_op_count,
             "image_op_count": page.image_op_count,
             "form_op_count": page.form_op_count,
             "ocr_text_suppressed": page.ocr_text_suppressed,
             "suppressed_text_runs": page.suppressed_text_runs,
             "undecodable_content_streams": page.undecodable_content_streams,
+            "image_coverage": page.image_coverage,
+            "rotated_text_runs": page.rotated_text_runs,
+            "ruled_grids": page.ruled_grids,
+            "ruled_tables": page.ruled_tables,
+            "reading_regions": page.reading_regions,
+            "column_count": page.column_count,
+            "ambiguous_layout_regions": page.ambiguous_layout_regions,
         }))
         .map_err(json_err)
     }

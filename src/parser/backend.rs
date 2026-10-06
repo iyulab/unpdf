@@ -60,6 +60,41 @@ impl From<PageId> for ResourceScope {
 }
 
 /// Font information returned by the backend.
+/// A page's box in default user space: the rectangle `[llx lly urx ury]` of its
+/// `/MediaBox` (ISO 32000-1 §14.11.2), corners normalized so `llx <= urx`, `lly <= ury`.
+///
+/// The origin is part of the box. A page whose box does not start at `(0, 0)` places its
+/// content relative to `(llx, lly)`, so a box reduced to width and height mislocates it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PageBox {
+    pub llx: f32,
+    pub lly: f32,
+    pub urx: f32,
+    pub ury: f32,
+}
+
+impl PageBox {
+    /// US Letter at the origin — the box assumed when a page declares none.
+    pub const LETTER: PageBox = PageBox {
+        llx: 0.0,
+        lly: 0.0,
+        urx: 612.0,
+        ury: 792.0,
+    };
+
+    pub fn width(&self) -> f32 {
+        self.urx - self.llx
+    }
+
+    pub fn height(&self) -> f32 {
+        self.ury - self.lly
+    }
+
+    pub fn area(&self) -> f32 {
+        self.width() * self.height()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct BackendFontInfo {
     /// Font resource name (key in the page's font dictionary).
@@ -401,9 +436,23 @@ pub trait PdfBackend: Send + Sync {
     /// Return raw metadata (version, info dict fields, encryption status).
     fn metadata(&self) -> PdfMetadataRaw;
 
-    /// Return page dimensions (width, height) in points.
-    /// Falls back to Letter size (612, 792) if MediaBox is absent.
-    fn page_dimensions(&self, page: PageId) -> (f32, f32);
+    /// The page's box (its `/MediaBox`, inherited from the Pages tree when the page does
+    /// not set one). Falls back to [`PageBox::LETTER`] when no usable box is found.
+    fn page_box(&self, page: PageId) -> PageBox;
+
+    /// Return page dimensions (width, height) in points — the size of [`page_box`].
+    ///
+    /// [`page_box`]: PdfBackend::page_box
+    fn page_dimensions(&self, page: PageId) -> (f32, f32) {
+        let b = self.page_box(page);
+        (b.width(), b.height())
+    }
+
+    /// The page's `/Rotate` (inherited when the page does not set one), normalized to
+    /// 0, 90, 180 or 270: how far clockwise the page is turned for display. Defaults to 0.
+    fn page_rotation(&self, _page: PageId) -> u16 {
+        0
+    }
 
     /// Return the document outline (bookmarks) as a tree.
     /// Implementations must handle cycle detection and depth limits.
@@ -675,11 +724,20 @@ impl PdfBackend for RawBackend {
         meta
     }
 
-    fn page_dimensions(&self, page: PageId) -> (f32, f32) {
-        if let Some(dims) = self.find_media_box(page) {
-            return dims;
-        }
-        (612.0, 792.0)
+    fn page_box(&self, page: PageId) -> PageBox {
+        inherited_page_attr(&self.doc, page, b"MediaBox")
+            .and_then(|obj| page_box_from_array(&self.doc, obj))
+            .unwrap_or(PageBox::LETTER)
+    }
+
+    fn page_rotation(&self, page: PageId) -> u16 {
+        let degrees = inherited_page_attr(&self.doc, page, b"Rotate")
+            .map(|obj| self.doc.resolve(obj))
+            .and_then(|obj| obj.as_f32())
+            .unwrap_or(0.0) as i64;
+        // `/Rotate` must be a multiple of 90; anything else is read as the nearest one.
+        let quarter = ((degrees as f64 / 90.0).round() as i64).rem_euclid(4);
+        (quarter * 90) as u16
     }
 
     fn outline(&self) -> Result<Vec<RawOutlineItem>> {
@@ -875,6 +933,46 @@ fn matrix_from(doc: &RawDocument, obj: &RawPdfObject) -> Option<[f32; 6]> {
         };
     }
     Some(m)
+}
+
+/// A page attribute the page may inherit from its Pages-tree ancestors (ISO 32000-1
+/// §7.7.3.4 — `/MediaBox`, `/CropBox`, `/Rotate`, `/Resources`): the page's own value, or
+/// the nearest ancestor's. The walk stops at a repeated node or after 64 levels, so a
+/// `/Parent` cycle in a damaged file ends the search instead of the process.
+fn inherited_page_attr<'d>(
+    doc: &'d RawDocument,
+    page: PageId,
+    key: &[u8],
+) -> Option<&'d RawPdfObject> {
+    const MAX_TREE_DEPTH: usize = 64;
+    let mut node = Some(page);
+    let mut seen = std::collections::HashSet::new();
+    while let Some(id) = node {
+        if seen.len() >= MAX_TREE_DEPTH || !seen.insert(id) {
+            return None;
+        }
+        let dict = doc.get_dict(id).ok()?;
+        if let Some(value) = raw_dict_get(dict, key) {
+            return Some(value);
+        }
+        node = raw_dict_get(dict, b"Parent").and_then(|p| p.as_reference());
+    }
+    None
+}
+
+/// A rectangle array `[x1 y1 x2 y2]` as a [`PageBox`], its numbers resolved through
+/// indirect references. `None` for anything else, or a box with no area.
+fn page_box_from_array(doc: &RawDocument, obj: &RawPdfObject) -> Option<PageBox> {
+    let arr = doc.resolve(obj).as_array()?;
+    let n = |i: usize| arr.get(i).map(|v| doc.resolve(v)).and_then(|v| v.as_f32());
+    let (x1, y1, x2, y2) = (n(0)?, n(1)?, n(2)?, n(3)?);
+    let page_box = PageBox {
+        llx: x1.min(x2),
+        lly: y1.min(y2),
+        urx: x1.max(x2),
+        ury: y1.max(y2),
+    };
+    (page_box.width() > 0.0 && page_box.height() > 0.0).then_some(page_box)
 }
 
 /// The resource dictionaries the names in `scope` resolve through, innermost first: the
@@ -1221,43 +1319,6 @@ impl RawBackend {
     }
 
     /// Find MediaBox for a page, walking up the page tree for inherited values.
-    fn find_media_box(&self, page_id: PageId) -> Option<(f32, f32)> {
-        let dict = self.doc.get_dict(page_id).ok()?;
-
-        if let Some(media_box) = raw_dict_get(dict, b"MediaBox") {
-            if let Some(dims) = extract_dimensions_from_array(media_box) {
-                return Some(dims);
-            }
-        }
-
-        // Walk up to parent
-        if let Some(parent) = raw_dict_get(dict, b"Parent") {
-            if let Some(parent_id) = parent.as_reference() {
-                return self.find_media_box_in_ancestor(parent_id);
-            }
-        }
-
-        None
-    }
-
-    fn find_media_box_in_ancestor(&self, id: PageId) -> Option<(f32, f32)> {
-        let dict = self.doc.get_dict(id).ok()?;
-
-        if let Some(media_box) = raw_dict_get(dict, b"MediaBox") {
-            if let Some(dims) = extract_dimensions_from_array(media_box) {
-                return Some(dims);
-            }
-        }
-
-        if let Some(parent) = raw_dict_get(dict, b"Parent") {
-            if let Some(parent_id) = parent.as_reference() {
-                return self.find_media_box_in_ancestor(parent_id);
-            }
-        }
-
-        None
-    }
-
     /// Collect outline items by following First/Next chain.
     fn collect_outline_items(
         &self,
@@ -2015,18 +2076,6 @@ fn raw_get_string(doc: &RawDocument, dict: &RawPdfDict, key: &[u8]) -> Option<St
     decoded.map(sanitize_extracted_text)
 }
 
-/// Extract (width, height) from a MediaBox array.
-fn extract_dimensions_from_array(obj: &RawPdfObject) -> Option<(f32, f32)> {
-    let arr = obj.as_array()?;
-    if arr.len() >= 4 {
-        let width = arr[2].as_f32().unwrap_or(612.0);
-        let height = arr[3].as_f32().unwrap_or(792.0);
-        Some((width, height))
-    } else {
-        None
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2150,6 +2199,53 @@ mod raw_backend_tests {
     fn page_dimensions_come_from_the_media_box() {
         let raw = backend();
         assert_eq!(raw.page_dimensions(raw.pages()[&1]), (595.0, 842.0));
+    }
+
+    /// A box is its four corners, in any order, off the origin or not; the size is the
+    /// difference of the corners, not the upper-right corner.
+    #[test]
+    fn the_page_box_keeps_its_origin() {
+        use crate::parser::test_pdf::pdf;
+        let raw = RawBackend::load_bytes(&pdf(
+            vec![
+                b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+                b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+                b"<</Type/Page/Parent 2 0 R/MediaBox[695 942 100 100]>>".to_vec(),
+            ],
+            1,
+        ))
+        .unwrap();
+        let page = raw.pages()[&1];
+        assert_eq!(
+            raw.page_box(page),
+            PageBox {
+                llx: 100.0,
+                lly: 100.0,
+                urx: 695.0,
+                ury: 942.0
+            }
+        );
+        assert_eq!(raw.page_dimensions(page), (595.0, 842.0));
+    }
+
+    /// A `/Parent` cycle ends the search for an inherited attribute; it does not recurse
+    /// until the stack runs out.
+    #[test]
+    fn a_parent_cycle_ends_the_inherited_lookup() {
+        use crate::parser::test_pdf::pdf;
+        let raw = RawBackend::load_bytes(&pdf(
+            vec![
+                b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+                b"<</Type/Pages/Kids[3 0 R]/Count 1/Parent 4 0 R>>".to_vec(),
+                b"<</Type/Page/Parent 2 0 R>>".to_vec(),
+                b"<</Type/Pages/Kids[2 0 R]/Parent 2 0 R>>".to_vec(),
+            ],
+            1,
+        ))
+        .unwrap();
+        let page = raw.pages()[&1];
+        assert_eq!(raw.page_box(page), PageBox::LETTER);
+        assert_eq!(raw.page_rotation(page), 0);
     }
 
     /// A page without `/Resources` inherits its parent's (ISO 32000-1 §7.7.3.4) -- for its

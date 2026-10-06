@@ -18,7 +18,8 @@ pub struct Page {
     /// Content blocks on the page
     pub elements: Vec<Block>,
 
-    /// Page rotation in degrees (0, 90, 180, 270)
+    /// Page rotation in degrees (0, 90, 180, 270): the page's `/Rotate`, how far clockwise
+    /// it is turned for display. `width` and `height` are the unrotated page box's.
     pub rotation: u16,
 
     /// 이 페이지에 포함된 이미지 리소스. `(resource_id, resource)` 형식.
@@ -55,7 +56,8 @@ pub struct Page {
     pub text_op_count: u32,
 
     /// Image paints: `Do` operators that paint an image (or anything that is not a Form
-    /// XObject), including those inside the forms the page paints. Omitted from JSON when 0.
+    /// XObject) and inline images (`BI`), including those inside the forms the page paints.
+    /// Omitted from JSON when 0.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub image_op_count: u32,
 
@@ -69,10 +71,52 @@ pub struct Page {
     /// current output format (unsupported color space or bit depth), so dropped.
     #[serde(default)]
     pub unsupported_image_count: usize,
+
+    /// Share of the page box painted by images, 0 to 1: the union of every image paint's
+    /// rectangle (XObject or inline, inside forms too), clipped to the page. Near 1 with
+    /// little text is a scan; a logo is a few hundredths. Omitted from JSON when 0.
+    #[serde(default, skip_serializing_if = "is_zero_f32")]
+    pub image_coverage: f32,
+
+    /// Text runs whose baseline is not horizontal left to right — rotated, vertical or
+    /// upside-down text. The reading order treats every run as horizontal, so text set
+    /// this way may come out in the wrong order. Omitted from JSON when 0.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub rotated_text_runs: u32,
+
+    /// Ruling-line grids drawn on the page. More grids than `ruled_tables` means a drawn
+    /// grid produced no table. Omitted from JSON when 0.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub ruled_grids: u32,
+
+    /// Tables built from the page's ruling-line grids (tables found from text alignment
+    /// alone are not counted). Omitted from JSON when 0.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub ruled_tables: u32,
+
+    /// Text regions the reading order read one after another — columns, and the bands a
+    /// heading or a full-width line divides them into. Omitted from JSON when 0.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub reading_regions: u32,
+
+    /// The most of those regions set side by side at any height: 1 for a single column,
+    /// 2 for two columns. Omitted from JSON when 0 (no text).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub column_count: u32,
+
+    /// Regions read line by line across although a whitespace channel divides their text
+    /// into two sides that each look like a column of text: the rules that split columns
+    /// declined, so the reading order there is a guess. Omitted from JSON when 0.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub ambiguous_layout_regions: u32,
 }
 
 fn is_zero(n: &u32) -> bool {
     *n == 0
+}
+
+fn is_zero_f32(n: &f32) -> bool {
+    *n == 0.0
 }
 
 impl Page {
@@ -92,6 +136,13 @@ impl Page {
             image_op_count: 0,
             form_op_count: 0,
             unsupported_image_count: 0,
+            image_coverage: 0.0,
+            rotated_text_runs: 0,
+            ruled_grids: 0,
+            ruled_tables: 0,
+            reading_regions: 0,
+            column_count: 0,
+            ambiguous_layout_regions: 0,
         }
     }
 

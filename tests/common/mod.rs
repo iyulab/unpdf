@@ -836,6 +836,24 @@ pub fn undecodable_form_pdf() -> Vec<u8> {
 /// Every single-document fixture in this module, by name, for properties that must hold on
 /// any well-formed document (the sweeps in `document_integrity_test` and `text_hygiene_test`).
 /// Listing a new fixture here enrolls it in those sweeps.
+/// One page whose Pages node carries `pages_entries` and whose page dictionary carries
+/// `page_entries` (its `/MediaBox`, `/Rotate`, ...), drawing `content`. Resources: `/F1`
+/// Helvetica, `/Im0` a one-pixel gray image.
+pub fn page_pdf(pages_entries: &str, page_entries: &str, content: &[u8]) -> Vec<u8> {
+    let objects: Vec<Vec<u8>> = vec![
+        b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+        format!("<</Type/Pages/Kids[3 0 R]/Count 1{pages_entries}>>").into_bytes(),
+        format!(
+            "<</Type/Page/Parent 2 0 R{page_entries}             /Resources<</Font<</F1 5 0 R>>/XObject<</Im0 6 0 R>>>>/Contents 4 0 R>>"
+        )
+        .into_bytes(),
+        stream_object(&format!("<</Length {}>>", content.len()), content),
+        HELVETICA.to_vec(),
+        gray_pixel_image(),
+    ];
+    assemble(objects)
+}
+
 pub fn all_fixtures() -> Vec<(&'static str, Vec<u8>)> {
     vec![
         ("image_only_pdf", image_only_pdf()),

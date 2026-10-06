@@ -457,6 +457,11 @@ class TestGetPageStats:
         assert stats["text_op_count"] == 0
         assert stats["image_op_count"] >= 1
         assert stats["ocr_text_suppressed"] is False
+        # How well the page was read: a full-page scan, no text to order.
+        assert stats["image_coverage"] == pytest.approx(1.0, abs=1e-3)
+        assert stats["rotation"] == 0
+        assert stats["column_count"] == 0
+        assert stats["ambiguous_layout_regions"] == 0
 
     def test_form_drawn_page(self):
         """Text drawn through a Form XObject is text, and the form is not an image."""

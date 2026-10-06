@@ -113,6 +113,13 @@ Per-page content-stream operator counts (1-indexed): `page`, `text_op_count`,
 XObjects count as the page's own; `form_op_count` counts the form paints. The
 last two are this page's share of the document-level counts of the same name.
 
+How well the page was read: `rotation` (its `/Rotate`), `image_coverage` (share
+of the page painted by images, 0–1 — a full-page scan is near 1, a logo a few
+hundredths), `rotated_text_runs`, `ruled_grids` / `ruled_tables` (ruling-line
+grids drawn vs. tables built from them), `reading_regions`, `column_count` and
+`ambiguous_layout_regions` (regions read across although their text looked like
+two columns — where the reading order guessed).
+
 ### `get_resource_ids(source: PdfSource, options: dict | None = None) -> list[str]`
 ### `get_resource_info(source: PdfSource, resource_id: str, options: dict | None = None) -> dict`
 ### `get_resource_data(source: PdfSource, resource_id: str, options: dict | None = None) -> bytes`

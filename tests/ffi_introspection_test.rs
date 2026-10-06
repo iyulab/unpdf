@@ -68,6 +68,22 @@ fn page_stats_distinguishes_image_only_page() {
         assert_eq!(v["text_op_count"], 0);
         assert!(v["image_op_count"].as_u64().unwrap() >= 1);
         assert_eq!(v["ocr_text_suppressed"], false);
+        // A full-page scan: the image covers the page, and there is no text to order.
+        assert!(
+            (v["image_coverage"].as_f64().unwrap() - 1.0).abs() < 1e-3,
+            "{json}"
+        );
+        assert_eq!(v["rotation"], 0);
+        assert_eq!(v["reading_regions"], 0);
+        assert_eq!(v["column_count"], 0);
+        for key in [
+            "rotated_text_runs",
+            "ruled_grids",
+            "ruled_tables",
+            "ambiguous_layout_regions",
+        ] {
+            assert_eq!(v[key], 0, "{key} in {json}");
+        }
 
         unpdf_free_document(doc);
     }
@@ -84,6 +100,9 @@ fn page_stats_reports_text_page() {
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert!(v["text_op_count"].as_u64().unwrap() >= 1);
         assert_eq!(v["image_op_count"], 0);
+        assert_eq!(v["image_coverage"], 0.0);
+        assert_eq!(v["reading_regions"], 1);
+        assert_eq!(v["column_count"], 1);
 
         unpdf_free_document(doc);
     }

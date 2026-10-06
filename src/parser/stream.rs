@@ -207,7 +207,7 @@ use super::backend::PdfBackend;
 use super::pdf_parser::{convert_outline_item_pub, parse_pdf_date_pub, parse_single_page};
 
 /// Sample the first `max_pages` pages of content stream operators to detect
-/// scan-only PDFs. Returns `true` when image (`Do`) operators are present but
+/// scan-only PDFs. Returns `true` when image (`Do`, `BI`) operators are present but
 /// no text-show operators (`Tj`, `TJ`, `'`, `"`) are found, which is the
 /// signature of a PDF composed entirely of raster images without a text layer.
 fn detect_scan_pdf(
@@ -229,7 +229,8 @@ fn detect_scan_pdf(
         for op in &painted.ops {
             match op.operator.as_str() {
                 "Tj" | "TJ" | "'" | "\"" => return false, // Text found — not a scan PDF
-                "Do" => image_ops += 1,
+                // An XObject or an inline image (`BI`) — a scan stored either way.
+                "Do" | "BI" => image_ops += 1,
                 _ => {}
             }
         }

@@ -298,32 +298,6 @@ pub struct TextBlock {
     list_marker_len: usize,
 }
 
-/// A detected column in the page layout.
-#[derive(Debug, Clone)]
-pub struct Column {
-    /// Left boundary X coordinate
-    pub left: f32,
-    /// Right boundary X coordinate
-    pub right: f32,
-    /// Column index (0 = leftmost)
-    pub index: usize,
-}
-
-impl Column {
-    /// Check if an X coordinate falls within this column.
-    pub fn contains(&self, x: f32) -> bool {
-        x >= self.left && x <= self.right
-    }
-
-    /// Check if a span belongs to this column.
-    pub fn contains_span(&self, span: &TextSpan) -> bool {
-        // A span belongs to a column if its left edge is within the column
-        // or if its center point is within the column
-        let center = span.x + span.width / 2.0;
-        self.contains(span.x) || self.contains(center)
-    }
-}
-
 /// Type of text block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockType {
@@ -380,10 +354,34 @@ impl TextBlock {
 pub struct PageOpCounts {
     /// Text-showing operators (`Tj`, `TJ`, `'`, `"`).
     pub text: u32,
-    /// `Do` of an image (or of anything that is not a form), including inside forms.
+    /// Image paints: `Do` of an image (or of anything that is not a form) and inline
+    /// images (`BI`), including inside forms.
     pub image: u32,
     /// `Do` of a Form XObject.
     pub form: u32,
+}
+
+/// What reading the page last analysed found out about it, beyond its text — the facts a
+/// consumer needs to tell a page that was read well from one that was not.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct PageFacts {
+    /// Share of the page box painted by images (0–1): the union of every image paint's
+    /// rectangle, clipped to the page box.
+    pub image_coverage: f32,
+    /// Text runs whose baseline is not horizontal left-to-right — rotated, vertical or
+    /// upside-down text, which the reading order treats as horizontal.
+    pub rotated_text_runs: u32,
+    /// Ruling-line grids drawn on the page.
+    pub ruled_grids: u32,
+    /// Tables built from those grids.
+    pub ruled_tables: u32,
+    /// Text regions the reading order read independently.
+    pub reading_regions: u32,
+    /// The most of those regions set side by side at any height (1 for a single column).
+    pub column_count: u32,
+    /// Regions read line by line across although their text looked like two columns —
+    /// where the reading order had to guess.
+    pub ambiguous_layout_regions: u32,
 }
 
 /// Layout analyzer for extracting structured text from PDF pages.
@@ -412,6 +410,10 @@ pub struct LayoutAnalyzer<'a> {
     ///
     /// Set each time the page's content is read, so it reports the last pass.
     undecodable_content_streams: Cell<usize>,
+    /// The page last analysed, as far as reading it found out. The paint facts are set by
+    /// `parse_operations`, the reading-order facts each time spans are grouped into lines,
+    /// so a re-analysed page reports its last pass.
+    page_facts: Cell<PageFacts>,
 }
 
 /// What a page's content stream says about how its text was produced.
@@ -648,6 +650,7 @@ impl<'a> LayoutAnalyzer<'a> {
             form_op_count: Cell::new(0),
             suppressed_text_runs: Cell::new(0),
             undecodable_content_streams: Cell::new(0),
+            page_facts: Cell::new(PageFacts::default()),
         }
     }
 
@@ -687,6 +690,18 @@ impl<'a> LayoutAnalyzer<'a> {
         }
     }
 
+    /// What reading the page last analysed found out about it.
+    pub fn page_facts(&self) -> PageFacts {
+        self.page_facts.get()
+    }
+
+    /// Record how many tables were built from the page's ruling-line grids.
+    pub(crate) fn note_ruled_tables(&self, tables: usize) {
+        let mut facts = self.page_facts.get();
+        facts.ruled_tables = tables as u32;
+        self.page_facts.set(facts);
+    }
+
     /// The display names of the fonts the names in `scope` refer to.
     fn font_names(&self, scope: ResourceScope) -> HashMap<Vec<u8>, FontInfo> {
         self.backend
@@ -724,8 +739,7 @@ impl<'a> LayoutAnalyzer<'a> {
     pub fn filter_spans_for_page(&self, spans: &mut Vec<TextSpan>, page_num: u32) {
         let pages = self.backend.pages();
         if let Some(&page_id) = pages.get(&page_num) {
-            let (_, page_height) = self.backend.page_dimensions(page_id);
-            filter_header_footer_spans(spans, page_height);
+            filter_header_footer_spans(spans, self.backend.page_box(page_id));
         }
     }
 
@@ -779,12 +793,12 @@ impl<'a> LayoutAnalyzer<'a> {
         let page_id = pages
             .get(&page_num)
             .ok_or(Error::PageOutOfRange(page_num, pages.len() as u32))?;
-        let (_page_width, page_height) = self.backend.page_dimensions(*page_id);
+        let page_box = self.backend.page_box(*page_id);
 
         let mut spans = self.extract_page_spans(page_num)?;
 
         // Filter out page numbers / running headers from top/bottom margins
-        filter_header_footer_spans(&mut spans, page_height);
+        filter_header_footer_spans(&mut spans, page_box);
 
         // Update font statistics
         for span in &spans {
@@ -834,10 +848,10 @@ impl<'a> LayoutAnalyzer<'a> {
         self.text_op_count.set(0);
         self.image_op_count.set(0);
         self.suppressed_text_runs.set(0);
-        let page_area = {
-            let (w, h) = self.backend.page_dimensions(page_id);
-            w * h
-        };
+        let page_box = self.backend.page_box(page_id);
+        // Where each image paint landed on the page, in page space.
+        let mut image_rects: Vec<Rect> = Vec::new();
+        let mut rotated_text_runs = 0u32;
         // Text rendering mode (`Tr`): 3 paints nothing — the mode OCR layers use.
         let mut render_mode: i64 = 0;
         let mut render_mode_stack: Vec<i64> = Vec::new();
@@ -862,7 +876,13 @@ impl<'a> LayoutAnalyzer<'a> {
             // 무관하게 항상 집계한다 (`Do` arm 은 page_area 가드가 있음).
             match op.operator.as_str() {
                 "Tj" | "TJ" | "'" | "\"" => self.text_op_count.set(self.text_op_count.get() + 1),
-                "Do" => self.image_op_count.set(self.image_op_count.get() + 1),
+                // An image paint maps the unit square through the CTM — an XObject's `Do`
+                // and an inline image (`BI ... EI`) alike. Forms are interpreted in place,
+                // so a `Do` left here is never a form's.
+                "Do" | "BI" => {
+                    self.image_op_count.set(self.image_op_count.get() + 1);
+                    image_rects.push(unit_square_on_page(&ctm));
+                }
                 _ => {}
             }
             let operand = |i: usize| op.operands.get(i).and_then(get_number_from_value);
@@ -886,15 +906,6 @@ impl<'a> LayoutAnalyzer<'a> {
                 "Tr" if !op.operands.is_empty() => {
                     if let Some(mode) = operand(0) {
                         render_mode = mode as i64;
-                    }
-                }
-                "Do" if page_area > 0.0 => {
-                    // The CTM maps the unit square to where the XObject lands, so its
-                    // column lengths are the drawn width and height.
-                    let drawn_w = ctm[0].hypot(ctm[1]);
-                    let drawn_h = ctm[2].hypot(ctm[3]);
-                    if drawn_w * drawn_h / page_area >= PageTextLayerSignals::PAGE_COVERAGE {
-                        signals.has_page_covering_image = true;
                     }
                 }
                 "cm" if op.operands.len() >= 6 => {
@@ -1056,6 +1067,9 @@ impl<'a> LayoutAnalyzer<'a> {
                     });
 
                     if !text.trim().is_empty() {
+                        if !reads_left_to_right(&text_matrix.tm, &ctm) {
+                            rotated_text_runs += 1;
+                        }
                         count_render_mode(
                             &text,
                             render_mode,
@@ -1085,214 +1099,30 @@ impl<'a> LayoutAnalyzer<'a> {
         }
         self.suppressed_text_runs.set(suppressed_runs);
 
+        let page_rect = Rect::from_page_box(page_box);
+        let page_area = page_rect.area();
+        let clipped: Vec<Rect> = image_rects
+            .iter()
+            .filter_map(|r| r.intersect(&page_rect))
+            .collect();
+        if page_area > 0.0 {
+            signals.has_page_covering_image = clipped
+                .iter()
+                .any(|r| r.area() / page_area >= PageTextLayerSignals::PAGE_COVERAGE);
+        }
+        let image_coverage = if page_area > 0.0 {
+            (union_area(&clipped) / page_area).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let mut facts = self.page_facts.get();
+        facts.image_coverage = image_coverage;
+        facts.rotated_text_runs = rotated_text_runs;
+        facts.ruled_grids = lattice_grids.len() as u32;
+        facts.ruled_tables = 0;
+        self.page_facts.set(facts);
+
         Ok((spans, signals, lattice_grids))
-    }
-
-    /// Detect columns in a page based on vertical gap (gutter) detection.
-    ///
-    /// This looks for vertical empty spaces between text regions to identify
-    /// column boundaries. Returns columns sorted from left to right.
-    fn detect_columns(&self, spans: &[TextSpan]) -> Vec<Column> {
-        if spans.is_empty() {
-            return vec![];
-        }
-
-        // Find minimum and maximum X to determine page extent
-        let min_x = spans
-            .iter()
-            .map(|s| s.x)
-            .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-            .unwrap_or(0.0);
-        let max_x = spans
-            .iter()
-            .map(|s| s.x + s.width)
-            .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-            .unwrap_or(0.0);
-
-        let page_width = max_x - min_x;
-
-        // Don't detect columns if page is too narrow
-        if page_width < 250.0 {
-            return vec![Column {
-                left: min_x - 10.0,
-                right: max_x + 10.0,
-                index: 0,
-            }];
-        }
-
-        // Divide page into vertical slices and count spans in each
-        let slice_width = 3.0; // Finer slices for better precision
-        let num_slices = ((page_width / slice_width) as usize) + 1;
-        let mut slice_occupancy = vec![0usize; num_slices];
-
-        // Count how many spans occupy each slice
-        for span in spans {
-            let start_slice = ((span.x - min_x) / slice_width) as usize;
-            let end_slice = (((span.x + span.width) - min_x) / slice_width) as usize;
-
-            for slot in slice_occupancy
-                .iter_mut()
-                .take(end_slice.min(num_slices - 1) + 1)
-                .skip(start_slice)
-            {
-                *slot += 1;
-            }
-        }
-
-        // Find the largest gap (sequence of empty slices) in the middle 70% of the page
-        // Extended from 50% to catch more gutters
-        let search_start = num_slices * 15 / 100; // Start at 15%
-        let search_end = num_slices * 85 / 100; // End at 85%
-
-        let mut best_gap_start = 0;
-        let mut best_gap_len = 0;
-        let mut best_gap_center_dist = f32::MAX; // Distance from center
-
-        let page_center = num_slices / 2;
-        let mut current_gap_start = 0;
-        let mut current_gap_len = 0;
-
-        for (i, &occupancy) in slice_occupancy
-            .iter()
-            .enumerate()
-            .take(search_end)
-            .skip(search_start)
-        {
-            if occupancy == 0 {
-                if current_gap_len == 0 {
-                    current_gap_start = i;
-                }
-                current_gap_len += 1;
-            } else {
-                if current_gap_len > 0 {
-                    let gap_center = current_gap_start + current_gap_len / 2;
-                    let center_dist = (gap_center as i32 - page_center as i32).abs() as f32;
-
-                    // Prefer gaps that are:
-                    // 1. Larger (more confident it's a gutter)
-                    // 2. Closer to center (more likely to be a column separator)
-                    let current_gap_width = current_gap_len as f32 * slice_width;
-
-                    if current_gap_width >= 10.0 {
-                        // Minimum 10pt gap
-                        // Score: gap_width * (1 - center_distance_ratio)
-                        let best_gap_width = best_gap_len as f32 * slice_width;
-
-                        // Prefer larger gaps, or similar-sized gaps closer to center
-                        if current_gap_width > best_gap_width * 1.5
-                            || (current_gap_width >= best_gap_width * 0.7
-                                && center_dist < best_gap_center_dist)
-                        {
-                            best_gap_start = current_gap_start;
-                            best_gap_len = current_gap_len;
-                            best_gap_center_dist = center_dist;
-                        }
-                    }
-                }
-                current_gap_len = 0;
-            }
-        }
-
-        // Check the last gap
-        if current_gap_len > 0 {
-            let gap_center = current_gap_start + current_gap_len / 2;
-            let center_dist = (gap_center as i32 - page_center as i32).abs() as f32;
-            let current_gap_width = current_gap_len as f32 * slice_width;
-            let best_gap_width = best_gap_len as f32 * slice_width;
-
-            if current_gap_width >= 10.0
-                && (current_gap_width > best_gap_width * 1.5
-                    || (current_gap_width >= best_gap_width * 0.7
-                        && center_dist < best_gap_center_dist))
-            {
-                best_gap_start = current_gap_start;
-                best_gap_len = current_gap_len;
-            }
-        }
-
-        // Convert gap to actual X coordinates
-        let gap_width = best_gap_len as f32 * slice_width;
-
-        log::debug!(
-            "Best gap: width={:.1}pt at x={:.1}, page_width={:.1}",
-            gap_width,
-            min_x + best_gap_start as f32 * slice_width,
-            page_width
-        );
-
-        // Require a minimum gap width for column detection (at least 12 points)
-        if gap_width < 12.0 {
-            log::debug!("Gap too small (< 12pt), treating as single column");
-            return vec![Column {
-                left: min_x - 10.0,
-                right: max_x + 10.0,
-                index: 0,
-            }];
-        }
-
-        // Calculate gutter center
-        let gutter_center =
-            min_x + (best_gap_start as f32 + best_gap_len as f32 / 2.0) * slice_width;
-
-        // Validate that both columns have reasonable width (at least 80 points each)
-        let left_col_width = gutter_center - min_x;
-        let right_col_width = max_x - gutter_center;
-
-        log::debug!(
-            "Column widths: left={:.1}, right={:.1}",
-            left_col_width,
-            right_col_width
-        );
-
-        if left_col_width < 80.0 || right_col_width < 80.0 {
-            log::debug!("Column too narrow, treating as single column");
-            return vec![Column {
-                left: min_x - 10.0,
-                right: max_x + 10.0,
-                index: 0,
-            }];
-        }
-
-        // Validate that both columns have spans
-        let left_spans = spans
-            .iter()
-            .filter(|s| s.x + s.width / 2.0 < gutter_center)
-            .count();
-        let right_spans = spans
-            .iter()
-            .filter(|s| s.x + s.width / 2.0 >= gutter_center)
-            .count();
-
-        log::debug!(
-            "Spans: left={}, right={}, total={}",
-            left_spans,
-            right_spans,
-            spans.len()
-        );
-
-        // Both columns should have at least 10% of spans
-        let min_spans = spans.len() / 10;
-        if left_spans < min_spans.max(2) || right_spans < min_spans.max(2) {
-            log::debug!("Spans too imbalanced, treating as single column");
-            return vec![Column {
-                left: min_x - 10.0,
-                right: max_x + 10.0,
-                index: 0,
-            }];
-        }
-
-        vec![
-            Column {
-                left: min_x - 10.0,
-                right: gutter_center,
-                index: 0,
-            },
-            Column {
-                left: gutter_center,
-                right: max_x + 10.0,
-                index: 1,
-            },
-        ]
     }
 
     /// Group spans into lines based on Y position, using XY-Cut for layout segmentation.
@@ -1336,117 +1166,40 @@ impl<'a> LayoutAnalyzer<'a> {
             min_gutter: median_font.max(8.0),
         };
 
-        let groups = super::xycut::xycut_segment(&blocks, &config);
+        let segmentation = super::xycut::xycut_partition(&blocks, &config);
 
         log::debug!(
-            "XY-Cut segmented {} spans into {} groups (median_font={:.1}, {:?})",
+            "XY-Cut segmented {} spans into {} groups, {} ambiguous (median_font={:.1}, {:?})",
             spans.len(),
-            groups.len(),
+            segmentation.groups.len(),
+            segmentation.ambiguous_regions,
             median_font,
             config,
         );
 
-        if groups.len() <= 1 {
+        let mut facts = self.page_facts.get();
+        facts.reading_regions = segmentation.groups.len() as u32;
+        facts.column_count = segmentation.column_count(&blocks) as u32;
+        facts.ambiguous_layout_regions = segmentation.ambiguous_regions as u32;
+        self.page_facts.set(facts);
+
+        if segmentation.groups.len() <= 1 {
             // Single column — use simple grouping
             return self.group_spans_into_lines_single_column(spans);
         }
 
-        // Multi-column: process each group independently
+        // Multi-column: process each group independently. The groups hold the indices of
+        // the blocks built from `spans`, one block per span, so each span lands in exactly
+        // one group.
+        let mut slots: Vec<Option<TextSpan>> = spans.into_iter().map(Some).collect();
         let mut all_lines = Vec::new();
-        for group in &groups {
-            // Match spans to this group's blocks by position
-            let group_spans: Vec<TextSpan> = spans
-                .iter()
-                .filter(|s| {
-                    group
-                        .iter()
-                        .any(|b| (s.x - b.x).abs() < 1.0 && (s.y - b.y).abs() < 1.0)
-                })
-                .cloned()
-                .collect();
+        for group in &segmentation.groups {
+            let group_spans: Vec<TextSpan> =
+                group.iter().filter_map(|&i| slots[i].take()).collect();
             let lines = self.group_spans_into_lines_single_column(group_spans);
             all_lines.extend(lines);
         }
         all_lines
-    }
-
-    /// Group spans into lines using the legacy column-detection approach.
-    ///
-    /// This method uses `detect_columns()` to find a single gutter and split
-    /// spans into columns. Kept as fallback; the primary path now uses XY-Cut
-    /// via `group_spans_into_lines()`.
-    #[allow(dead_code)]
-    fn group_spans_into_lines_legacy_columns(&self, spans: Vec<TextSpan>) -> Vec<TextLine> {
-        if spans.is_empty() {
-            return vec![];
-        }
-
-        // Detect columns first
-        let columns = self.detect_columns(&spans);
-
-        log::debug!("Detected {} columns", columns.len());
-        for col in &columns {
-            log::debug!(
-                "  Column {}: left={:.1}, right={:.1}",
-                col.index,
-                col.left,
-                col.right
-            );
-        }
-
-        // If single column, use simple Y-based grouping
-        if columns.len() <= 1 {
-            return self.group_spans_into_lines_single_column(spans);
-        }
-
-        // Multi-column layout: process each column separately, then interleave
-        let mut column_lines: Vec<Vec<TextLine>> = vec![Vec::new(); columns.len()];
-
-        // Assign spans to columns
-        let mut column_spans: Vec<Vec<TextSpan>> = vec![Vec::new(); columns.len()];
-        for span in spans {
-            // Find which column this span belongs to
-            let col_idx = columns
-                .iter()
-                .position(|c| c.contains_span(&span))
-                .unwrap_or(0);
-            column_spans[col_idx].push(span);
-        }
-
-        log::debug!(
-            "Spans per column: {:?}",
-            column_spans.iter().map(|v| v.len()).collect::<Vec<_>>()
-        );
-
-        // Group each column's spans into lines
-        for (col_idx, col_spans) in column_spans.into_iter().enumerate() {
-            column_lines[col_idx] = self.group_spans_into_lines_single_column(col_spans);
-        }
-
-        // Interleave lines from columns by Y position (top to bottom reading order)
-        // First, collect all lines with their column index
-        let mut all_lines: Vec<(usize, TextLine)> = Vec::new();
-        for (col_idx, lines) in column_lines.into_iter().enumerate() {
-            for line in lines {
-                all_lines.push((col_idx, line));
-            }
-        }
-
-        // Read each column sequentially: all lines from column 0, then column 1, etc.
-        // Within each column, maintain top-to-bottom order (Y descending).
-        all_lines.sort_by(|(col_a, line_a), (col_b, line_b)| {
-            let col_cmp = col_a.cmp(col_b);
-            if col_cmp != std::cmp::Ordering::Equal {
-                col_cmp
-            } else {
-                line_b
-                    .y
-                    .partial_cmp(&line_a.y)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            }
-        });
-
-        all_lines.into_iter().map(|(_, line)| line).collect()
     }
 
     /// Simple Y-based line grouping for single-column layout.
@@ -1801,16 +1554,17 @@ impl<'a> LayoutAnalyzer<'a> {
 ///
 /// Removes spans in the top/bottom margin that contain only numbers or short
 /// page-number patterns (e.g. "- 3 -", "Page 5", "2 / 10").
-fn filter_header_footer_spans(spans: &mut Vec<TextSpan>, page_height: f32) {
+fn filter_header_footer_spans(spans: &mut Vec<TextSpan>, page_box: super::backend::PageBox) {
+    let page_height = page_box.height();
     if spans.is_empty() || page_height <= 0.0 {
         return;
     }
 
     // Define margin regions: top/bottom 5% of page height.
-    // PDF Y axis is bottom-up: Y=0 is at the bottom of the page.
+    // PDF Y axis is bottom-up, measured from the page box's lower edge.
     let margin = page_height * 0.05;
-    let top_threshold = page_height - margin; // Near the top edge
-    let bottom_threshold = margin; // Near the bottom edge
+    let top_threshold = page_box.ury - margin; // Near the top edge
+    let bottom_threshold = page_box.lly + margin; // Near the bottom edge
 
     spans.retain(|span| {
         let in_header = span.y >= top_threshold;
@@ -1944,6 +1698,132 @@ impl TextState {
             })
             .sum()
     }
+}
+
+/// An axis-aligned rectangle in page space.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Rect {
+    x0: f32,
+    y0: f32,
+    x1: f32,
+    y1: f32,
+}
+
+impl Rect {
+    fn from_page_box(b: super::backend::PageBox) -> Self {
+        Rect {
+            x0: b.llx,
+            y0: b.lly,
+            x1: b.urx,
+            y1: b.ury,
+        }
+    }
+
+    fn area(&self) -> f32 {
+        (self.x1 - self.x0).max(0.0) * (self.y1 - self.y0).max(0.0)
+    }
+
+    fn intersect(&self, other: &Rect) -> Option<Rect> {
+        let r = Rect {
+            x0: self.x0.max(other.x0),
+            y0: self.y0.max(other.y0),
+            x1: self.x1.min(other.x1),
+            y1: self.y1.min(other.y1),
+        };
+        (r.x1 > r.x0 && r.y1 > r.y0).then_some(r)
+    }
+}
+
+/// The bounding box, in page space, of the unit square mapped through `ctm` — where an
+/// image paint lands.
+fn unit_square_on_page(ctm: &[f32; 6]) -> Rect {
+    let corners =
+        [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)].map(|(x, y)| apply_ctm(ctm, x, y));
+    let xs = corners.map(|c| c.0);
+    let ys = corners.map(|c| c.1);
+    Rect {
+        x0: xs.iter().copied().fold(f32::MAX, f32::min),
+        y0: ys.iter().copied().fold(f32::MAX, f32::min),
+        x1: xs.iter().copied().fold(f32::MIN, f32::max),
+        y1: ys.iter().copied().fold(f32::MIN, f32::max),
+    }
+}
+
+/// The area covered by the union of `rects`.
+///
+/// Exact by coordinate compression, which costs the square of the number of rectangles; a
+/// page with more image paints than that can afford (tiled scans run to hundreds) is
+/// measured on a sampling grid instead, accurate to well under a percent of the page.
+fn union_area(rects: &[Rect]) -> f32 {
+    const EXACT_LIMIT: usize = 256;
+    if rects.is_empty() {
+        return 0.0;
+    }
+    if rects.len() > EXACT_LIMIT {
+        return sampled_union_area(rects);
+    }
+    let mut xs: Vec<f32> = rects.iter().flat_map(|r| [r.x0, r.x1]).collect();
+    xs.sort_by(f32::total_cmp);
+    xs.dedup();
+    let mut area = 0.0f64;
+    for w in xs.windows(2) {
+        let (left, right) = (w[0], w[1]);
+        let mut spans: Vec<(f32, f32)> = rects
+            .iter()
+            .filter(|r| r.x0 <= left && r.x1 >= right)
+            .map(|r| (r.y0, r.y1))
+            .collect();
+        if spans.is_empty() {
+            continue;
+        }
+        spans.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut covered = 0.0f64;
+        let (mut lo, mut hi) = spans[0];
+        for &(y0, y1) in &spans[1..] {
+            if y0 > hi {
+                covered += f64::from(hi - lo);
+                (lo, hi) = (y0, y1);
+            } else {
+                hi = hi.max(y1);
+            }
+        }
+        covered += f64::from(hi - lo);
+        area += covered * f64::from(right - left);
+    }
+    area as f32
+}
+
+fn sampled_union_area(rects: &[Rect]) -> f32 {
+    const N: usize = 400;
+    let x0 = rects.iter().map(|r| r.x0).fold(f32::MAX, f32::min);
+    let y0 = rects.iter().map(|r| r.y0).fold(f32::MAX, f32::min);
+    let x1 = rects.iter().map(|r| r.x1).fold(f32::MIN, f32::max);
+    let y1 = rects.iter().map(|r| r.y1).fold(f32::MIN, f32::max);
+    let (dx, dy) = ((x1 - x0) / N as f32, (y1 - y0) / N as f32);
+    if dx <= 0.0 || dy <= 0.0 {
+        return 0.0;
+    }
+    let mut hit = 0usize;
+    for row in 0..N {
+        let y = y0 + (row as f32 + 0.5) * dy;
+        let row_rects: Vec<&Rect> = rects.iter().filter(|r| r.y0 <= y && y < r.y1).collect();
+        for col in 0..N {
+            let x = x0 + (col as f32 + 0.5) * dx;
+            if row_rects.iter().any(|r| r.x0 <= x && x < r.x1) {
+                hit += 1;
+            }
+        }
+    }
+    hit as f32 * dx * dy
+}
+
+/// Whether text set with text matrix `tm` under `ctm` runs left to right along a
+/// horizontal baseline — within about five degrees, as text set on a horizontal line is.
+fn reads_left_to_right(tm: &[f32; 6], ctm: &[f32; 6]) -> bool {
+    // The text-space x axis in device space.
+    let dx = tm[0] * ctm[0] + tm[1] * ctm[2];
+    let dy = tm[0] * ctm[1] + tm[1] * ctm[3];
+    dx > 0.0 && dy.abs() <= dx * 0.0875
 }
 
 /// The text matrix `Tm` and the text line matrix `Tlm` (ISO 32000-1 §9.4.2).
@@ -2510,6 +2390,53 @@ fn merge_fragmented_spans(spans: Vec<TextSpan>) -> Vec<TextSpan> {
 
 #[cfg(test)]
 mod tests {
+
+    fn rect(x0: f32, y0: f32, x1: f32, y1: f32) -> Rect {
+        Rect { x0, y0, x1, y1 }
+    }
+
+    #[test]
+    fn union_area_counts_overlap_once() {
+        let a = rect(0.0, 0.0, 10.0, 10.0);
+        let b = rect(5.0, 5.0, 15.0, 15.0);
+        assert_eq!(union_area(&[a, b]), 175.0);
+        assert_eq!(union_area(&[a, a]), 100.0);
+        assert_eq!(union_area(&[]), 0.0);
+    }
+
+    /// Past the exact limit the area is sampled; it must agree with the exact answer.
+    #[test]
+    fn sampled_union_area_agrees_with_the_exact_one() {
+        // 300 strips of a 600 x 800 page, each 2 wide, overlapping their neighbour by half.
+        let strips: Vec<Rect> = (0..300)
+            .map(|i| rect(i as f32 * 1.0, 0.0, i as f32 * 1.0 + 2.0, 800.0))
+            .collect();
+        let exact = 301.0 * 800.0;
+        let sampled = union_area(&strips);
+        assert!(
+            (sampled - exact).abs() / exact < 0.01,
+            "{sampled} vs {exact}"
+        );
+    }
+
+    #[test]
+    fn text_direction_comes_from_the_text_matrix_through_the_ctm() {
+        const I: [f32; 6] = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+        assert!(reads_left_to_right(&I, &I));
+        assert!(
+            !reads_left_to_right(&[0.0, 1.0, -1.0, 0.0, 0.0, 0.0], &I),
+            "rotated 90"
+        );
+        assert!(
+            !reads_left_to_right(&[-1.0, 0.0, 0.0, -1.0, 0.0, 0.0], &I),
+            "upside down"
+        );
+        // A page whose CTM rotates by 90 turns horizontal text-space lines vertical.
+        assert!(!reads_left_to_right(&I, &[0.0, 1.0, -1.0, 0.0, 0.0, 0.0]));
+        // A slight skew is still a horizontal line.
+        assert!(reads_left_to_right(&[1.0, 0.05, 0.0, 1.0, 0.0, 0.0], &I));
+    }
+
     use super::*;
 
     /// Font statistics for a document whose body text is 12pt.
@@ -3057,65 +2984,6 @@ mod tests {
         );
         assert_eq!(merged[0].text, "Hello ");
         assert_eq!(merged[1].text, "W");
-    }
-
-    #[test]
-    fn test_column_contains() {
-        let col = Column {
-            left: 100.0,
-            right: 200.0,
-            index: 0,
-        };
-        assert!(col.contains(100.0));
-        assert!(col.contains(150.0));
-        assert!(col.contains(200.0));
-        assert!(!col.contains(99.0));
-        assert!(!col.contains(201.0));
-    }
-
-    #[test]
-    fn test_column_contains_span() {
-        let col = Column {
-            left: 100.0,
-            right: 200.0,
-            index: 0,
-        };
-
-        // Span fully inside column
-        let span1 = TextSpan::new(
-            "Test".to_string(),
-            120.0,
-            0.0,
-            12.0,
-            "Helvetica".to_string(),
-        );
-        let span1 = TextSpan {
-            width: 50.0,
-            ..span1
-        };
-        assert!(col.contains_span(&span1));
-
-        // Span center inside column
-        let span2 = TextSpan::new("Test".to_string(), 90.0, 0.0, 12.0, "Helvetica".to_string());
-        let span2 = TextSpan {
-            width: 40.0,
-            ..span2
-        }; // center at 110
-        assert!(col.contains_span(&span2));
-
-        // Span completely outside
-        let span3 = TextSpan::new(
-            "Test".to_string(),
-            250.0,
-            0.0,
-            12.0,
-            "Helvetica".to_string(),
-        );
-        let span3 = TextSpan {
-            width: 30.0,
-            ..span3
-        };
-        assert!(!col.contains_span(&span3));
     }
 
     /// Helper: a span at a given x/width, dots leader spans included.

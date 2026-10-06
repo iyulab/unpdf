@@ -216,6 +216,9 @@ pub(crate) fn parse_single_page(
 ) -> Result<Page> {
     let (width, height) = get_page_dimensions_fn(backend, page_num)?;
     let mut page = Page::new(page_num, width, height);
+    if let Some(page_id) = backend.pages().get(&page_num) {
+        page.rotation = backend.page_rotation(*page_id);
+    }
 
     if options.extract_text {
         // One analyzer per page: the text paths below share its font statistics and
@@ -240,6 +243,14 @@ pub(crate) fn parse_single_page(
         page.text_op_count = counts.text;
         page.image_op_count = counts.image;
         page.form_op_count = counts.form;
+        let facts = analyzer.page_facts();
+        page.image_coverage = facts.image_coverage;
+        page.rotated_text_runs = facts.rotated_text_runs;
+        page.ruled_grids = facts.ruled_grids;
+        page.ruled_tables = facts.ruled_tables;
+        page.reading_regions = facts.reading_regions;
+        page.column_count = facts.column_count;
+        page.ambiguous_layout_regions = facts.ambiguous_layout_regions;
 
         // A content stream that could not be decoded is content this page lost. Lenient
         // keeps what the other streams hold; strict fails the page, exactly as it does
@@ -625,6 +636,7 @@ fn extract_page_with_tables_fn(
             lattice_consumed.extend(consumed);
         }
     }
+    analyzer.note_ruled_tables(lattice_tables.len());
     let spans: Vec<super::layout::TextSpan> = if lattice_consumed.is_empty() {
         spans
     } else {

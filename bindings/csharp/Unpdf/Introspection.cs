@@ -160,13 +160,17 @@ public sealed class PageStats
     [JsonPropertyName("page")]
     public int Page { get; init; }
 
+    /// <summary>The page's <c>/Rotate</c>: 0, 90, 180 or 270 degrees clockwise.</summary>
+    [JsonPropertyName("rotation")]
+    public int Rotation { get; init; }
+
     /// <summary>Number of text-showing operators (Tj/TJ/'/") on the page.</summary>
     [JsonPropertyName("text_op_count")]
     public uint TextOpCount { get; init; }
 
     /// <summary>
-    /// Number of image paints on the page (<c>Do</c> of anything but a Form XObject),
-    /// including those inside the forms the page paints.
+    /// Number of image paints on the page (<c>Do</c> of anything but a Form XObject, and
+    /// inline images), including those inside the forms the page paints.
     /// </summary>
     [JsonPropertyName("image_op_count")]
     public uint ImageOpCount { get; init; }
@@ -197,4 +201,48 @@ public sealed class PageStats
     /// </summary>
     [JsonPropertyName("undecodable_content_streams")]
     public long UndecodableContentStreams { get; init; }
+
+    /// <summary>
+    /// Share of the page painted by images, 0 to 1: the union of the image paints'
+    /// rectangles, clipped to the page. Tells a full-page scan (near 1) from a logo (a few
+    /// hundredths) when both report one image paint.
+    /// </summary>
+    [JsonPropertyName("image_coverage")]
+    public double ImageCoverage { get; init; }
+
+    /// <summary>
+    /// Text runs not set horizontally left to right (rotated, vertical or upside-down). The
+    /// reading order treats them as horizontal, so their order may be wrong.
+    /// </summary>
+    [JsonPropertyName("rotated_text_runs")]
+    public uint RotatedTextRuns { get; init; }
+
+    /// <summary>Ruling-line grids drawn on the page.</summary>
+    [JsonPropertyName("ruled_grids")]
+    public uint RuledGrids { get; init; }
+
+    /// <summary>
+    /// Tables built from the page's ruling-line grids. Fewer than <see cref="RuledGrids"/>
+    /// means a drawn grid produced no table.
+    /// </summary>
+    [JsonPropertyName("ruled_tables")]
+    public uint RuledTables { get; init; }
+
+    /// <summary>Text regions the reading order read one after another.</summary>
+    [JsonPropertyName("reading_regions")]
+    public uint ReadingRegions { get; init; }
+
+    /// <summary>
+    /// The most text regions set side by side at any height: 1 for a single column, 2 for
+    /// two columns, 0 for a page with no text.
+    /// </summary>
+    [JsonPropertyName("column_count")]
+    public uint ColumnCount { get; init; }
+
+    /// <summary>
+    /// Regions read line by line across although their text looked like two columns —
+    /// where the reading order had to guess.
+    /// </summary>
+    [JsonPropertyName("ambiguous_layout_regions")]
+    public uint AmbiguousLayoutRegions { get; init; }
 }

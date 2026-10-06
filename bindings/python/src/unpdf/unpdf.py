@@ -371,7 +371,7 @@ def get_page_stats(
     source: PdfSource, page_number: int, options: "dict[str, Any] | None" = None
 ) -> dict[str, Any]:
     """
-    Get content-stream operator statistics for a single page.
+    Get statistics for a single page: what it holds and how well it was read.
 
     ``text_op_count == 0`` with ``image_op_count > 0`` identifies an image-only
     (scanned) page — OCR required. Both 0 means a genuinely blank page.
@@ -397,6 +397,15 @@ def get_page_stats(
         document-level totals of the same name reported by
         :func:`get_extraction_quality` — text runs the font decoder could not read
         and discarded, and content streams that could not be decoded.
+
+        How the page was read: ``rotation`` (the page's ``/Rotate``, degrees
+        clockwise), ``image_coverage`` (share of the page painted by images, 0 to
+        1), ``rotated_text_runs`` (text not set horizontally left to right),
+        ``ruled_grids`` / ``ruled_tables`` (ruling-line grids drawn, tables built
+        from them), ``reading_regions`` (text regions read one after another),
+        ``column_count`` (the most of them side by side at any height) and
+        ``ambiguous_layout_regions`` (regions read across although their text
+        looked like two columns). Thresholds are the caller's.
 
     Raises:
         UnpdfError: If parsing fails or the page is out of range

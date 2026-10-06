@@ -29,7 +29,8 @@ mod vector_graphics;
 pub mod xycut;
 
 pub use layout::{
-    BlockType, Column, FontStatistics, LayoutAnalyzer, PageOpCounts, TextBlock, TextLine, TextSpan,
+    BlockType, FontStatistics, LayoutAnalyzer, PageFacts, PageOpCounts, TextBlock, TextLine,
+    TextSpan,
 };
 pub use options::{ErrorMode, ParseOptions};
 pub use pdf_parser::PdfParser;

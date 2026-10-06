@@ -1,4 +1,4 @@
-use unpdf::parser::xycut::{xycut_segment, Block, XyCutConfig};
+use unpdf::parser::xycut::{xycut_partition, xycut_segment, Block, XyCutConfig};
 
 /// Unconditional cuts only — the gutter rule disabled.
 const WIDE_ONLY: XyCutConfig = XyCutConfig {
@@ -201,4 +201,69 @@ fn a_table_of_contents_is_not_banded_at_its_long_entry() {
     }
     let groups = xycut_segment(&blocks, &BODY_11PT);
     assert_eq!(groups.len(), 1, "{groups:?}");
+}
+
+/// Partitioning assigns every block to exactly one group, by index — even blocks drawn at
+/// the same position, which matching by position would put in both groups or neither.
+#[test]
+fn partition_assigns_every_block_once() {
+    let blocks = vec![
+        make_block(72.0, 700.0, 200.0, 12.0),
+        make_block(72.0, 700.0, 200.0, 12.0), // drawn twice, same spot
+        make_block(72.0, 680.0, 200.0, 12.0),
+        make_block(350.0, 700.0, 200.0, 12.0),
+        make_block(350.0, 680.0, 200.0, 12.0),
+    ];
+    let seg = xycut_partition(&blocks, &WIDE_ONLY);
+    let mut seen: Vec<usize> = seg.groups.iter().flatten().copied().collect();
+    seen.sort();
+    assert_eq!(seen, [0, 1, 2, 3, 4]);
+    assert_eq!(seg.groups.len(), 2);
+    assert_eq!(seg.column_count(&blocks), 2);
+    assert_eq!(seg.ambiguous_regions, 0);
+}
+
+/// A heading over two columns: three regions, at most two side by side.
+#[test]
+fn column_count_is_the_most_regions_side_by_side() {
+    let blocks = vec![
+        make_block(72.0, 750.0, 468.0, 14.0),
+        make_block(72.0, 700.0, 200.0, 12.0),
+        make_block(72.0, 680.0, 200.0, 12.0),
+        make_block(350.0, 700.0, 200.0, 12.0),
+        make_block(350.0, 680.0, 200.0, 12.0),
+    ];
+    let seg = xycut_partition(&blocks, &WIDE_ONLY);
+    assert_eq!(seg.groups.len(), 3);
+    assert_eq!(seg.column_count(&blocks), 2);
+}
+
+/// Two columns of text whose gutter the split rules decline (the left side spans too
+/// little of the region): read across, and reported as a guess.
+#[test]
+fn declined_columns_are_ambiguous() {
+    let mut blocks = Vec::new();
+    for i in 0..4 {
+        let y = 700.0 - i as f32 * 14.0;
+        blocks.push(make_block(72.0, y, 120.0, 11.0));
+        blocks.push(make_block(214.0, y, 290.0, 11.0));
+    }
+    let seg = xycut_partition(&blocks, &BODY_11PT);
+    assert_eq!(seg.groups.len(), 1);
+    assert_eq!(seg.ambiguous_regions, 1);
+}
+
+/// A list's markers beside its items leave a channel too, but markers are not a column of
+/// text: not ambiguous.
+#[test]
+fn list_markers_are_not_a_column() {
+    let mut blocks = Vec::new();
+    for i in 0..4 {
+        let y = 700.0 - i as f32 * 14.0;
+        blocks.push(make_block(72.0, y, 6.0, 11.0));
+        blocks.push(make_block(90.0, y, 400.0, 11.0));
+    }
+    let seg = xycut_partition(&blocks, &BODY_11PT);
+    assert_eq!(seg.groups.len(), 1);
+    assert_eq!(seg.ambiguous_regions, 0);
 }

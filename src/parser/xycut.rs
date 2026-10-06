@@ -40,67 +40,209 @@ pub const GUTTER_MIN_SIDE_SHARE: f32 = 0.3;
 /// Minimum number of blocks on each side of a column gutter.
 pub const GUTTER_MIN_SIDE_BLOCKS: usize = 3;
 
-/// Segment blocks into reading-order groups using recursive XY-cut.
-pub fn xycut_segment(blocks: &[Block], config: &XyCutConfig) -> Vec<Vec<Block>> {
-    if blocks.is_empty() {
-        return vec![];
-    }
-    if blocks.len() == 1 {
-        return vec![blocks.to_vec()];
-    }
+/// Minimum share of a region's width the median line on each side of a gutter must span
+/// for that side to read as a text column: a column's lines fill most of it, while the
+/// fragments a table of contents (entries | page numbers), a chart's labels or a list's
+/// markers leave beside a whitespace channel do not.
+pub const COLUMN_LINE_MIN_SHARE: f32 = 0.25;
 
-    let mut result = Vec::new();
-    xycut_recursive(blocks, config, &mut result);
-
-    if result.is_empty() && !blocks.is_empty() {
-        result.push(blocks.to_vec());
-    }
-
-    result
+/// What recursive XY-cut made of a page's blocks.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Segmentation {
+    /// Reading-order groups, each a list of indices into the segmented blocks. Every block
+    /// is in exactly one group.
+    pub groups: Vec<Vec<usize>>,
+    /// Regions left whole — read line by line across — although a whitespace channel
+    /// divides their text into two sides that each look like a column of text (at least
+    /// [`GUTTER_MIN_SIDE_BLOCKS`] lines, median line at least [`COLUMN_LINE_MIN_SHARE`] of
+    /// the region's width). The split rules declined them; the reading order there is a
+    /// guess.
+    pub ambiguous_regions: usize,
 }
 
-fn xycut_recursive(blocks: &[Block], config: &XyCutConfig, result: &mut Vec<Vec<Block>>) {
-    if blocks.is_empty() {
+impl Segmentation {
+    /// The most groups set side by side at any height: 1 for a single column, 2 for two
+    /// columns, and so on. 0 when there are no groups.
+    ///
+    /// XY-cut groups do not overlap, so groups whose vertical extents (the span of their
+    /// blocks' centre lines) overlap stand next to each other.
+    pub fn column_count(&self, blocks: &[Block]) -> usize {
+        let mut events: Vec<(f32, i32)> = Vec::with_capacity(self.groups.len() * 2);
+        for group in &self.groups {
+            let centers = group.iter().map(|&i| blocks[i].y - blocks[i].height / 2.0);
+            let (lo, hi) = centers.fold((f32::MAX, f32::MIN), |(lo, hi), c| (lo.min(c), hi.max(c)));
+            if lo <= hi {
+                events.push((lo, 1));
+                events.push((hi, -1));
+            }
+        }
+        // At equal heights, open before close: groups touching at a line overlap there.
+        events.sort_by(|a, b| a.0.total_cmp(&b.0).then(b.1.cmp(&a.1)));
+        let (mut open, mut most) = (0i32, 0i32);
+        for (_, delta) in events {
+            open += delta;
+            most = most.max(open);
+        }
+        most as usize
+    }
+}
+
+/// Segment blocks into reading-order groups using recursive XY-cut.
+///
+/// The groups as copies of the blocks; [`xycut_partition`] gives them as indices, with
+/// what the segmentation could not decide.
+pub fn xycut_segment(blocks: &[Block], config: &XyCutConfig) -> Vec<Vec<Block>> {
+    xycut_partition(blocks, config)
+        .groups
+        .into_iter()
+        .map(|group| group.into_iter().map(|i| blocks[i]).collect())
+        .collect()
+}
+
+/// Segment blocks into reading-order groups using recursive XY-cut, by index.
+pub fn xycut_partition(blocks: &[Block], config: &XyCutConfig) -> Segmentation {
+    let mut segmentation = Segmentation::default();
+    let all: Vec<usize> = (0..blocks.len()).collect();
+    match blocks.len() {
+        0 => {}
+        1 => segmentation.groups.push(all),
+        _ => {
+            partition_recursive(blocks, &all, config, &mut segmentation);
+            if segmentation.groups.is_empty() {
+                segmentation.groups.push(all);
+            }
+        }
+    }
+    segmentation
+}
+
+fn partition_recursive(
+    all: &[Block],
+    indices: &[usize],
+    config: &XyCutConfig,
+    out: &mut Segmentation,
+) {
+    if indices.is_empty() {
         return;
     }
-    if blocks.len() == 1 {
-        result.push(blocks.to_vec());
+    if indices.len() == 1 {
+        out.groups.push(indices.to_vec());
         return;
     }
+    let blocks: Vec<Block> = indices.iter().map(|&i| all[i]).collect();
 
     let min_x = blocks.iter().map(|b| b.x).fold(f32::MAX, f32::min);
     let max_x = blocks.iter().map(|b| b.right()).fold(f32::MIN, f32::max);
     let min_y = blocks.iter().map(|b| b.bottom()).fold(f32::MAX, f32::min);
     let max_y = blocks.iter().map(|b| b.y).fold(f32::MIN, f32::max);
 
-    let v_gap = find_best_vertical_gap(blocks, min_x, max_x, config);
-    let h_gap = find_best_horizontal_gap(blocks, min_y, max_y, config.min_y_gap);
+    let v_gap = find_best_vertical_gap(&blocks, min_x, max_x, config);
+    let h_gap = find_best_horizontal_gap(&blocks, min_y, max_y, config.min_y_gap);
 
-    match (v_gap, h_gap) {
-        (Some((v_pos, v_width)), Some((_h_pos, h_height))) if v_width >= h_height => {
-            let (left, right) = split_vertical(blocks, v_pos);
-            xycut_recursive(&left, config, result);
-            xycut_recursive(&right, config, result);
-        }
-        (_, Some((h_pos, _))) => {
-            let (top, bottom) = split_horizontal(blocks, h_pos);
-            xycut_recursive(&top, config, result);
-            xycut_recursive(&bottom, config, result);
-        }
-        (Some((v_pos, _)), None) => {
-            let (left, right) = split_vertical(blocks, v_pos);
-            xycut_recursive(&left, config, result);
-            xycut_recursive(&right, config, result);
-        }
-        (None, None) => match split_at_spanning_block(blocks, min_x, max_x, config) {
-            Some(bands) => {
-                for band in bands {
-                    xycut_recursive(&band, config, result);
+    let split_v = |at: f32| split_indices(all, indices, |b| b.x + b.width / 2.0 < at);
+    let split_h = |at: f32| split_indices(all, indices, |b| b.y - b.height / 2.0 > at);
+
+    let parts: Vec<Vec<usize>> = match (v_gap, h_gap) {
+        (Some((v_pos, v_width)), Some((_, h_height))) if v_width >= h_height => split_v(v_pos),
+        (_, Some((h_pos, _))) => split_h(h_pos),
+        (Some((v_pos, _)), None) => split_v(v_pos),
+        (None, None) => match spanning_band(&blocks, min_x, max_x, config) {
+            Some((band_top, band_bottom)) => {
+                let center = |b: &Block| b.y - b.height / 2.0;
+                let above = indices
+                    .iter()
+                    .copied()
+                    .filter(|&i| center(&all[i]) > band_top);
+                let below = indices
+                    .iter()
+                    .copied()
+                    .filter(|&i| center(&all[i]) < band_bottom);
+                let band = indices.iter().copied().filter(|&i| {
+                    let c = center(&all[i]);
+                    c <= band_top && c >= band_bottom
+                });
+                let parts: Vec<Vec<usize>> = [above.collect(), band.collect(), below.collect()]
+                    .into_iter()
+                    .filter(|p: &Vec<usize>| !p.is_empty())
+                    .collect();
+                if parts.len() > 1 {
+                    parts
+                } else {
+                    Vec::new()
                 }
             }
-            None => result.push(blocks.to_vec()),
+            None => Vec::new(),
         },
+    };
+
+    if parts.is_empty() {
+        if reads_across_columns(&blocks, min_x, max_x, config) {
+            out.ambiguous_regions += 1;
+        }
+        out.groups.push(indices.to_vec());
+        return;
     }
+    for part in parts {
+        partition_recursive(all, &part, config, out);
+    }
+}
+
+/// `indices` split into those whose block satisfies `first` and the rest, in that order.
+fn split_indices(
+    all: &[Block],
+    indices: &[usize],
+    first: impl Fn(&Block) -> bool,
+) -> Vec<Vec<usize>> {
+    let (a, b): (Vec<usize>, Vec<usize>) = indices.iter().partition(|&&i| first(&all[i]));
+    vec![a, b]
+}
+
+/// Whether a region left whole nonetheless looks like two columns of text: a vertical
+/// whitespace channel at least `min_gutter` wide leaves at least
+/// [`GUTTER_MIN_SIDE_BLOCKS`] blocks on each side, and each side's median line spans at
+/// least [`COLUMN_LINE_MIN_SHARE`] of the region. The channel is looked for among all the
+/// region's blocks, then among its narrow ones (at most half its width) — a line set
+/// across both columns fills the channel on its own line.
+fn reads_across_columns(blocks: &[Block], min_x: f32, max_x: f32, config: &XyCutConfig) -> bool {
+    let range = max_x - min_x;
+    if range <= 0.0 {
+        return false;
+    }
+    let narrow: Vec<Block> = blocks
+        .iter()
+        .copied()
+        .filter(|b| b.width <= range * 0.5)
+        .collect();
+    let any_channel = XyCutConfig {
+        min_x_gap: config.min_gutter,
+        ..*config
+    };
+    let two_columns = |set: &[Block]| -> bool {
+        if set.len() < 2 * GUTTER_MIN_SIDE_BLOCKS {
+            return false;
+        }
+        let lo = set.iter().map(|b| b.x).fold(f32::MAX, f32::min);
+        let hi = set.iter().map(|b| b.right()).fold(f32::MIN, f32::max);
+        let Some((channel, _)) = find_best_vertical_gap(set, lo, hi, &any_channel) else {
+            return false;
+        };
+        let side = |left: bool| -> Vec<f32> {
+            let mut widths: Vec<f32> = set
+                .iter()
+                .filter(|b| (b.x + b.width / 2.0 < channel) == left)
+                .map(|b| b.width)
+                .collect();
+            widths.sort_by(f32::total_cmp);
+            widths
+        };
+        let (left, right) = (side(true), side(false));
+        let median = |w: &[f32]| w.get(w.len() / 2).copied().unwrap_or(0.0);
+        left.len() >= GUTTER_MIN_SIDE_BLOCKS
+            && right.len() >= GUTTER_MIN_SIDE_BLOCKS
+            && median(&left) >= range * COLUMN_LINE_MIN_SHARE
+            && median(&right) >= range * COLUMN_LINE_MIN_SHARE
+    };
+    two_columns(blocks) || two_columns(&narrow)
 }
 
 /// When a block that spans a column gutter is all that keeps a region from splitting,
@@ -111,14 +253,15 @@ fn xycut_recursive(blocks: &[Block], config: &XyCutConfig, result: &mut Vec<Vec<
 /// text, no horizontal one either; the columns were then read line by line across.
 /// The gutter is found among the region's *narrow* blocks (at most half its width),
 /// which must be the majority — in single-column text the wide lines are, and
-/// nothing is banded. Returns `None` when there is no such gutter, nothing crosses
-/// it, or banding would not make the region smaller.
-fn split_at_spanning_block(
+/// nothing is banded. Returns the band's top and bottom, or `None` when there is no
+/// such gutter or nothing crosses it; the caller bands the region only when that makes
+/// it smaller.
+fn spanning_band(
     blocks: &[Block],
     min_x: f32,
     max_x: f32,
     config: &XyCutConfig,
-) -> Option<Vec<Vec<Block>>> {
+) -> Option<(f32, f32)> {
     let range = max_x - min_x;
     let narrow: Vec<Block> = blocks
         .iter()
@@ -144,7 +287,9 @@ fn split_at_spanning_block(
         widths.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         widths.get(widths.len() / 2).copied().unwrap_or(0.0)
     };
-    if median_width(true) < range * 0.25 || median_width(false) < range * 0.25 {
+    if median_width(true) < range * COLUMN_LINE_MIN_SHARE
+        || median_width(false) < range * COLUMN_LINE_MIN_SHARE
+    {
         return None;
     }
 
@@ -152,26 +297,7 @@ fn split_at_spanning_block(
         .iter()
         .filter(|b| b.x < gutter && b.right() > gutter)
         .max_by(|a, b| a.y.partial_cmp(&b.y).unwrap_or(std::cmp::Ordering::Equal))?;
-    let (band_top, band_bottom) = (spanning.y, spanning.bottom());
-
-    let mut above = Vec::new();
-    let mut band = Vec::new();
-    let mut below = Vec::new();
-    for block in blocks {
-        let center = block.y - block.height / 2.0;
-        if center > band_top {
-            above.push(*block);
-        } else if center < band_bottom {
-            below.push(*block);
-        } else {
-            band.push(*block);
-        }
-    }
-    let parts: Vec<Vec<Block>> = [above, band, below]
-        .into_iter()
-        .filter(|p| !p.is_empty())
-        .collect();
-    (parts.len() > 1).then_some(parts)
+    Some((spanning.y, spanning.bottom()))
 }
 
 fn find_best_vertical_gap(
@@ -322,32 +448,4 @@ fn find_widest_gap(
     } else {
         None
     }
-}
-
-fn split_vertical(blocks: &[Block], split_x: f32) -> (Vec<Block>, Vec<Block>) {
-    let mut left = Vec::new();
-    let mut right = Vec::new();
-    for block in blocks {
-        let center_x = block.x + block.width / 2.0;
-        if center_x < split_x {
-            left.push(*block);
-        } else {
-            right.push(*block);
-        }
-    }
-    (left, right)
-}
-
-fn split_horizontal(blocks: &[Block], split_y: f32) -> (Vec<Block>, Vec<Block>) {
-    let mut top = Vec::new();
-    let mut bottom = Vec::new();
-    for block in blocks {
-        let center_y = block.y - block.height / 2.0;
-        if center_y > split_y {
-            top.push(*block);
-        } else {
-            bottom.push(*block);
-        }
-    }
-    (top, bottom)
 }
