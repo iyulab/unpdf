@@ -23,6 +23,13 @@
 - A numbered section title set in bold at body size (`5. The dynamics`, `3.1. Status`) is a
   heading, its level taken from the number's depth.
 
+- **Python:** a document with no extractable text converts to an empty string instead of
+  raising `UnpdfError` with kind 0 ("Unknown error") — an image-only page, for instance.
+  The string results were declared as `c_char_p`, so an empty result looked like the null
+  that signals failure, and no returned string was ever given back to `unpdf_free_string`:
+  every conversion leaked its output. Strings are now copied and then freed, as the .NET
+  binding already did.
+
 - **.NET:** the binding works in apps that disable reflection-based `System.Text.Json`
   serialization — trimmed and Native AOT apps, and file-based apps (`dotnet run app.cs`).
   `ParseFile`/`ParseBytes` with `ParseOptions`, `GetExtractionQuality`, `GetPageStats` and

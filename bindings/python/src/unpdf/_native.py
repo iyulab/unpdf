@@ -117,6 +117,11 @@ def _load_library() -> ctypes.CDLL:
 _lib = _load_library()
 
 # Define function signatures
+#
+# Functions that hand over a heap-allocated string return c_void_p, not c_char_p:
+# c_char_p copies the bytes and drops the pointer, so the allocation could never be
+# given back to unpdf_free_string, and an empty result arrives as b"" -- falsy, and
+# so indistinguishable from the null that signals an error.
 _lib.unpdf_version.argtypes = []
 _lib.unpdf_version.restype = ctypes.c_char_p
 
@@ -140,16 +145,16 @@ _lib.unpdf_free_document.argtypes = [ctypes.c_void_p]
 _lib.unpdf_free_document.restype = None
 
 _lib.unpdf_to_markdown.argtypes = [ctypes.c_void_p, ctypes.c_int]
-_lib.unpdf_to_markdown.restype = ctypes.c_char_p
+_lib.unpdf_to_markdown.restype = ctypes.c_void_p
 
 _lib.unpdf_to_text.argtypes = [ctypes.c_void_p]
-_lib.unpdf_to_text.restype = ctypes.c_char_p
+_lib.unpdf_to_text.restype = ctypes.c_void_p
 
 _lib.unpdf_to_json.argtypes = [ctypes.c_void_p, ctypes.c_int]
-_lib.unpdf_to_json.restype = ctypes.c_char_p
+_lib.unpdf_to_json.restype = ctypes.c_void_p
 
 _lib.unpdf_plain_text.argtypes = [ctypes.c_void_p]
-_lib.unpdf_plain_text.restype = ctypes.c_char_p
+_lib.unpdf_plain_text.restype = ctypes.c_void_p
 
 _lib.unpdf_section_count.argtypes = [ctypes.c_void_p]
 _lib.unpdf_section_count.restype = ctypes.c_int
@@ -158,25 +163,25 @@ _lib.unpdf_resource_count.argtypes = [ctypes.c_void_p]
 _lib.unpdf_resource_count.restype = ctypes.c_int
 
 _lib.unpdf_get_title.argtypes = [ctypes.c_void_p]
-_lib.unpdf_get_title.restype = ctypes.c_char_p
+_lib.unpdf_get_title.restype = ctypes.c_void_p
 
 _lib.unpdf_get_author.argtypes = [ctypes.c_void_p]
-_lib.unpdf_get_author.restype = ctypes.c_char_p
+_lib.unpdf_get_author.restype = ctypes.c_void_p
 
-_lib.unpdf_free_string.argtypes = [ctypes.c_char_p]
+_lib.unpdf_free_string.argtypes = [ctypes.c_void_p]
 _lib.unpdf_free_string.restype = None
 
 _lib.unpdf_get_extraction_quality.argtypes = [ctypes.c_void_p]
-_lib.unpdf_get_extraction_quality.restype = ctypes.c_char_p
+_lib.unpdf_get_extraction_quality.restype = ctypes.c_void_p
 
 _lib.unpdf_page_stats.argtypes = [ctypes.c_void_p, ctypes.c_int]
-_lib.unpdf_page_stats.restype = ctypes.c_char_p
+_lib.unpdf_page_stats.restype = ctypes.c_void_p
 
 _lib.unpdf_get_resource_ids.argtypes = [ctypes.c_void_p]
-_lib.unpdf_get_resource_ids.restype = ctypes.c_char_p
+_lib.unpdf_get_resource_ids.restype = ctypes.c_void_p
 
 _lib.unpdf_get_resource_info.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
-_lib.unpdf_get_resource_info.restype = ctypes.c_char_p
+_lib.unpdf_get_resource_info.restype = ctypes.c_void_p
 
 _lib.unpdf_get_resource_data.argtypes = [
     ctypes.c_void_p,

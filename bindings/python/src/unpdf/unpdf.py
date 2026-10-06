@@ -98,6 +98,17 @@ def _check_last_error(lib: ctypes.CDLL) -> str:
     return "Unknown error"
 
 
+def _take_string(lib: ctypes.CDLL, ptr: int) -> str:
+    """Copy a non-null native UTF-8 string, then give the allocation back.
+
+    An empty string is a result, not an error: only a null pointer is.
+    """
+    try:
+        return ctypes.string_at(ptr).decode("utf-8")
+    finally:
+        lib.unpdf_free_string(ptr)
+
+
 def _native_error(lib: ctypes.CDLL) -> "UnpdfError":
     """
     Build an :class:`UnpdfError` from the native error state.
@@ -175,7 +186,7 @@ def to_markdown(
         result = lib.unpdf_to_markdown(handle, flags)
         if not result:
             raise _native_error(lib)
-        return result.decode("utf-8")
+        return _take_string(lib, result)
     finally:
         lib.unpdf_free_document(handle)
 
@@ -202,7 +213,7 @@ def to_text(source: PdfSource, options: "dict[str, Any] | None" = None) -> str:
         result = lib.unpdf_to_text(handle)
         if not result:
             raise _native_error(lib)
-        return result.decode("utf-8")
+        return _take_string(lib, result)
     finally:
         lib.unpdf_free_document(handle)
 
@@ -233,7 +244,7 @@ def to_json(
         result = lib.unpdf_to_json(handle, fmt)
         if not result:
             raise _native_error(lib)
-        return result.decode("utf-8")
+        return _take_string(lib, result)
     finally:
         lib.unpdf_free_document(handle)
 
@@ -273,11 +284,11 @@ def get_info(
 
         title = lib.unpdf_get_title(handle)
         if title:
-            info["title"] = title.decode("utf-8")
+            info["title"] = _take_string(lib, title)
 
         author = lib.unpdf_get_author(handle)
         if author:
-            info["author"] = author.decode("utf-8")
+            info["author"] = _take_string(lib, author)
 
         info["section_count"] = lib.unpdf_section_count(handle)
         info["resource_count"] = lib.unpdf_resource_count(handle)
@@ -351,7 +362,7 @@ def get_extraction_quality(
         result = lib.unpdf_get_extraction_quality(handle)
         if not result:
             raise _native_error(lib)
-        return json.loads(result.decode("utf-8"))
+        return json.loads(_take_string(lib, result))
     finally:
         lib.unpdf_free_document(handle)
 
@@ -397,7 +408,7 @@ def get_page_stats(
         result = lib.unpdf_page_stats(handle, page_number)
         if not result:
             raise _native_error(lib)
-        return json.loads(result.decode("utf-8"))
+        return json.loads(_take_string(lib, result))
     finally:
         lib.unpdf_free_document(handle)
 
@@ -432,7 +443,7 @@ def get_resource_ids(
         result = lib.unpdf_get_resource_ids(handle)
         if not result:
             raise _native_error(lib)
-        return json.loads(result.decode("utf-8"))
+        return json.loads(_take_string(lib, result))
     finally:
         lib.unpdf_free_document(handle)
 
@@ -468,7 +479,7 @@ def get_resource_info(
         result = lib.unpdf_get_resource_info(handle, resource_id.encode("utf-8"))
         if not result:
             raise _native_error(lib)
-        return json.loads(result.decode("utf-8"))
+        return json.loads(_take_string(lib, result))
     finally:
         lib.unpdf_free_document(handle)
 
