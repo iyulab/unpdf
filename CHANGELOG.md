@@ -4,6 +4,32 @@
 
 ### Fixed
 
+- **Tables in the default Markdown output are tables again.** The standard cleanup preset
+  dropped every line without a letter or digit, which took the delimiter row (`| --- |`) out of
+  each table — the pipe lines that remained are not a table to any Markdown reader — and also
+  dropped rows whose cells are all empty. Soft line breaks no longer leave a trailing space
+  before a block or a double space inside a sentence.
+- A glyph whose `ToUnicode` entry is a "no mapping" sentinel is decoded through the font's
+  `/Encoding` instead of vanishing (`314` read as `3 4`). Glyph names with a variant suffix
+  (`one.SP`, `a.smcp`, `uni0041.alt`) resolve to their base character, per the Adobe Glyph List
+  specification.
+- Two-column pages are read column by column. Reading-order segmentation only split at
+  channels five body-font sizes wide, so a typical 12–20 pt gutter never split and the columns
+  were read line by line across; a caption or title spanning both columns now splits the page
+  into bands instead of blocking the split.
+- Stream-mode table detection no longer turns side-by-side text columns or a table of contents
+  into a table, finds tables that fill only a small part of a page, and keeps a table whose
+  header spans its columns over several lines.
+- A numbered section title set in bold at body size (`5. The dynamics`, `3.1. Status`) is a
+  heading, its level taken from the number's depth.
+
+- **Python:** a document with no extractable text converts to an empty string instead of
+  raising `UnpdfError` with kind 0 ("Unknown error") — an image-only page, for instance.
+  The string results were declared as `c_char_p`, so an empty result looked like the null
+  that signals failure, and no returned string was ever given back to `unpdf_free_string`:
+  every conversion leaked its output. Strings are now copied and then freed, as the .NET
+  binding already did.
+
 - **.NET:** the binding works in apps that disable reflection-based `System.Text.Json`
   serialization — trimmed and Native AOT apps, and file-based apps (`dotnet run app.cs`).
   `ParseFile`/`ParseBytes` with `ParseOptions`, `GetExtractionQuality`, `GetPageStats` and
@@ -24,6 +50,11 @@
   were then dropped. Form field strings took a third path that turned every such byte
   into U+FFFD.
 - A text string marked as UTF-8 (`EF BB BF`, PDF 2.0) is decoded as UTF-8.
+
+### Changed
+
+- **Breaking:** `parser::xycut::xycut_segment` takes an `XyCutConfig` instead of two gap
+  arguments; `min_gutter` sets the narrower column-gutter cut (equal to `min_x_gap` disables it).
 
 ## 0.25.0 — 2026-10-03
 

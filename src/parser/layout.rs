@@ -261,6 +261,18 @@ impl TextLine {
         total_chars > 0 && bold_chars as f32 / total_chars as f32 > 0.5
     }
 
+    /// Whether every span carrying visible text is bold — unlike [`Self::is_bold`],
+    /// a bold lead-in followed by regular text does not count.
+    pub fn is_all_bold(&self) -> bool {
+        let mut visible = self.spans.iter().filter(|s| !s.text.trim().is_empty());
+        let mut any = false;
+        let all = visible.all(|s| {
+            any = true;
+            s.is_bold
+        });
+        any && all
+    }
+
     /// Check if the line appears to be uppercase.
     pub fn is_uppercase(&self) -> bool {
         let text = self.text();
@@ -426,6 +438,40 @@ impl PageTextLayerSignals {
     pub fn is_ocr_layer_over_scan(&self) -> bool {
         self.has_page_covering_image && self.invisible_char_ratio >= Self::INVISIBLE_TEXT
     }
+}
+
+/// The depth of the section number a line opens with — `5.`/`12` → 1, `3.1.` → 2,
+/// `3.2.6.` → 3, a roman `III.` → 1 — when the rest of the line reads as a title: it
+/// starts with a capital (or a letter with no case) and does not end like a sentence.
+///
+/// Each numeric component has at most three digits, which keeps a year ("2024 Annual
+/// Report") from passing for a section number.
+fn section_number_depth(text: &str) -> Option<usize> {
+    let text = text.trim();
+    let (number, rest) = text.split_once(char::is_whitespace)?;
+    let rest = rest.trim_start();
+
+    let is_roman = number.strip_suffix('.').is_some_and(|r| {
+        !r.is_empty() && r.len() <= 6 && r.chars().all(|c| matches!(c, 'I' | 'V' | 'X' | 'L' | 'C'))
+    });
+    let depth = if is_roman {
+        1
+    } else {
+        let digits = number.strip_suffix('.').unwrap_or(number);
+        let parts: Vec<&str> = digits.split('.').collect();
+        let numeric =
+            |p: &&str| !p.is_empty() && p.len() <= 3 && p.bytes().all(|b| b.is_ascii_digit());
+        if parts.len() > 4 || !parts.iter().all(numeric) {
+            return None;
+        }
+        parts.len()
+    };
+
+    let first = rest.chars().next()?;
+    let title_start = first.is_alphabetic() && !first.is_lowercase();
+    let sentence_end = rest.ends_with(['.', ',', ';']);
+    let words = rest.split_whitespace().count();
+    (title_start && !sentence_end && words <= 16).then_some(depth)
 }
 
 /// Whether a character marks the line it opens as a list item rather than a heading.
@@ -1279,19 +1325,25 @@ impl<'a> LayoutAnalyzer<'a> {
         // layouts — not on intra-table cell gaps or bulleted list
         // indentation, which previously fragmented pages into dozens of
         // groups on Hancom-produced PDFs.
+        //
+        // A column gutter is far narrower than that, so a narrower channel still
+        // splits — but only when text of real width lies on both sides of it (see
+        // `XyCutConfig::min_gutter`), which list markers and indents never do.
         let median_font = median_font_size(&spans);
-        let min_x_gap = (median_font * 5.0).max(60.0);
-        let min_y_gap = (median_font * 3.0).max(36.0);
+        let config = super::xycut::XyCutConfig {
+            min_x_gap: (median_font * 5.0).max(60.0),
+            min_y_gap: (median_font * 3.0).max(36.0),
+            min_gutter: median_font.max(8.0),
+        };
 
-        let groups = super::xycut::xycut_segment(&blocks, min_x_gap, min_y_gap);
+        let groups = super::xycut::xycut_segment(&blocks, &config);
 
         log::debug!(
-            "XY-Cut segmented {} spans into {} groups (median_font={:.1}, min_x_gap={:.1}, min_y_gap={:.1})",
+            "XY-Cut segmented {} spans into {} groups (median_font={:.1}, {:?})",
             spans.len(),
             groups.len(),
             median_font,
-            min_x_gap,
-            min_y_gap,
+            config,
         );
 
         if groups.len() <= 1 {
@@ -1504,6 +1556,16 @@ impl<'a> LayoutAnalyzer<'a> {
                 (size_level, true)
             } else if line.is_bold() && line.is_uppercase() && visible_chars <= 40 {
                 (2, false)
+            } else if let Some(depth) =
+                (line.is_all_bold() && line.font_size >= body_size - 0.5 && visible_chars <= 100)
+                    .then(|| section_number_depth(trimmed))
+                    .flatten()
+            {
+                // A numbered section title in the body face's bold ("5. The dynamics",
+                // "3.1. Status of operations") carries no size signal at all; the section
+                // number on a line that is bold throughout does the work. The number's
+                // depth gives the level, below a size-tier title.
+                ((depth + 1).min(4) as u8, false)
             } else {
                 continue;
             };
@@ -2655,6 +2717,71 @@ mod tests {
             upper[1].is_heading,
             "the same size in capitals qualifies through the bold threshold"
         );
+    }
+
+    /// A numbered section title set in the body face's bold at body size: no size signal,
+    /// but the section number plus a line that is bold throughout marks it. The level
+    /// follows the number's depth.
+    #[test]
+    fn test_detect_headings_promotes_a_bold_numbered_section_title() {
+        let stats = body_12pt_stats(&[20.0]);
+        for (title, level) in [
+            ("5. The dynamics", 2),
+            ("12 Conclusion", 2),
+            ("III. Regulatory cholesterol", 2),
+            ("3.1. Status of Business Operations", 3),
+            ("3.2.6. SDGs Dissemination in Social Media", 4),
+        ] {
+            let lines = vec![
+                line_at("Body text before.", 100.0, 12.0, "Helvetica"),
+                line_at(title, 80.0, 12.0, "Helvetica-Bold"),
+                line_at("Body text after.", 60.0, 12.0, "Helvetica"),
+            ];
+            let result = LayoutAnalyzer::detect_headings(&stats, lines);
+            assert!(result[1].is_heading, "{title:?} is a section title");
+            assert_eq!(result[1].heading_level, level, "{title:?}");
+        }
+    }
+
+    /// The same shapes that are not section titles: a numbered sentence, a number
+    /// that starts running text, a year, the plain face, and a bold lead-in on a
+    /// line that continues in the regular face.
+    #[test]
+    fn test_detect_headings_leaves_numbered_body_lines_alone() {
+        let stats = body_12pt_stats(&[20.0]);
+        let bold = |t: &str| line_at(t, 80.0, 12.0, "Helvetica-Bold");
+        let lead_in = TextLine::from_spans(vec![
+            TextSpan::new(
+                "2. Definition.".into(),
+                0.0,
+                80.0,
+                12.0,
+                "Helvetica-Bold".into(),
+            ),
+            TextSpan::new(
+                " A universe is a chain of states with an extra property".into(),
+                90.0,
+                80.0,
+                12.0,
+                "Helvetica".into(),
+            ),
+        ]);
+        for line in [
+            bold("1. Install the package and run it."),
+            bold("12 apples were sold that day"),
+            bold("2024 Annual Report"),
+            line_at("5. The dynamics", 80.0, 12.0, "Helvetica"),
+            lead_in,
+        ] {
+            let text = line.text();
+            let lines = vec![
+                line_at("Body text before.", 100.0, 12.0, "Helvetica"),
+                line,
+                line_at("Body text after.", 60.0, 12.0, "Helvetica"),
+            ];
+            let result = LayoutAnalyzer::detect_headings(&stats, lines);
+            assert!(!result[1].is_heading, "{text:?} is not a section title");
+        }
     }
 
     /// Too few visible characters to be a heading — page furniture, a stray glyph, a rule.

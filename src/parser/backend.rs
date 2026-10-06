@@ -1508,16 +1508,26 @@ impl RawFontResolver {
         let mut is_identity_h = false;
         let mut is_composite = false;
 
-        // 1. Try ToUnicode CMap first
+        // 1. Try ToUnicode CMap first. For a simple font, a code the CMap leaves
+        //    unmapped still has the glyph its `/Encoding` names (ISO 32000-1 §9.10.2
+        //    orders the sources per character code, not per string).
         if let Some(fid) = font_obj_id {
+            is_identity_h = self.is_identity_cid_font(doc, fid);
+            is_composite = self.is_composite_font(doc, fid);
             if let Some(cmap) = self.get_to_unicode_map(doc, fid) {
-                let decoded = cmap.decode(bytes);
+                let encoding = if !is_composite && cmap.code_width == 1 {
+                    self.get_encoding_map(doc, fid)
+                } else {
+                    None
+                };
+                let decoded = match &encoding {
+                    Some(enc) => cmap.decode_with_fallback(bytes, enc),
+                    None => cmap.decode(bytes),
+                };
                 if !decoded.is_empty() {
                     return DecodedText::text(decoded);
                 }
             }
-            is_identity_h = self.is_identity_cid_font(doc, fid);
-            is_composite = self.is_composite_font(doc, fid);
         }
 
         // 2. Try embedded TrueType cmap table (for Identity-H CID fonts without ToUnicode)

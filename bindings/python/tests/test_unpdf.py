@@ -631,3 +631,42 @@ class TestMarkdownFlags:
         )
         assert markdown.startswith("---")
         assert "<!-- page 1 -->" in markdown
+
+
+class TestNativeStringResults:
+    """Strings the native library hands over: empty is a result, and each is freed."""
+
+    def test_document_without_text_converts_to_empty_strings(self):
+        """A page with nothing to extract is not a failure.
+
+        An empty native string used to come back as ``b""`` and be read as the null
+        that signals an error, so every converter raised ``UnpdfError`` with kind 0
+        ("Unknown error") on an image-only page.
+        """
+        pdf = _image_only_pdf()
+        assert unpdf.to_text(pdf).strip() == ""
+        assert unpdf.to_markdown(pdf).strip() == ""
+        assert isinstance(unpdf.to_json(pdf), str)
+
+    def test_every_returned_string_is_given_back(self, monkeypatch):
+        """Each string the library allocates is released through unpdf_free_string."""
+        from unpdf._native import get_library
+
+        lib = get_library()
+        freed = []
+        native_free = lib.unpdf_free_string
+
+        def counting_free(ptr):
+            freed.append(ptr)
+            native_free(ptr)
+
+        monkeypatch.setattr(lib, "unpdf_free_string", counting_free)
+        pdf = _text_pdf()
+        unpdf.to_markdown(pdf)
+        unpdf.to_text(pdf)
+        unpdf.to_json(pdf)
+        unpdf.get_extraction_quality(pdf)
+        unpdf.get_page_stats(pdf, 1)
+        unpdf.get_resource_ids(pdf)
+        assert len(freed) == 6
+        assert all(freed)

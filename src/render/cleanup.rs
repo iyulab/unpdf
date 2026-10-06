@@ -344,7 +344,8 @@ impl CleanupPipeline {
     /// Hiragana-Katakana content — usually layout-artefact fragments like
     /// orphan `-`, `- -`, `,`, `‧` that survive paragraph segmentation.
     /// Lines starting with a markdown image (`![`) or heading (`#`) are
-    /// preserved regardless.
+    /// preserved regardless, and so are table rows: the delimiter row and a
+    /// row of empty cells carry no word but are table structure.
     fn drop_punctuation_only_lines(&self, text: &str) -> String {
         let mut out = String::with_capacity(text.len());
         for (i, line) in text.split('\n').enumerate() {
@@ -356,7 +357,8 @@ impl CleanupPipeline {
                 out.push_str(line);
                 continue;
             }
-            if trimmed.starts_with("![") || trimmed.starts_with('#') {
+            let is_table_row = trimmed.starts_with('|') && trimmed.matches('|').count() >= 2;
+            if trimmed.starts_with("![") || trimmed.starts_with('#') || is_table_row {
                 out.push_str(line);
                 continue;
             }
@@ -426,13 +428,14 @@ impl CleanupPipeline {
         let re_para = Regex::new(r"\n{2,}").unwrap();
         let protected = re_para.replace_all(&protected, PARA_PLACEHOLDER);
 
-        // Step 2b: A sentence-ending *single* newline directly before a protected
-        // block marker (list item / heading / table row) must not be preserved:
-        // the marker restore in step 7 already re-inserts that newline, so keeping
-        // both turns a tight list into a loose one ("- a.\n- b." → "- a.\n\n- b.").
-        // Drop the newline and let the marker restore supply it.
-        let re_sent_before_block = Regex::new(r"([.。!?！？])\s*\n(\u{0000}[LHT])").unwrap();
-        let protected = re_sent_before_block.replace_all(&protected, "$1$2");
+        // Step 2b: A *single* newline directly before a protected block marker
+        // (list item / heading / table row) must not survive: the marker restore in
+        // step 7 already re-inserts it. Kept after a sentence end it turns a tight
+        // list into a loose one ("- a.\n- b." → "- a.\n\n- b."); kept anywhere
+        // else step 4 turns it into a trailing space on the line before the block
+        // (every table row but the last used to end in "| ").
+        let re_newline_before_block = Regex::new(r"[ \t]*\n(\u{0000}[LHT])").unwrap();
+        let protected = re_newline_before_block.replace_all(&protected, "$1");
 
         // Step 3: Protect sentence endings followed by newline
         let re_sent = Regex::new(r"([.。!?！？])\s*\n").unwrap();
@@ -440,8 +443,11 @@ impl CleanupPipeline {
             format!("{}{}", &caps[1], SENT_PLACEHOLDER)
         });
 
-        // Step 4: Replace remaining single newlines with space
-        let merged = protected.replace('\n', " ");
+        // Step 4: Replace remaining single newlines with space — one space, not the
+        // line's own trailing space plus the newline's ("are \nsymmetric" must not
+        // become "are  symmetric").
+        let re_soft_break = Regex::new(r"[ \t]*\n[ \t]*").unwrap();
+        let merged = re_soft_break.replace_all(&protected, " ");
 
         // Step 5: Restore sentence breaks as single newline
         let merged = merged.replace(SENT_PLACEHOLDER, "\n");
@@ -568,6 +574,35 @@ mod tests {
         let text = "café"; // With combining characters
         let result = pipeline.process(text);
         assert!(result.contains("café"));
+    }
+
+    /// The delimiter row is what makes pipe lines a table; it has no word in it, so the
+    /// punctuation-only line filter used to drop it and every table lost its structure.
+    #[test]
+    fn standard_cleanup_keeps_table_delimiter_row() {
+        let pipeline = CleanupPipeline::from_preset(CleanupPreset::Standard);
+        let text = "| No. | Name |\n| --- | :---: |\n| 1 | Alpha |\n";
+        assert_eq!(pipeline.process(text), text.trim_end());
+    }
+
+    /// A line that already ends in a space joins the next with one space, not two.
+    #[test]
+    fn soft_break_after_trailing_space_joins_with_one_space() {
+        let pipeline = CleanupPipeline::from_preset(CleanupPreset::Standard);
+        assert_eq!(
+            pipeline.process("If these are \nsymmetric we can read"),
+            "If these are symmetric we can read"
+        );
+    }
+
+    /// A row whose cells are all empty is still a row: dropping it shifts later rows up.
+    #[test]
+    fn standard_cleanup_keeps_table_rows_without_text() {
+        let pipeline = CleanupPipeline::from_preset(CleanupPreset::Standard);
+        let text = "| A | B |\n| --- | --- |\n| 1 | 2 |\n|  |  |\n| 3 | 4 |\n";
+        let result = pipeline.process(text);
+        let rows = result.lines().filter(|l| l.starts_with('|')).count();
+        assert_eq!(rows, 5, "{result:?}");
     }
 
     #[test]
