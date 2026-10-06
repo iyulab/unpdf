@@ -11,8 +11,9 @@
 //! came from so its names resolve in the form's resources ([`ContentOp::scope`]). What is
 //! left as `Do` paints an image (or something that is neither image nor form).
 //!
-//! The form's `/BBox` clip is not applied: content a form draws outside its own box is rare,
-//! and keeping it errs on the side of text that exists.
+//! The form's `/BBox` clips what it paints, so it is emitted as a clip path (`re W n`) right
+//! after the matrix: a reader that follows clipping sees the form exactly as a viewer shows
+//! it, and one that does not is unaffected.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -123,6 +124,16 @@ impl Expander<'_> {
             let mut cm = ContentOp::new("cm", operands);
             cm.form = outer;
             self.out.push(cm);
+        }
+        if let Some(b) = painted.bbox {
+            let rect = [b.llx, b.lly, b.width(), b.height()]
+                .map(PdfValue::Real)
+                .to_vec();
+            for (operator, operands) in [("re", rect), ("W", Vec::new()), ("n", Vec::new())] {
+                let mut clip = ContentOp::new(operator, operands);
+                clip.form = outer;
+                self.out.push(clip);
+            }
         }
 
         self.path.push(painted.id);

@@ -162,6 +162,9 @@ pub struct FormXObject {
     pub id: ObjectId,
     /// `/Matrix`: form space to the user space of the `Do` (identity when absent).
     pub matrix: [f32; 6],
+    /// `/BBox`: the rectangle, in form space, that clips what the form paints (§8.10.1).
+    /// `None` when absent or malformed — the form is then not clipped.
+    pub bbox: Option<PageBox>,
     /// The decoded content stream, or `None` when it could not be decoded.
     pub content: Option<Vec<u8>>,
 }
@@ -900,6 +903,8 @@ impl PdfBackend for RawBackend {
                 matrix: raw_dict_get(&stream.dict, b"Matrix")
                     .and_then(|m| matrix_from(&self.doc, m))
                     .unwrap_or(IDENTITY_MATRIX),
+                bbox: raw_dict_get(&stream.dict, b"BBox")
+                    .and_then(|b| page_box_from_array(&self.doc, b)),
                 content: raw_stream::decompress(stream).ok(),
             }),
             Some(b"Image") => PaintedXObject::Image,

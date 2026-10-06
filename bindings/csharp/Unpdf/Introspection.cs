@@ -204,7 +204,7 @@ public sealed class PageStats
 
     /// <summary>
     /// Share of the page painted by images, 0 to 1: the union of the image paints'
-    /// rectangles, clipped to the page. Tells a full-page scan (near 1) from a logo (a few
+    /// rectangles, clipped to what the page shows (its crop box and clipping paths). Tells a full-page scan (near 1) from a logo (a few
     /// hundredths) when both report one image paint.
     /// </summary>
     [JsonPropertyName("image_coverage")]

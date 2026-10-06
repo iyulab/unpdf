@@ -9,7 +9,8 @@
 //! Scope: this module only extracts geometry. Clustering lines into a table grid
 //! (row/column boundaries, cell intersections) is a separate, later stage.
 
-use super::backend::{get_number_from_value, ContentOp, PdfValue};
+use super::backend::{get_number_from_value, ContentOp, PageBox, PdfValue};
+use super::clip::{Bounds, ClipTracker};
 use super::layout::{apply_cm, apply_ctm};
 
 /// A straight line segment in device space, as painted by a content stream.
@@ -44,8 +45,16 @@ const MAX_FILLED_RULE_THICKNESS: f32 = 3.0;
 /// Curve segments (`c v y`) are not straight lines: the current point advances
 /// to the curve's end so subsequent segments stay correctly anchored, but the
 /// curve itself is not approximated as a line.
-pub fn extract_lines(ops: &[ContentOp]) -> Vec<GraphicsLine> {
+///
+/// Only what the page shows counts: a line outside `visible` (the page's crop box) or the
+/// clipping path in force when it is painted — a printer's crop mark in the slug area, the
+/// frame of a larger page placed onto a smaller one — is dropped.
+pub fn extract_lines(ops: &[ContentOp], visible: PageBox) -> Vec<GraphicsLine> {
     let mut lines = Vec::new();
+    let mut clip = ClipTracker::new(visible);
+    let shows = |clip: &ClipTracker, line: &GraphicsLine| {
+        clip.admits(&Bounds::around([(line.x0, line.y0), (line.x1, line.y1)]).expect("two points"))
+    };
 
     let mut ctm: [f32; 6] = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
     let mut ctm_stack: Vec<[f32; 6]> = Vec::new();
@@ -145,7 +154,12 @@ pub fn extract_lines(ops: &[ContentOp]) -> Vec<GraphicsLine> {
                 subpath_start = Some(p0);
             }
             "S" | "s" | "B" | "B*" | "b" | "b*" => {
-                lines.extend(pending.drain(..).flatten());
+                lines.extend(
+                    pending
+                        .drain(..)
+                        .flatten()
+                        .filter(|line| shows(&clip, line)),
+                );
                 current = None;
                 subpath_start = None;
             }
@@ -155,6 +169,7 @@ pub fn extract_lines(ops: &[ContentOp]) -> Vec<GraphicsLine> {
                     lines.extend(
                         subpath
                             .into_iter()
+                            .filter(|line| shows(&clip, line))
                             .map(|line| GraphicsLine { ruled, ..line }),
                     );
                 }
@@ -169,6 +184,9 @@ pub fn extract_lines(ops: &[ContentOp]) -> Vec<GraphicsLine> {
             }
             _ => {}
         }
+        // After the operator: a clip a path sets applies to what is painted after it, not to
+        // the path's own paint (ISO 32000-1 §8.5.4).
+        clip.observe(op, &ctm);
     }
 
     lines
@@ -213,6 +231,52 @@ mod tests {
         )
     }
 
+    const PAGE: PageBox = PageBox {
+        llx: 0.0,
+        lly: 0.0,
+        urx: 1000.0,
+        ury: 1000.0,
+    };
+
+    fn lines_of(ops: &[ContentOp]) -> Vec<GraphicsLine> {
+        extract_lines(ops, PAGE)
+    }
+
+    #[test]
+    fn a_line_outside_the_visible_region_is_dropped() {
+        // A crop mark in the slug area beyond the crop box.
+        let ops = vec![
+            op("m", &[-20.0, 500.0]),
+            op("l", &[-5.0, 500.0]),
+            op("S", &[]),
+            op("m", &[10.0, 500.0]),
+            op("l", &[90.0, 500.0]),
+            op("S", &[]),
+        ];
+        let lines = lines_of(&ops);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].x0, 10.0);
+    }
+
+    #[test]
+    fn a_line_outside_the_clip_path_is_dropped_but_the_clip_path_itself_paints() {
+        let ops = vec![
+            // `re W S`: the clip applies after this paint, so its own edges are kept.
+            op("re", &[100.0, 100.0, 100.0, 100.0]),
+            op("W", &[]),
+            op("S", &[]),
+            op("m", &[300.0, 150.0]),
+            op("l", &[400.0, 150.0]),
+            op("S", &[]),
+            op("m", &[120.0, 150.0]),
+            op("l", &[180.0, 150.0]),
+            op("S", &[]),
+        ];
+        let lines = lines_of(&ops);
+        assert_eq!(lines.len(), 5, "{lines:?}");
+        assert!(lines.iter().all(|l| l.x0 < 300.0));
+    }
+
     #[test]
     fn straight_line_stroked() {
         let ops = vec![
@@ -220,7 +284,7 @@ mod tests {
             op("l", &[200.0, 700.0]),
             op("S", &[]),
         ];
-        let lines = extract_lines(&ops);
+        let lines = lines_of(&ops);
         assert_eq!(
             lines,
             vec![GraphicsLine {
@@ -237,7 +301,7 @@ mod tests {
     #[test]
     fn thin_filled_rectangle_emits_four_edges() {
         let ops = vec![op("re", &[0.0, 0.0, 100.0, 0.8]), op("f", &[])];
-        let lines = extract_lines(&ops);
+        let lines = lines_of(&ops);
         assert_eq!(lines.len(), 4);
         assert_eq!(
             lines[0],
@@ -255,7 +319,7 @@ mod tests {
     #[test]
     fn filled_area_outline_is_not_ruled() {
         let ops = vec![op("re", &[0.0, 0.0, 100.0, 20.0]), op("f", &[])];
-        let lines = extract_lines(&ops);
+        let lines = lines_of(&ops);
         assert_eq!(lines.len(), 4);
         assert!(lines.iter().all(|l| !l.ruled));
     }
@@ -268,7 +332,7 @@ mod tests {
             op("re", &[0.0, 10.0, 100.0, 40.0]),
             op("f", &[]),
         ];
-        let lines = extract_lines(&ops);
+        let lines = lines_of(&ops);
         assert_eq!(lines.iter().filter(|l| l.ruled).count(), 4);
         assert_eq!(lines.iter().filter(|l| !l.ruled).count(), 4);
     }
@@ -277,7 +341,7 @@ mod tests {
     #[test]
     fn filled_and_stroked_area_is_ruled() {
         let ops = vec![op("re", &[0.0, 0.0, 100.0, 20.0]), op("B", &[])];
-        let lines = extract_lines(&ops);
+        let lines = lines_of(&ops);
         assert_eq!(lines.len(), 4);
         assert!(lines.iter().all(|l| l.ruled));
     }
@@ -285,7 +349,7 @@ mod tests {
     #[test]
     fn rectangle_stroked_also_emits_four_edges() {
         let ops = vec![op("re", &[10.0, 10.0, 50.0, 5.0]), op("S", &[])];
-        let lines = extract_lines(&ops);
+        let lines = lines_of(&ops);
         assert_eq!(lines.len(), 4);
     }
 
@@ -298,7 +362,7 @@ mod tests {
             op("l", &[10.0, 0.0]),
             op("S", &[]),
         ];
-        let lines = extract_lines(&ops);
+        let lines = lines_of(&ops);
         assert_eq!(
             lines,
             vec![GraphicsLine {
@@ -322,7 +386,7 @@ mod tests {
             op("l", &[5.0, 0.0]),
             op("S", &[]),
         ];
-        let lines = extract_lines(&ops);
+        let lines = lines_of(&ops);
         assert_eq!(
             lines,
             vec![GraphicsLine {
@@ -346,7 +410,7 @@ mod tests {
             op("l", &[5.0, 0.0]),
             op("S", &[]),
         ];
-        let lines = extract_lines(&ops);
+        let lines = lines_of(&ops);
         assert_eq!(
             lines,
             vec![GraphicsLine {
@@ -362,7 +426,7 @@ mod tests {
     #[test]
     fn unpainted_path_emits_nothing() {
         let ops = vec![op("m", &[0.0, 0.0]), op("l", &[10.0, 0.0])];
-        assert!(extract_lines(&ops).is_empty());
+        assert!(lines_of(&ops).is_empty());
     }
 
     #[test]
@@ -372,7 +436,7 @@ mod tests {
             ContentOp::new("W".to_string(), vec![]),
             op("n", &[]),
         ];
-        assert!(extract_lines(&ops).is_empty());
+        assert!(lines_of(&ops).is_empty());
     }
 
     #[test]
@@ -384,7 +448,7 @@ mod tests {
             ContentOp::new("h".to_string(), vec![]),
             op("S", &[]),
         ];
-        let lines = extract_lines(&ops);
+        let lines = lines_of(&ops);
         // Two explicit `l` segments plus the closing segment back to (0,0).
         assert_eq!(lines.len(), 3);
         assert_eq!(
@@ -409,7 +473,7 @@ mod tests {
             op("l", &[40.0, 0.0]),
             op("S", &[]),
         ];
-        let lines = extract_lines(&ops);
+        let lines = lines_of(&ops);
         assert_eq!(
             lines,
             vec![GraphicsLine {
@@ -432,7 +496,7 @@ mod tests {
             op("l", &[110.0, 100.0]),
             op("S", &[]),
         ];
-        let lines = extract_lines(&ops);
+        let lines = lines_of(&ops);
         assert_eq!(lines.len(), 2);
     }
 }

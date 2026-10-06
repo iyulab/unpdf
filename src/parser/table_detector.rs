@@ -41,6 +41,56 @@ pub struct TableRowData {
     pub sources: Vec<usize>,
 }
 
+/// Which reading-order group each span falls in — XY-Cut over the spans a table detector
+/// is given, the same partition the page's text is later read in.
+struct ColumnContext {
+    groups: Vec<Vec<usize>>,
+    group_of: Vec<usize>,
+    config: super::xycut::XyCutConfig,
+}
+
+impl ColumnContext {
+    fn of(spans: &[TextSpan]) -> Self {
+        let blocks = super::layout::xycut_blocks(spans);
+        let config = super::layout::xycut_config(spans);
+        let groups = super::xycut::xycut_partition(&blocks, &config).groups;
+        let mut group_of = vec![0; spans.len()];
+        for (g, members) in groups.iter().enumerate() {
+            for &i in members {
+                group_of[i] = g;
+            }
+        }
+        ColumnContext {
+            groups,
+            group_of,
+            config,
+        }
+    }
+
+    /// The boundary between two reading flows that `rows` reach across, if they do: the
+    /// rows draw on two reading-order groups or more, and those groups, taken whole, divide
+    /// into two flows side by side — two columns of running text, or text and a strip of
+    /// letters stacked in its margin ([`super::xycut::reading_boundary`]). A region read as
+    /// two flows is never also taken for one table. A table XY-Cut splits at a wide channel
+    /// between its own columns does not qualify: its groups hold cells, not lines of text.
+    fn boundary_straddled_by(&self, rows: &[TableRowData], spans: &[TextSpan]) -> Option<f32> {
+        let touched: std::collections::BTreeSet<usize> = rows
+            .iter()
+            .flat_map(|r| r.sources.iter())
+            .map(|&i| self.group_of[i])
+            .collect();
+        if touched.len() < 2 {
+            return None;
+        }
+        let members: Vec<TextSpan> = touched
+            .iter()
+            .flat_map(|&g| self.groups[g].iter().map(|&i| spans[i].clone()))
+            .collect();
+        let blocks = super::layout::xycut_blocks(&members);
+        super::xycut::reading_boundary(&blocks, &self.config)
+    }
+}
+
 /// Table detector configuration.
 #[derive(Debug, Clone)]
 pub struct TableDetectorConfig {
@@ -195,6 +245,11 @@ impl TableDetector {
             return (vec![], spans);
         }
 
+        // The page's columns, as reading order will see them: a table region that draws
+        // its rows from two columns of running text is judged against those whole columns,
+        // not the few lines it happened to catch.
+        let column_context = ColumnContext::of(&spans);
+
         // Step 4: Convert regions to detected tables
         let mut detected_tables = Vec::new();
         let mut used_span_indices: std::collections::HashSet<usize> =
@@ -204,6 +259,49 @@ impl TableDetector {
             let table_rows: Vec<TableRowData> = rows[start_row..=end_row].to_vec();
 
             if table_rows.is_empty() {
+                continue;
+            }
+
+            // Lines of running text are not rows of cells, however their words happen to
+            // line up: a justified line stretches its word spaces past any fixed cell gap.
+            if Self::rows_read_as_running_text(&table_rows) {
+                log::debug!(
+                    "TableDetector: skipping region [{start_row}..{end_row}] — its rows are lines of running text"
+                );
+                continue;
+            }
+
+            // Text set in two flows side by side is no grid, however its lines happen to line
+            // up — the lines of one column fall between those of the other, a margin tab's
+            // letters fall beside them, and a justified line's widened word gaps pass for cell
+            // boundaries. When the region reaches across a boundary reading order splits flows
+            // at, each side is searched for tables of its own.
+            if let Some(boundary) = column_context.boundary_straddled_by(&table_rows, &spans) {
+                log::debug!(
+                    "TableDetector: region [{start_row}..{end_row}] reaches across a reading boundary at x={boundary:.0} — detecting each side on its own"
+                );
+                let sources: Vec<usize> = table_rows
+                    .iter()
+                    .flat_map(|r| r.sources.iter().copied())
+                    .collect();
+                for left in [true, false] {
+                    let picks: Vec<usize> = sources
+                        .iter()
+                        .copied()
+                        .filter(|&i| (spans[i].x + spans[i].width / 2.0 < boundary) == left)
+                        .collect();
+                    let (tables, _) =
+                        self.detect(picks.iter().map(|&i| spans[i].clone()).collect());
+                    for mut table in tables {
+                        for row in &mut table.rows {
+                            for source in &mut row.sources {
+                                *source = picks[*source];
+                            }
+                            used_span_indices.extend(row.sources.iter().copied());
+                        }
+                        detected_tables.push(table);
+                    }
+                }
                 continue;
             }
 
@@ -327,6 +425,30 @@ impl TableDetector {
             .collect();
 
         (detected_tables, unused_spans)
+    }
+
+    /// Whether most of `rows` that hold the region's main text are lines of running text —
+    /// see [`is_running_text_row`]. Rows of smaller or larger print only (a margin tab's
+    /// letters stacked beside the text, a chart's labels) say nothing either way.
+    fn rows_read_as_running_text(rows: &[TableRowData]) -> bool {
+        let mut sizes: Vec<f32> = rows
+            .iter()
+            .flat_map(|r| r.spans.iter().map(|s| s.font_size))
+            .collect();
+        sizes.sort_by(f32::total_cmp);
+        let Some(&size) = sizes.get(sizes.len() / 2) else {
+            return false;
+        };
+        let main: Vec<&TableRowData> = rows
+            .iter()
+            .filter(|r| {
+                r.spans
+                    .iter()
+                    .any(|s| (s.font_size - size).abs() <= size * 0.25)
+            })
+            .collect();
+        let running = main.iter().filter(|r| is_running_text_row(r)).count();
+        running >= 2 && running * 2 > main.len()
     }
 
     /// Group spans into rows by Y position.
@@ -1205,6 +1327,79 @@ fn separated_runs(row: &TableRowData) -> usize {
 /// The gap, in multiples of the font size, beyond which two spans are separate cells.
 const CELL_GAP_EM: f32 = 0.5;
 
+/// Whether a row is a line of running text: every space in it is a word space.
+///
+/// A fixed gap cannot tell the two apart — justification stretches a line's word spaces to
+/// fill the column, measured at up to two-thirds of the font size, past [`CELL_GAP_EM`].
+/// What it cannot do is make one space stand out: it spreads the slack over all of them,
+/// while a table row's cells stand apart by more than the word spaces inside them. So a row
+/// is running text when it has at least [`RUNNING_TEXT_MIN_SPACES`] spaces (between its
+/// spans, or written inside them), none of those between spans wider than the font size or
+/// more than [`WORD_SPACE_SPREAD`] times the typical one, and its words are words rather
+/// than figures. Only text of the row's main size is measured: a margin
+/// tab's letters or a footnote mark set on the same line are not part of it.
+fn is_running_text_row(row: &TableRowData) -> bool {
+    let mut sizes: Vec<f32> = row.spans.iter().map(|s| s.font_size).collect();
+    sizes.sort_by(f32::total_cmp);
+    let Some(&size) = sizes.get(sizes.len() / 2) else {
+        return false;
+    };
+    if size <= 0.0 {
+        return false;
+    }
+    let mut spans: Vec<&TextSpan> = row
+        .spans
+        .iter()
+        .filter(|s| (s.font_size - size).abs() <= size * 0.25)
+        .collect();
+    spans.sort_by(|a, b| a.x.total_cmp(&b.x));
+
+    // Spaces: gaps wider than glyph fitting (a word drawn in pieces leaves gaps of a few
+    // hundredths of the size, or overlaps).
+    let mut spaces: Vec<f32> = Vec::new();
+    for pair in spans.windows(2) {
+        let gap = pair[1].x - (pair[0].x + pair[0].width);
+        if gap > size * 0.15 {
+            spaces.push(gap);
+        }
+    }
+    // Spaces inside a span are word spaces as written; their width is not measured, but
+    // they count toward how many the line has.
+    let inner_spaces: usize = spans
+        .iter()
+        .map(|s| s.text.split_whitespace().count().saturating_sub(1))
+        .sum();
+    if spaces.len() + inner_spaces < RUNNING_TEXT_MIN_SPACES {
+        return false;
+    }
+    let even = if spaces.is_empty() {
+        true
+    } else {
+        spaces.sort_by(f32::total_cmp);
+        let typical = spaces[spaces.len() / 2];
+        let widest = spaces[spaces.len() - 1];
+        widest <= size && widest <= typical * WORD_SPACE_SPREAD
+    };
+    let words: Vec<&str> = spans
+        .iter()
+        .flat_map(|s| s.text.split_whitespace())
+        .collect();
+    let lettered = words
+        .iter()
+        .filter(|w| w.chars().any(char::is_alphabetic))
+        .count();
+    even && lettered * 3 >= words.len() * 2
+}
+
+/// The fewest spaces a row needs before its spacing says anything: a row of two or three
+/// cells has one or two, which are as even as word spaces by construction.
+const RUNNING_TEXT_MIN_SPACES: usize = 3;
+
+/// How much wider than the row's typical space its widest may be and still be a word space.
+/// Justification keeps a line's spaces within a few percent of each other, a little more
+/// after punctuation; measured up to 1.4.
+const WORD_SPACE_SPREAD: f32 = 1.6;
+
 /// Fold a row of superscripts or subscripts into the row of text they mark.
 ///
 /// A superscript (`0.31*`, a footnote mark) sits on a baseline raised by about a
@@ -1674,6 +1869,131 @@ mod tests {
             "prose must not become a table: {tables:?}"
         );
         assert_eq!(remaining.len(), 15);
+    }
+
+    /// A justified line drawn word by word: `words` set from `x0`, each `word_width` wide,
+    /// `space` apart.
+    fn justified_line(
+        words: &[&str],
+        x0: f32,
+        y: f32,
+        word_width: f32,
+        space: f32,
+    ) -> Vec<TextSpan> {
+        words
+            .iter()
+            .enumerate()
+            .map(|(i, w)| measured(w, x0 + i as f32 * (word_width + space), y, word_width))
+            .collect()
+    }
+
+    #[test]
+    fn justified_lines_whose_word_spaces_pass_a_cell_gap_are_not_a_table() {
+        // Word spaces stretched to two-thirds of the font size — wider than a cell gap —
+        // and spread evenly, and the word starts of every line coincide.
+        let detector = TableDetector::new();
+        let mut spans = Vec::new();
+        for i in 0..4 {
+            let y = 700.0 - i as f32 * 18.0;
+            spans.extend(justified_line(
+                &["monetary", "policy", "was", "kept", "tight"],
+                72.0,
+                y,
+                40.0,
+                8.0,
+            ));
+        }
+        let (tables, remaining) = detector.detect(spans);
+        assert!(
+            tables.is_empty(),
+            "running text must not become a table: {tables:?}"
+        );
+        assert_eq!(remaining.len(), 20);
+    }
+
+    #[test]
+    fn a_table_whose_cells_hold_several_words_is_still_a_table() {
+        // Word spaces inside the cells, wider gaps between them: the cell gaps stand out.
+        let detector = TableDetector::new();
+        let mut spans = Vec::new();
+        for (i, (a, b, c)) in [
+            ("Gross domestic product", "2.1 percent", "rose"),
+            ("Consumer price index", "3.2 percent", "fell"),
+            ("Policy interest rate", "3.5 percent", "held"),
+            ("Household credit growth", "1.0 percent", "slowed"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let y = 700.0 - i as f32 * 16.0;
+            spans.push(measured(a, 72.0, y, 130.0));
+            spans.push(measured(b, 240.0, y, 64.0));
+            spans.push(measured(c, 360.0, y, 36.0));
+        }
+        let (tables, _) = detector.detect(spans);
+        assert_eq!(tables.len(), 1, "a real table must survive: {tables:?}");
+    }
+
+    #[test]
+    fn interleaved_lines_of_two_text_columns_are_not_a_table() {
+        // Two columns whose baselines are offset by half a line, each justified and drawn
+        // word by word, so rows alternate between the columns. Lines are 180 wide, the
+        // gutter 24.
+        let detector = TableDetector::new();
+        let mut spans = Vec::new();
+        for i in 0..10 {
+            let left_y = 700.0 - i as f32 * 18.0;
+            spans.extend(justified_line(
+                &["aa", "bb", "cc", "dd"],
+                72.0,
+                left_y,
+                39.0,
+                8.0,
+            ));
+            spans.extend(justified_line(
+                &["ee", "ff", "gg"],
+                276.0,
+                left_y - 9.0,
+                54.0,
+                9.0,
+            ));
+        }
+        // A real stretch of misalignment: one line in each column broken by a wide gap.
+        spans.push(measured("hh", 72.0, 500.0, 20.0));
+        spans.push(measured("ii", 150.0, 500.0, 102.0));
+        let total = spans.len();
+        let (tables, remaining) = detector.detect(spans);
+        assert!(
+            tables.is_empty(),
+            "two text columns must not become a table: {tables:?}"
+        );
+        assert_eq!(remaining.len(), total);
+    }
+
+    #[test]
+    fn a_margin_tab_beside_running_text_does_not_make_it_a_table() {
+        // A thumb-index tab set as stacked letters at the margin, between and on the
+        // text's lines.
+        let detector = TableDetector::new();
+        let mut spans = Vec::new();
+        for i in 0..6 {
+            let y = 700.0 - i as f32 * 18.0;
+            spans.extend(justified_line(
+                &["the", "rate", "was", "held"],
+                72.0,
+                y,
+                36.0,
+                6.0,
+            ));
+            let mut tab = make_span_w("T", 300.0, y, 7.0);
+            tab.width = 5.0;
+            spans.push(tab);
+            let mut between = make_span_w("A", 300.0, y - 9.0, 7.0);
+            between.width = 5.0;
+            spans.push(between);
+        }
+        let (tables, _) = detector.detect(spans);
+        assert!(tables.is_empty(), "{tables:?}");
     }
 
     #[test]

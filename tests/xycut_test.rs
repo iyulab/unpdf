@@ -1,4 +1,6 @@
-use unpdf::parser::xycut::{xycut_partition, xycut_segment, Block, XyCutConfig};
+use unpdf::parser::xycut::{
+    text_column_gutter, xycut_partition, xycut_segment, Block, XyCutConfig,
+};
 
 /// Unconditional cuts only — the gutter rule disabled.
 const WIDE_ONLY: XyCutConfig = XyCutConfig {
@@ -266,4 +268,129 @@ fn list_markers_are_not_a_column() {
     let seg = xycut_partition(&blocks, &BODY_11PT);
     assert_eq!(seg.groups.len(), 1);
     assert_eq!(seg.ambiguous_regions, 0);
+}
+
+/// Two justified columns drawn one block per word: each line of `words` blocks `word` wide
+/// and `space` apart, `lines` lines 18 apart, the right column starting at `right_x`.
+fn word_per_block_columns(lines: usize, right_x: f32) -> Vec<Block> {
+    let mut blocks = Vec::new();
+    for i in 0..lines {
+        let y = 700.0 - i as f32 * 18.0;
+        for (x0, n) in [(72.0, 5), (right_x, 5)] {
+            for w in 0..n {
+                blocks.push(make_block(x0 + w as f32 * 38.0, y, 32.0, 10.0));
+            }
+        }
+    }
+    blocks
+}
+
+#[test]
+fn columns_drawn_word_by_word_are_still_columns() {
+    // Every block is a word — far narrower than a quarter of the region — but the lines
+    // they make fill their columns.
+    let blocks = word_per_block_columns(8, 280.0);
+    let seg = xycut_partition(&blocks, &BODY_11PT);
+    assert_eq!(seg.column_count(&blocks), 2, "{:?}", seg.groups);
+    let gutter = text_column_gutter(&blocks, BODY_11PT.min_gutter).expect("a gutter");
+    assert!(gutter > 262.0 && gutter < 280.0, "gutter at {gutter}");
+}
+
+#[test]
+fn a_footnote_drawn_word_by_word_across_the_gutter_does_not_join_the_columns() {
+    // A footnote under both columns, too close for a horizontal cut, drawn in word pieces
+    // none of which crosses the gutter on its own.
+    let mut blocks = word_per_block_columns(8, 280.0);
+    for w in 0..10 {
+        blocks.push(make_block(72.0 + w as f32 * 26.0, 545.0, 22.0, 8.0));
+    }
+    let seg = xycut_partition(&blocks, &BODY_11PT);
+    assert_eq!(seg.column_count(&blocks), 2, "{:?}", seg.groups);
+}
+
+#[test]
+fn a_figure_in_one_column_does_not_unmake_the_column() {
+    // A chart's tick labels add many short lines to the left column; most of its text is
+    // still in lines that fill it.
+    let mut blocks = word_per_block_columns(8, 280.0);
+    for t in 0..12 {
+        blocks.push(make_block(72.0, 540.0 - t as f32 * 9.0, 10.0, 6.0));
+        blocks.push(make_block(240.0, 540.0 - t as f32 * 9.0, 10.0, 6.0));
+    }
+    assert!(text_column_gutter(&blocks, BODY_11PT.min_gutter).is_some());
+}
+
+#[test]
+fn the_gutter_is_found_past_a_wider_channel_beside_a_margin_tab() {
+    // A thumb-index tab of stacked letters at the right margin leaves a channel wider
+    // than the gutter; the gutter is the one with text on both sides.
+    let mut blocks = word_per_block_columns(8, 280.0);
+    for t in 0..8 {
+        blocks.push(make_block(500.0, 700.0 - t as f32 * 8.0, 6.0, 6.0));
+    }
+    let gutter = text_column_gutter(&blocks, BODY_11PT.min_gutter).expect("a gutter");
+    assert!(gutter < 280.0, "gutter at {gutter}");
+}
+
+#[test]
+fn a_table_of_contents_is_not_two_text_columns() {
+    // Entries against page numbers: the numbers make no column of text.
+    let blocks: Vec<Block> = (0..8)
+        .flat_map(|i| {
+            let y = 700.0 - i as f32 * 18.0;
+            [
+                make_block(72.0, y, 220.0, 10.0),
+                make_block(470.0, y, 12.0, 10.0),
+            ]
+        })
+        .collect();
+    assert!(text_column_gutter(&blocks, BODY_11PT.min_gutter).is_none());
+}
+
+/// One column of justified lines drawn word by word, 18 apart, from x=72 to about 260.
+fn one_column(lines: usize) -> Vec<Block> {
+    (0..lines)
+        .flat_map(|i| {
+            let y = 700.0 - i as f32 * 18.0;
+            (0..5).map(move |w| make_block(72.0 + w as f32 * 38.0, y, 32.0, 10.0))
+        })
+        .collect()
+}
+
+#[test]
+fn letters_stacked_down_the_margin_are_read_apart_from_the_text() {
+    // A thumb-index tab: one letter every 7pt beside the column, mostly off its baselines.
+    let mut blocks = one_column(8);
+    let tab: Vec<usize> = (0..12)
+        .map(|t| {
+            blocks.push(make_block(300.0, 696.0 - t as f32 * 7.0, 6.0, 6.0));
+            blocks.len() - 1
+        })
+        .collect();
+    let seg = xycut_partition(&blocks, &BODY_11PT);
+    let group_of = |i: usize| seg.groups.iter().position(|g| g.contains(&i)).unwrap();
+    let tab_group = group_of(tab[0]);
+    assert!(
+        tab.iter().all(|&i| group_of(i) == tab_group),
+        "{:?}",
+        seg.groups
+    );
+    assert!(
+        (0..40).all(|i| group_of(i) != tab_group),
+        "the tab must not share a group with the text: {:?}",
+        seg.groups
+    );
+}
+
+#[test]
+fn list_markers_on_the_texts_baselines_stay_with_it() {
+    // Markers in a narrow strip, each on the baseline of the line it marks.
+    let mut blocks: Vec<Block> = Vec::new();
+    for i in 0..6 {
+        let y = 700.0 - i as f32 * 18.0;
+        blocks.push(make_block(72.0, y, 8.0, 10.0));
+        blocks.push(make_block(100.0, y, 180.0, 10.0));
+    }
+    let seg = xycut_partition(&blocks, &BODY_11PT);
+    assert_eq!(seg.groups.len(), 1, "{:?}", seg.groups);
 }

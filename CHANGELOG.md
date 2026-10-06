@@ -1,5 +1,41 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Only what a page shows is its content.** Text, ruling lines and image coverage are now read
+  through the page's crop box and its clipping paths, and a Form XObject's content is clipped to
+  its `/BBox` (ISO 32000-1 §14.11.2, §8.5.4, §8.10.1). Text set outside them — the slug area of a
+  print-ready page, the margin of a larger page placed onto a smaller one (where a notice or a
+  stamp often sits), a form's content beyond its box — was extracted although no viewer shows
+  it, and on such pages it joined the body text into spurious table rows. Running heads and page
+  numbers are now looked for in the crop box's margins rather than the media box's.
+- **Two columns of running text are no longer read as a table.** Table detection now consults
+  the page's reading-order columns first: a candidate table whose rows reach across the gutter
+  between two columns of running text is searched for tables column by column. Rows that are
+  lines of running text — every space in them a word space, as when justification stretches word
+  spaces past a cell gap — no longer make a table either. Before, two justified columns whose
+  lines are offset or whose words happen to line up came out as a two- to six-column table
+  holding sentences out of order.
+- **Column gutters are found in text drawn word by word.** The column tests measured blocks as
+  if each were a line; a producer that positions justified text word by word leaves one block
+  per word, so its columns were never recognised and were read across. Lines are now rebuilt
+  from blocks before measuring them, a line drawn across both columns in pieces (a footnote)
+  is recognised as crossing the gutter, every whitespace channel is tried rather than only the
+  widest, and a figure's labels inside a column no longer keep it from counting as a column of
+  text.
+- **Letters stacked down the margin are read on their own.** A thumb-index tab set as single
+  letters down the page edge was read into the text beside it, splitting its paragraphs line by
+  line. A narrow strip at the region's edge whose lines are not on the text's baselines is now a
+  reading region of its own; list markers and line numbers, which sit on the text's baselines,
+  stay with their lines.
+
+### Changed
+
+- `image_coverage` (page statistics) is now the share of the page's visible region (its crop
+  box) that images show through, after clipping — not of the media box.
+
 ## 0.28.0 — 2026-10-06
 
 ### Added

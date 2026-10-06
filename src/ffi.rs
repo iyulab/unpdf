@@ -887,7 +887,8 @@ unparser_shared::export_string_getter!(
     ///   detect scans whose OCR layer was dropped as unreadable.
     /// - `rotation`: the page's `/Rotate` — 0, 90, 180 or 270 degrees clockwise.
     /// - `image_coverage`: share of the page painted by images, 0 to 1 (the union of the
-    ///   image paints' rectangles, clipped to the page). Tells a full-page scan (near 1)
+    ///   image paints' rectangles, clipped to what the page shows: its crop box and the
+    ///   clipping paths). Tells a full-page scan (near 1)
     ///   from a logo (a few hundredths) when both report one image paint.
     /// - `rotated_text_runs`: text runs not set horizontally left to right. The reading
     ///   order treats them as horizontal, so their order may be wrong.

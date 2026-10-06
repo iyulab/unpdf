@@ -7,6 +7,7 @@ use std::cell::Cell;
 use std::collections::{BTreeMap, HashMap};
 
 use super::backend::{get_number_from_value, ContentOp, PdfBackend, PdfValue, ResourceScope};
+use super::clip::{Bounds, ClipTracker};
 use crate::error::{Error, Result};
 
 /// A text span with position and style information.
@@ -739,7 +740,7 @@ impl<'a> LayoutAnalyzer<'a> {
     pub fn filter_spans_for_page(&self, spans: &mut Vec<TextSpan>, page_num: u32) {
         let pages = self.backend.pages();
         if let Some(&page_id) = pages.get(&page_num) {
-            filter_header_footer_spans(spans, self.backend.page_box(page_id));
+            filter_header_footer_spans(spans, self.backend.crop_box(page_id));
         }
     }
 
@@ -793,7 +794,7 @@ impl<'a> LayoutAnalyzer<'a> {
         let page_id = pages
             .get(&page_num)
             .ok_or(Error::PageOutOfRange(page_num, pages.len() as u32))?;
-        let page_box = self.backend.page_box(*page_id);
+        let page_box = self.backend.crop_box(*page_id);
 
         let mut spans = self.extract_page_spans(page_num)?;
 
@@ -835,7 +836,8 @@ impl<'a> LayoutAnalyzer<'a> {
         // inside a form than on the page.
         let mut fonts: HashMap<Option<super::backend::ObjectId>, HashMap<Vec<u8>, FontInfo>> =
             HashMap::new();
-        let ruling_lines = super::vector_graphics::extract_lines(operations);
+        let ruling_lines =
+            super::vector_graphics::extract_lines(operations, self.backend.crop_box(page_id));
         let lattice_grids =
             super::lattice::infer_grids(&ruling_lines, &super::lattice::LatticeConfig::default());
         log::debug!(
@@ -848,9 +850,12 @@ impl<'a> LayoutAnalyzer<'a> {
         self.text_op_count.set(0);
         self.image_op_count.set(0);
         self.suppressed_text_runs.set(0);
-        let page_box = self.backend.page_box(page_id);
-        // Where each image paint landed on the page, in page space.
-        let mut image_rects: Vec<Rect> = Vec::new();
+        // What the page shows: marks outside its crop box or its clipping path are never
+        // seen, so they are not page content.
+        let visible = self.backend.crop_box(page_id);
+        let mut clip = ClipTracker::new(visible);
+        // Where each image paint shows on the page, in page space.
+        let mut image_rects: Vec<Bounds> = Vec::new();
         let mut rotated_text_runs = 0u32;
         // Text rendering mode (`Tr`): 3 paints nothing — the mode OCR layers use.
         let mut render_mode: i64 = 0;
@@ -872,6 +877,7 @@ impl<'a> LayoutAnalyzer<'a> {
         let mut ctm_stack: Vec<[f32; 6]> = Vec::new();
 
         for op in operations {
+            clip.observe(op, &ctm);
             // 페이지 판별용 오퍼레이터 통계 — 아래 본 match 의 가드 조건과
             // 무관하게 항상 집계한다 (`Do` arm 은 page_area 가드가 있음).
             match op.operator.as_str() {
@@ -881,7 +887,7 @@ impl<'a> LayoutAnalyzer<'a> {
                 // so a `Do` left here is never a form's.
                 "Do" | "BI" => {
                     self.image_op_count.set(self.image_op_count.get() + 1);
-                    image_rects.push(unit_square_on_page(&ctm));
+                    image_rects.extend(clip.visible_part(&unit_square_on_page(&ctm)));
                 }
                 _ => {}
             }
@@ -1060,11 +1066,20 @@ impl<'a> LayoutAnalyzer<'a> {
                         text_state.font_size * text_matrix.get_scale() * ctm_y_scale(&ctm);
                     // The run's extent in device space, from its first glyph to where it
                     // left the text position.
-                    let measured_width = advance.map(|run| {
+                    let end = advance.map(|run| {
                         let (ex, ey) = text_matrix.position_after(run);
-                        let (dx, dy) = apply_ctm(&ctm, ex, ey);
-                        (dx - x).hypot(dy - y)
+                        apply_ctm(&ctm, ex, ey)
                     });
+                    let measured_width = end.map(|(dx, dy)| (dx - x).hypot(dy - y));
+
+                    // A run the clip hides entirely shows nothing — the margin text of a
+                    // larger page placed onto a smaller one, a form's content beyond its box.
+                    if !clip.admits(&run_bounds((x, y), end, effective_size)) {
+                        if let Some(run) = advance {
+                            text_matrix.advance(run);
+                        }
+                        continue;
+                    }
 
                     if !text.trim().is_empty() {
                         if !reads_left_to_right(&text_matrix.tm, &ctm) {
@@ -1099,12 +1114,8 @@ impl<'a> LayoutAnalyzer<'a> {
         }
         self.suppressed_text_runs.set(suppressed_runs);
 
-        let page_rect = Rect::from_page_box(page_box);
-        let page_area = page_rect.area();
-        let clipped: Vec<Rect> = image_rects
-            .iter()
-            .filter_map(|r| r.intersect(&page_rect))
-            .collect();
+        let page_area = Bounds::from_page_box(visible).area();
+        let clipped = image_rects;
         if page_area > 0.0 {
             signals.has_page_covering_image = clipped
                 .iter()
@@ -1136,44 +1147,15 @@ impl<'a> LayoutAnalyzer<'a> {
         }
 
         // Convert spans to XY-cut blocks
-        let blocks: Vec<super::xycut::Block> = spans
-            .iter()
-            .map(|s| super::xycut::Block {
-                x: s.x,
-                y: s.y,
-                width: if s.width > 0.0 {
-                    s.width
-                } else {
-                    estimate_text_width(&s.text, s.font_size)
-                },
-                height: s.font_size,
-            })
-            .collect();
-
-        // Determine gap thresholds based on median font size. These are
-        // intentionally large so XY-Cut only fires on true multi-column
-        // layouts — not on intra-table cell gaps or bulleted list
-        // indentation, which previously fragmented pages into dozens of
-        // groups on Hancom-produced PDFs.
-        //
-        // A column gutter is far narrower than that, so a narrower channel still
-        // splits — but only when text of real width lies on both sides of it (see
-        // `XyCutConfig::min_gutter`), which list markers and indents never do.
-        let median_font = median_font_size(&spans);
-        let config = super::xycut::XyCutConfig {
-            min_x_gap: (median_font * 5.0).max(60.0),
-            min_y_gap: (median_font * 3.0).max(36.0),
-            min_gutter: median_font.max(8.0),
-        };
-
+        let blocks = xycut_blocks(&spans);
+        let config = xycut_config(&spans);
         let segmentation = super::xycut::xycut_partition(&blocks, &config);
 
         log::debug!(
-            "XY-Cut segmented {} spans into {} groups, {} ambiguous (median_font={:.1}, {:?})",
+            "XY-Cut segmented {} spans into {} groups, {} ambiguous ({:?})",
             spans.len(),
             segmentation.groups.len(),
             segmentation.ambiguous_regions,
-            median_font,
             config,
         );
 
@@ -1700,53 +1682,25 @@ impl TextState {
     }
 }
 
-/// An axis-aligned rectangle in page space.
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct Rect {
-    x0: f32,
-    y0: f32,
-    x1: f32,
-    y1: f32,
-}
-
-impl Rect {
-    fn from_page_box(b: super::backend::PageBox) -> Self {
-        Rect {
-            x0: b.llx,
-            y0: b.lly,
-            x1: b.urx,
-            y1: b.ury,
-        }
-    }
-
-    fn area(&self) -> f32 {
-        (self.x1 - self.x0).max(0.0) * (self.y1 - self.y0).max(0.0)
-    }
-
-    fn intersect(&self, other: &Rect) -> Option<Rect> {
-        let r = Rect {
-            x0: self.x0.max(other.x0),
-            y0: self.y0.max(other.y0),
-            x1: self.x1.min(other.x1),
-            y1: self.y1.min(other.y1),
-        };
-        (r.x1 > r.x0 && r.y1 > r.y0).then_some(r)
-    }
-}
-
 /// The bounding box, in page space, of the unit square mapped through `ctm` — where an
 /// image paint lands.
-fn unit_square_on_page(ctm: &[f32; 6]) -> Rect {
+/// Where a text run can paint, in page space: from its origin to where it left the text
+/// position (`end`, when its glyph widths are known), and from its descent below the baseline
+/// to a full font size above it. It decides only whether the run can be visible at all.
+fn run_bounds(origin: (f32, f32), end: Option<(f32, f32)>, size: f32) -> Bounds {
+    let size = size.abs();
+    let b = Bounds::around([origin, end.unwrap_or(origin)]).expect("at least one point");
+    Bounds {
+        y0: b.y0 - size * 0.3,
+        y1: b.y1 + size,
+        ..b
+    }
+}
+
+fn unit_square_on_page(ctm: &[f32; 6]) -> Bounds {
     let corners =
         [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)].map(|(x, y)| apply_ctm(ctm, x, y));
-    let xs = corners.map(|c| c.0);
-    let ys = corners.map(|c| c.1);
-    Rect {
-        x0: xs.iter().copied().fold(f32::MAX, f32::min),
-        y0: ys.iter().copied().fold(f32::MAX, f32::min),
-        x1: xs.iter().copied().fold(f32::MIN, f32::max),
-        y1: ys.iter().copied().fold(f32::MIN, f32::max),
-    }
+    Bounds::around(corners).expect("four corners")
 }
 
 /// The area covered by the union of `rects`.
@@ -1754,7 +1708,7 @@ fn unit_square_on_page(ctm: &[f32; 6]) -> Rect {
 /// Exact by coordinate compression, which costs the square of the number of rectangles; a
 /// page with more image paints than that can afford (tiled scans run to hundreds) is
 /// measured on a sampling grid instead, accurate to well under a percent of the page.
-fn union_area(rects: &[Rect]) -> f32 {
+fn union_area(rects: &[Bounds]) -> f32 {
     const EXACT_LIMIT: usize = 256;
     if rects.is_empty() {
         return 0.0;
@@ -1793,7 +1747,7 @@ fn union_area(rects: &[Rect]) -> f32 {
     area as f32
 }
 
-fn sampled_union_area(rects: &[Rect]) -> f32 {
+fn sampled_union_area(rects: &[Bounds]) -> f32 {
     const N: usize = 400;
     let x0 = rects.iter().map(|r| r.x0).fold(f32::MAX, f32::min);
     let y0 = rects.iter().map(|r| r.y0).fold(f32::MAX, f32::min);
@@ -1806,7 +1760,7 @@ fn sampled_union_area(rects: &[Rect]) -> f32 {
     let mut hit = 0usize;
     for row in 0..N {
         let y = y0 + (row as f32 + 0.5) * dy;
-        let row_rects: Vec<&Rect> = rects.iter().filter(|r| r.y0 <= y && y < r.y1).collect();
+        let row_rects: Vec<&Bounds> = rects.iter().filter(|r| r.y0 <= y && y < r.y1).collect();
         for col in 0..N {
             let x = x0 + (col as f32 + 0.5) * dx;
             if row_rects.iter().any(|r| r.x0 <= x && x < r.x1) {
@@ -2006,6 +1960,41 @@ fn is_hangul_char(c: char) -> bool {
 ///
 /// CJK characters typically don't need spaces between them.
 /// Compute the median font size from a slice of spans.
+/// One XY-Cut block per span: where its text lies on the page.
+pub(crate) fn xycut_blocks(spans: &[TextSpan]) -> Vec<super::xycut::Block> {
+    spans
+        .iter()
+        .map(|s| super::xycut::Block {
+            x: s.x,
+            y: s.y,
+            width: if s.width > 0.0 {
+                s.width
+            } else {
+                estimate_text_width(&s.text, s.font_size)
+            },
+            height: s.font_size,
+        })
+        .collect()
+}
+
+/// XY-Cut's gap thresholds for `spans`, scaled to their median font size.
+///
+/// The unconditional ones are intentionally large so XY-Cut only fires on true
+/// multi-column layouts — not on intra-table cell gaps or bulleted list indentation, which
+/// previously fragmented pages into dozens of groups on Hancom-produced PDFs.
+///
+/// A column gutter is far narrower than that, so a narrower channel still splits — but only
+/// when text of real width lies on both sides of it (see `XyCutConfig::min_gutter`), which
+/// list markers and indents never do.
+pub(crate) fn xycut_config(spans: &[TextSpan]) -> super::xycut::XyCutConfig {
+    let median_font = median_font_size(spans);
+    super::xycut::XyCutConfig {
+        min_x_gap: (median_font * 5.0).max(60.0),
+        min_y_gap: (median_font * 3.0).max(36.0),
+        min_gutter: median_font.max(8.0),
+    }
+}
+
 fn median_font_size(spans: &[TextSpan]) -> f32 {
     if spans.is_empty() {
         return 12.0;
@@ -2391,8 +2380,8 @@ fn merge_fragmented_spans(spans: Vec<TextSpan>) -> Vec<TextSpan> {
 #[cfg(test)]
 mod tests {
 
-    fn rect(x0: f32, y0: f32, x1: f32, y1: f32) -> Rect {
-        Rect { x0, y0, x1, y1 }
+    fn rect(x0: f32, y0: f32, x1: f32, y1: f32) -> Bounds {
+        Bounds { x0, y0, x1, y1 }
     }
 
     #[test]
@@ -2408,7 +2397,7 @@ mod tests {
     #[test]
     fn sampled_union_area_agrees_with_the_exact_one() {
         // 300 strips of a 600 x 800 page, each 2 wide, overlapping their neighbour by half.
-        let strips: Vec<Rect> = (0..300)
+        let strips: Vec<Bounds> = (0..300)
             .map(|i| rect(i as f32 * 1.0, 0.0, i as f32 * 1.0 + 2.0, 800.0))
             .collect();
         let exact = 301.0 * 800.0;

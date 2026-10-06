@@ -72,8 +72,9 @@ pub struct Page {
     #[serde(default)]
     pub unsupported_image_count: usize,
 
-    /// Share of the page box painted by images, 0 to 1: the union of every image paint's
-    /// rectangle (XObject or inline, inside forms too), clipped to the page. Near 1 with
+    /// Share of the page's visible region (its crop box) that images show in, 0 to 1: the
+    /// union of every image paint's rectangle (XObject or inline, inside forms too), clipped
+    /// to the crop box and the clipping path it is painted through. Near 1 with
     /// little text is a scan; a logo is a few hundredths. Omitted from JSON when 0.
     #[serde(default, skip_serializing_if = "is_zero_f32")]
     pub image_coverage: f32,
