@@ -203,6 +203,27 @@ internal static class PdfFixtures
     }
 
     /// <summary>
+    /// One page drawn as a 1×1 image in a color space unpdf does not convert (Lab) — samples
+    /// that cannot be turned into a usable image format.
+    /// </summary>
+    public static byte[] LabImagePdf()
+    {
+        var content = "q 595 0 0 842 0 0 cm /Im0 Do Q\n";
+        return Assemble(new[]
+        {
+            "<</Type/Catalog/Pages 2 0 R>>",
+            "<</Type/Pages/Kids[3 0 R]/Count 1>>",
+            "<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]" +
+                "/Resources<</XObject<</Im0 5 0 R>>>>/Contents 4 0 R>>",
+            StreamObject($"<</Length {content.Length}>>", content),
+            StreamObject(
+                "<</Type/XObject/Subtype/Image/Width 1/Height 1" +
+                "/ColorSpace[/Lab<</WhitePoint[0.9505 1 1.089]>>]/BitsPerComponent 8/Length 3>>",
+                "\u0080\u0080\u0080"),
+        });
+    }
+
+    /// <summary>
     /// Declares two pages but its second kid points at an object that is not there —
     /// the shape a damaged page tree takes: one page survives, one is lost, and the
     /// parse still succeeds.
@@ -248,8 +269,8 @@ internal static class PdfFixtures
     /// <summary>
     /// One page with a single <c>DCTDecode</c>-tagged image XObject of the given pixel size.
     /// The bytes are not a real decodable JPEG — nothing decodes them — but the <c>Filter</c>
-    /// entry is what the parser uses to classify a resource as a renderable image format, as
-    /// opposed to the raw/undecoded pixel buffer <see cref="ImageOnlyPdf"/> produces.
+    /// entry is what the parser uses to classify a resource as an encoded image format it
+    /// hands on as is.
     /// </summary>
     public static byte[] JpegPdf(int width, int height)
     {

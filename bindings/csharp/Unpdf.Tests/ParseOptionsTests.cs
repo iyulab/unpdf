@@ -29,18 +29,34 @@ public class ParseOptionsTests
     }
 
     /// <summary>
-    /// The undecoded pixel buffer <see cref="PdfFixtures.ImageOnlyPdf"/> produces is a format
-    /// most <c>GetResourceData</c> callers cannot use — it must never be surfaced, opt-in or
-    /// not, regardless of <see cref="ParseOptions.MinImageDimension"/>.
+    /// Samples unpdf cannot convert (<see cref="PdfFixtures.LabImagePdf"/>) are a buffer
+    /// most <c>GetResourceData</c> callers cannot use — they must never be surfaced, opt-in
+    /// or not, regardless of <see cref="ParseOptions.MinImageDimension"/>.
     /// </summary>
     [Fact]
     public void ParseBytes_ExtractResources_NeverSurfacesRawUndecodedImages()
     {
         using var doc = UnpdfDocument.ParseBytes(
-            PdfFixtures.ImageOnlyPdf(),
+            PdfFixtures.LabImagePdf(),
             new ParseOptions { ExtractResources = true, MinImageDimension = 0 });
 
         Assert.Equal(0, doc.ResourceCount);
+    }
+
+    /// <summary>
+    /// An image with no filter is samples like a <c>FlateDecode</c> one, and is re-encoded
+    /// as PNG the same way.
+    /// </summary>
+    [Fact]
+    public void ParseBytes_ExtractResources_SurfacesUnfilteredSamplesAsPng()
+    {
+        using var doc = UnpdfDocument.ParseBytes(
+            PdfFixtures.ImageOnlyPdf(),
+            new ParseOptions { ExtractResources = true, MinImageDimension = 0 });
+
+        var id = Assert.Single(doc.GetResourceIds());
+        using var info = doc.GetResourceInfo(id);
+        Assert.Equal("image/png", info!.RootElement.GetProperty("mime_type").GetString());
     }
 
     [Fact]

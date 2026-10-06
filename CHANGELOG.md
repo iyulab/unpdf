@@ -22,7 +22,16 @@
   header spans its columns over several lines.
 - A numbered section title set in bold at body size (`5. The dynamics`, `3.1. Status`) is a
   heading, its level taken from the number's depth.
-
+- **Filter chains are decoded.** A stream whose `/Filter` is an array — `[/ASCII85Decode
+  /FlateDecode]`, which ReportLab writes for every content stream when its ASCII output is on —
+  applies each filter to the output of the one before it, each with its own entry of a
+  `/DecodeParms` array. Such a page used to come back with no text. `ASCII85Decode`,
+  `LZWDecode` (with `EarlyChange`) and `RunLengthDecode` are supported, and the abbreviated
+  names inline images use (`A85`, `AHx`, `LZW`, `Fl`, `RL`, `DCT`, `CCF`).
+- An image behind a filter chain is extracted: `[/ASCII85Decode /DCTDecode]` yields the JPEG,
+  where the ASCII85 text used to be stored as the image. Image samples are re-encoded as PNG
+  whichever lossless filters produced them — or none: an unfiltered image was dropped as an
+  unsupported format and is now a PNG resource like a `FlateDecode` one.
 - A number on a line of its own that ends the line before — the second half of a page range
   (`432: 298-` / `306.`) — is kept as text. It was read as an empty numbered list item and
   dropped. A range broken at its hyphen is rejoined (`298-306`).

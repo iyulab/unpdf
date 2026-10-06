@@ -313,19 +313,18 @@ pub(crate) fn convert_xobject_pub(xobj: RawXObject) -> Option<Resource> {
     let (data, mime_type) = match filter.as_deref() {
         Some("DCTDecode") => (data, "image/jpeg"),
         Some("JPXDecode") => (data, "image/jp2"),
-        Some("FlateDecode") => {
-            match reencode_flate_image_as_png(
-                &data,
-                width,
-                height,
-                bits_per_component,
-                color.as_ref(),
-                decode.as_deref(),
-            ) {
-                Some(png) => (png, "image/png"),
-                None => (data, "application/octet-stream"),
-            }
-        }
+        // Samples — whatever lossless chain produced them, or none at all.
+        None => match reencode_samples_as_png(
+            &data,
+            width,
+            height,
+            bits_per_component,
+            color.as_ref(),
+            decode.as_deref(),
+        ) {
+            Some(png) => (png, "image/png"),
+            None => (data, "application/octet-stream"),
+        },
         _ => (data, "application/octet-stream"),
     };
 
@@ -342,12 +341,12 @@ pub(crate) fn convert_xobject_pub(xobj: RawXObject) -> Option<Resource> {
     Some(resource)
 }
 
-/// Re-encode an already-inflated `/FlateDecode` image XObject's raw samples as PNG.
+/// Re-encode an image XObject's samples — its filter chain already applied — as PNG.
 ///
 /// `None` means "not eligible" (a color space or bit depth [`super::png_encode::image_to_png`]
 /// does not convert, or missing dimensions), not "encoding failed" — the caller falls back
 /// to the raw/undecoded-drop path, which is reported as an unsupported image.
-fn reencode_flate_image_as_png(
+fn reencode_samples_as_png(
     data: &[u8],
     width: Option<u32>,
     height: Option<u32>,

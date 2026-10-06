@@ -23,6 +23,26 @@ pub fn image_only_pdf() -> Vec<u8> {
     assemble(objects)
 }
 
+/// One page drawn as a 1x1 image in a color space unpdf does not convert (Lab) — samples
+/// that cannot be turned into a usable image format.
+pub fn lab_image_pdf() -> Vec<u8> {
+    let content = b"q 595 0 0 842 0 0 cm /Im0 Do Q\n";
+    let objects: Vec<Vec<u8>> = vec![
+        b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+        b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]\
+          /Resources<</XObject<</Im0 5 0 R>>>>/Contents 4 0 R>>"
+            .to_vec(),
+        stream_object(&format!("<</Length {}>>", content.len()), content),
+        stream_object(
+            "<</Type/XObject/Subtype/Image/Width 1/Height 1\
+              /ColorSpace[/Lab<</WhitePoint[0.9505 1 1.089]>>]/BitsPerComponent 8/Length 3>>",
+            &[0x80u8, 0x80, 0x80],
+        ),
+    ];
+    assemble(objects)
+}
+
 /// One page with a single line of visible Helvetica text.
 pub fn text_pdf() -> Vec<u8> {
     let content = b"BT /F1 12 Tf 72 720 Td (Hello World) Tj ET\n";

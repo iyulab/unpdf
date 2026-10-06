@@ -112,6 +112,24 @@ def _image_only_pdf() -> bytes:
     ])
 
 
+def _lab_image_pdf() -> bytes:
+    """One page drawn as a 1x1 image in a color space unpdf does not convert (Lab)."""
+    content = b"q 595 0 0 842 0 0 cm /Im0 Do Q\n"
+    return _assemble([
+        b"<</Type/Catalog/Pages 2 0 R>>",
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>",
+        b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]"
+        b"/Resources<</XObject<</Im0 5 0 R>>>>/Contents 4 0 R>>",
+        _stream_object(b"<</Length %d>>" % len(content), content),
+        _stream_object(
+            b"<</Type/XObject/Subtype/Image/Width 1/Height 1"
+            b"/ColorSpace[/Lab<</WhitePoint[0.9505 1 1.089]>>]"
+            b"/BitsPerComponent 8/Length 3>>",
+            b"\x80\x80\x80",
+        ),
+    ])
+
+
 def _lost_page_pdf() -> bytes:
     """Declares two pages, but its second kid points at an object that is not there.
 
@@ -192,8 +210,8 @@ def _jpeg_pdf(width: int, height: int) -> bytes:
     """One page with a single ``DCTDecode``-tagged image XObject of the given size.
 
     The bytes are not a real decodable JPEG — nothing decodes them — but the
-    ``Filter`` entry is what the parser uses to classify a resource as a renderable
-    image format, unlike the raw/undecoded pixel buffer ``_image_only_pdf`` produces.
+    ``Filter`` entry is what the parser uses to classify a resource as an encoded
+    image it hands on as is.
     """
     content = b"q 595 0 0 842 0 0 cm /Im0 Do Q\n"
     return _assemble([
@@ -226,15 +244,23 @@ class TestParseOptions:
         assert info["resource_count"] == 1
 
     def test_raw_undecoded_images_never_surfaced(self):
-        # The undecoded pixel buffer `_image_only_pdf` produces is a format most
+        # Samples unpdf cannot convert (a Lab image) are a buffer most
         # GetResourceData callers cannot use, and must never appear regardless of
-        # `min_image_dimension` — the shared-filter fix landed in the same cycle
-        # this options surface was added, and this is its regression test.
+        # `min_image_dimension`.
         info = unpdf.get_info(
-            _image_only_pdf(),
+            _lab_image_pdf(),
             options={"extract_resources": True, "min_image_dimension": 0},
         )
         assert info["resource_count"] == 0
+
+    def test_unfiltered_samples_surface_as_png(self):
+        # An image with no filter is samples like a FlateDecode one, and is re-encoded
+        # the same way.
+        options = {"extract_resources": True, "min_image_dimension": 0}
+        ids = unpdf.get_resource_ids(_image_only_pdf(), options=options)
+        assert len(ids) == 1
+        info = unpdf.get_resource_info(_image_only_pdf(), ids[0], options=options)
+        assert info["mime_type"] == "image/png"
 
     def test_min_image_dimension_drops_small_images_by_default(self):
         info = unpdf.get_info(_jpeg_pdf(10, 10), options={"extract_resources": True})

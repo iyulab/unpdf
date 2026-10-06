@@ -184,12 +184,18 @@ impl ImageColorSpace {
     }
 }
 
+/// [`RawXObject::filter`] of an image whose filter chain could not be decoded.
+pub const UNDECODED_IMAGE: &str = "undecoded";
+
 /// A raw XObject (image) extracted from a PDF page.
 #[derive(Debug, Clone)]
 pub struct RawXObject {
     pub name: String,
     pub subtype: String,
     pub data: Vec<u8>,
+    /// The image codec `data` is still encoded in (`DCTDecode`, `JPXDecode`, ...), or
+    /// [`UNDECODED_IMAGE`]; `None` when `data` is the image's samples, every filter of
+    /// its chain applied.
     pub filter: Option<String>,
     pub width: Option<u32>,
     pub height: Option<u32>,
@@ -807,13 +813,14 @@ impl RawBackend {
                 continue;
             }
 
-            let filter = raw_dict_get(dict, b"Filter")
-                .and_then(|f| f.as_name())
-                .map(|n| String::from_utf8_lossy(n).to_string());
-
-            let data = match filter.as_deref() {
-                Some("DCTDecode") | Some("JPXDecode") => stream.raw_data.clone(),
-                _ => raw_stream::decompress(stream).unwrap_or_else(|_| stream.raw_data.clone()),
+            // The lossless filters are applied whatever the chain (`[/ASCII85Decode
+            // /DCTDecode]` hands on the JPEG, `[/ASCII85Decode /FlateDecode]` the
+            // samples); `filter` names the image codec still to apply, `None` when `data`
+            // is samples. A chain that does not decode leaves the stream's bytes, marked
+            // with the reason so they are never read as samples.
+            let (data, filter) = match raw_stream::decode(stream) {
+                Ok(decoded) => (decoded.data, decoded.codec.map(str::to_string)),
+                Err(_) => (stream.raw_data.clone(), Some(UNDECODED_IMAGE.to_string())),
             };
 
             let width = raw_dict_get(dict, b"Width")

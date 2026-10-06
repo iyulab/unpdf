@@ -4,45 +4,266 @@ use super::tokenizer::{dict_get, PdfDict, PdfObject, PdfStream};
 use crate::error::{Error, Result};
 use std::io::Read;
 
-/// Decompress a PDF stream based on its Filter entry.
-/// Also applies predictor decoding from DecodeParms if present.
-pub fn decompress(stream: &PdfStream) -> Result<Vec<u8>> {
-    let filter = dict_get(&stream.dict, b"Filter");
-
-    let decompressed = match filter {
-        None => return Ok(stream.raw_data.clone()),
-        Some(PdfObject::Name(name)) => decompress_single(name, &stream.raw_data)?,
-        Some(PdfObject::Array(filters)) => {
-            let mut data = stream.raw_data.clone();
-            for f in filters {
-                if let Some(name) = f.as_name() {
-                    data = decompress_single(name, &data)?;
-                }
-            }
-            data
-        }
-        _ => return Ok(stream.raw_data.clone()),
-    };
-
-    // Apply predictor decoding if DecodeParms is present
-    let decode_parms = dict_get(&stream.dict, b"DecodeParms");
-    if let Some(parms) = decode_parms {
-        if let Some(parms_dict) = parms.as_dict() {
-            return apply_predictor(parms_dict, &decompressed);
-        }
-    }
-
-    Ok(decompressed)
+/// The bytes of a stream with every lossless filter in its chain applied.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Decoded {
+    /// The stream's data after the lossless filters.
+    pub data: Vec<u8>,
+    /// The image codec the chain ends in (`DCTDecode`, `JPXDecode`, `JBIG2Decode`,
+    /// `CCITTFaxDecode`), by its full name, when `data` is still encoded in it. Such a
+    /// filter is the last in a chain: its output is an image, not bytes another filter
+    /// reads.
+    pub codec: Option<&'static str>,
 }
 
-fn decompress_single(filter_name: &[u8], data: &[u8]) -> Result<Vec<u8>> {
-    match filter_name {
-        b"FlateDecode" | b"Fl" => decompress_flate(data),
+/// Decode a stream completely, every filter in its chain applied in order.
+///
+/// A stream that ends in an image codec cannot be decoded to bytes here and is an
+/// error; [`decode`] stops before the codec instead.
+pub fn decompress(stream: &PdfStream) -> Result<Vec<u8>> {
+    let decoded = decode(stream)?;
+    match decoded.codec {
+        None => Ok(decoded.data),
+        Some(codec) => Err(Error::PdfParse(format!("unsupported filter: {codec}"))),
+    }
+}
+
+/// Apply a stream's filter chain in order (PDF 32000-1 §7.4.1: each filter decodes the
+/// output of the one before it), each stage with its own `DecodeParms`, stopping before
+/// an image codec.
+///
+/// `Filter` is a name or an array of names, abbreviated (`AHx`, `A85`, `LZW`, `Fl`, `RL`,
+/// `DCT`, `CCF`, as inline images write them) or not. `DecodeParms` is a dictionary for a
+/// single filter, or an array parallel to `Filter` whose entries may be `null`. A lone
+/// dictionary beside a filter array — not what the specification allows, but written —
+/// is taken as the parameters of the last filter, which is where a predictor belongs.
+pub fn decode(stream: &PdfStream) -> Result<Decoded> {
+    let filters: Vec<&[u8]> = match dict_get(&stream.dict, b"Filter") {
+        None | Some(PdfObject::Null) => Vec::new(),
+        Some(PdfObject::Name(name)) => vec![name.as_slice()],
+        Some(PdfObject::Array(items)) => items
+            .iter()
+            .map(|item| {
+                item.as_name()
+                    .ok_or_else(|| Error::PdfParse("filter array entry is not a name".into()))
+            })
+            .collect::<Result<_>>()?,
+        Some(_) => return Err(Error::PdfParse("Filter is not a name or an array".into())),
+    };
+
+    let mut parms: Vec<Option<&PdfDict>> = vec![None; filters.len()];
+    match dict_get(&stream.dict, b"DecodeParms") {
+        Some(PdfObject::Array(items)) => {
+            for (slot, item) in parms.iter_mut().zip(items) {
+                *slot = item.as_dict();
+            }
+        }
+        Some(other) => {
+            if let (Some(dict), Some(last)) = (other.as_dict(), parms.last_mut()) {
+                *last = Some(dict);
+            }
+        }
+        None => {}
+    }
+
+    let mut data = stream.raw_data.clone();
+    for (index, (&name, parms)) in filters.iter().zip(&parms).enumerate() {
+        if let Some(codec) = image_codec(name) {
+            if index + 1 != filters.len() {
+                return Err(Error::PdfParse(format!(
+                    "image filter {codec} is followed by another filter"
+                )));
+            }
+            return Ok(Decoded {
+                data,
+                codec: Some(codec),
+            });
+        }
+        data = decode_stage(name, &data, *parms)?;
+    }
+    Ok(Decoded { data, codec: None })
+}
+
+/// The full name of an image codec filter, or `None` for a filter that yields bytes.
+fn image_codec(name: &[u8]) -> Option<&'static str> {
+    match name {
+        b"DCTDecode" | b"DCT" => Some("DCTDecode"),
+        b"JPXDecode" => Some("JPXDecode"),
+        b"JBIG2Decode" => Some("JBIG2Decode"),
+        b"CCITTFaxDecode" | b"CCF" => Some("CCITTFaxDecode"),
+        _ => None,
+    }
+}
+
+/// Apply one lossless filter, with its predictor where the filter takes one.
+fn decode_stage(name: &[u8], data: &[u8], parms: Option<&PdfDict>) -> Result<Vec<u8>> {
+    let predicted = |decoded: Vec<u8>| match parms {
+        Some(parms) => apply_predictor(parms, &decoded),
+        None => Ok(decoded),
+    };
+    match name {
+        b"FlateDecode" | b"Fl" => predicted(decompress_flate(data)?),
+        b"LZWDecode" | b"LZW" => {
+            let early_change = parms
+                .and_then(|p| dict_get(p, b"EarlyChange"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(1)
+                != 0;
+            predicted(decode_lzw(data, early_change)?)
+        }
         b"ASCIIHexDecode" | b"AHx" => decode_ascii_hex(data),
+        b"ASCII85Decode" | b"A85" => decode_ascii85(data),
+        b"RunLengthDecode" | b"RL" => Ok(decode_run_length(data)),
         _ => Err(Error::PdfParse(format!(
             "unsupported filter: {}",
-            String::from_utf8_lossy(filter_name)
+            String::from_utf8_lossy(name)
         ))),
+    }
+}
+
+/// `ASCII85Decode` (PDF 32000-1 §7.4.3): groups of five characters `!`..`u` encode four
+/// bytes, `z` stands for four zero bytes, whitespace is ignored and `~>` ends the data.
+/// A final group of n characters encodes n - 1 bytes.
+fn decode_ascii85(data: &[u8]) -> Result<Vec<u8>> {
+    let body = data.strip_prefix(b"<~").unwrap_or(data);
+    let mut out = Vec::with_capacity(body.len() * 4 / 5);
+    let mut group = [0u8; 5];
+    let mut filled = 0;
+    for &byte in body {
+        match byte {
+            b'~' => break,
+            b'z' if filled == 0 => out.extend_from_slice(&[0; 4]),
+            b'!'..=b'u' => {
+                group[filled] = byte - b'!';
+                filled += 1;
+                if filled == 5 {
+                    out.extend_from_slice(&ascii85_group(&group)?);
+                    filled = 0;
+                }
+            }
+            _ if byte.is_ascii_whitespace() => {}
+            _ => {
+                return Err(Error::PdfParse(format!(
+                    "invalid character 0x{byte:02X} in ASCII85Decode"
+                )))
+            }
+        }
+    }
+    if filled == 1 {
+        return Err(Error::PdfParse("truncated ASCII85Decode group".into()));
+    }
+    if filled > 1 {
+        // Pad with the highest digit and keep the bytes the short group encodes.
+        group[filled..].fill(b'u' - b'!');
+        out.extend_from_slice(&ascii85_group(&group)?[..filled - 1]);
+    }
+    Ok(out)
+}
+
+fn ascii85_group(digits: &[u8; 5]) -> Result<[u8; 4]> {
+    let value = digits
+        .iter()
+        .try_fold(0u64, |acc, &d| Some(acc * 85 + u64::from(d)))
+        .filter(|&v| v <= u64::from(u32::MAX))
+        .ok_or_else(|| Error::PdfParse("ASCII85Decode group out of range".into()))?;
+    Ok((value as u32).to_be_bytes())
+}
+
+/// `RunLengthDecode` (PDF 32000-1 §7.4.5): a length byte n below 128 copies the next
+/// n + 1 bytes, above 128 repeats the next byte 257 - n times, and 128 ends the data.
+fn decode_run_length(data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while let Some(&length) = data.get(i) {
+        i += 1;
+        match length {
+            128 => break,
+            0..=127 => {
+                let end = (i + length as usize + 1).min(data.len());
+                out.extend_from_slice(&data[i..end]);
+                i = end;
+            }
+            _ => {
+                if let Some(&byte) = data.get(i) {
+                    out.extend(std::iter::repeat_n(byte, 257 - length as usize));
+                }
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+/// `LZWDecode` (PDF 32000-1 §7.4.4): variable-width codes from 9 to 12 bits, 256 clears
+/// the table and 257 ends the data. With `early_change` (the default) the code width
+/// grows one code earlier than the table strictly needs, as TIFF writers do.
+fn decode_lzw(data: &[u8], early_change: bool) -> Result<Vec<u8>> {
+    const CLEAR: usize = 256;
+    const END: usize = 257;
+    const MAX_CODES: usize = 4096;
+
+    let fresh = || -> Vec<Vec<u8>> {
+        let mut table: Vec<Vec<u8>> = (0..=255u8).map(|b| vec![b]).collect();
+        table.push(Vec::new()); // CLEAR
+        table.push(Vec::new()); // END
+        table
+    };
+    let mut table = fresh();
+    let mut out = Vec::new();
+    let mut previous: Option<usize> = None;
+    let mut width = 9u32;
+    let (mut buffer, mut buffered, mut pos) = (0u32, 0u32, 0usize);
+
+    loop {
+        while buffered < width {
+            let Some(&byte) = data.get(pos) else {
+                return Ok(out); // data ran out without END: keep what was decoded
+            };
+            buffer = (buffer << 8) | u32::from(byte);
+            buffered += 8;
+            pos += 1;
+        }
+        let code = ((buffer >> (buffered - width)) & ((1 << width) - 1)) as usize;
+        buffered -= width;
+        buffer &= (1u32 << buffered) - 1;
+
+        match code {
+            CLEAR => {
+                table = fresh();
+                width = 9;
+                previous = None;
+                continue;
+            }
+            END => return Ok(out),
+            _ => {}
+        }
+
+        let entry = match (table.get(code), previous) {
+            (Some(entry), _) if !(CLEAR..=END).contains(&code) => entry.clone(),
+            (None, Some(prev)) if code == table.len() => {
+                let mut entry = table[prev].clone();
+                entry.push(table[prev][0]);
+                entry
+            }
+            _ => return Err(Error::PdfParse(format!("invalid LZW code {code}"))),
+        };
+        out.extend_from_slice(&entry);
+        if let Some(prev) = previous {
+            if table.len() < MAX_CODES {
+                let mut grown = table[prev].clone();
+                grown.push(entry[0]);
+                table.push(grown);
+            }
+        }
+        previous = Some(code);
+
+        let next = table.len() + usize::from(early_change);
+        width = match next {
+            n if n >= 2048 => 12,
+            n if n >= 1024 => 11,
+            n if n >= 512 => 10,
+            _ => 9,
+        };
     }
 }
 
@@ -384,11 +605,138 @@ mod tests {
     #[test]
     fn test_unsupported_filter() {
         let mut dict = BTreeMap::new();
-        dict.insert(b"Filter".to_vec(), PdfObject::Name(b"LZWDecode".to_vec()));
+        dict.insert(
+            b"Filter".to_vec(),
+            PdfObject::Name(b"Crypt2Decode".to_vec()),
+        );
         let stream = PdfStream {
             dict,
             raw_data: vec![1, 2, 3],
         };
         assert!(decompress(&stream).is_err());
+    }
+
+    fn stream_with(filter: PdfObject, parms: Option<PdfObject>, raw: Vec<u8>) -> PdfStream {
+        let mut dict = BTreeMap::new();
+        dict.insert(b"Filter".to_vec(), filter);
+        if let Some(parms) = parms {
+            dict.insert(b"DecodeParms".to_vec(), parms);
+        }
+        PdfStream {
+            dict,
+            raw_data: raw,
+        }
+    }
+
+    fn names(names: &[&str]) -> PdfObject {
+        PdfObject::Array(
+            names
+                .iter()
+                .map(|n| PdfObject::Name(n.as_bytes().to_vec()))
+                .collect(),
+        )
+    }
+
+    fn zlib(data: &[u8]) -> Vec<u8> {
+        use flate2::write::ZlibEncoder;
+        use std::io::Write;
+        let mut encoder = ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(data).unwrap();
+        encoder.finish().unwrap()
+    }
+
+    /// ASCII85 of `bytes`, as Adobe writes it (`z` for zero groups, `~>` at the end).
+    fn ascii85(bytes: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        for chunk in bytes.chunks(4) {
+            let mut group = [0u8; 4];
+            group[..chunk.len()].copy_from_slice(chunk);
+            let mut value = u32::from_be_bytes(group);
+            if chunk.len() == 4 && value == 0 {
+                out.push(b'z');
+                continue;
+            }
+            let mut digits = [0u8; 5];
+            for d in digits.iter_mut().rev() {
+                *d = (value % 85) as u8 + b'!';
+                value /= 85;
+            }
+            out.extend_from_slice(&digits[..chunk.len() + 1]);
+        }
+        out.extend_from_slice(b"~>");
+        out
+    }
+
+    /// The chain ReportLab writes for every content stream when its ASCII output is on.
+    #[test]
+    fn ascii85_then_flate_is_decoded_in_order() {
+        let content = b"BT /F1 24 Tf 72 720 Td (Hello ASCII85 filter chain) Tj ET";
+        let raw = ascii85(&zlib(content));
+        let stream = stream_with(names(&["ASCII85Decode", "FlateDecode"]), None, raw.clone());
+        assert_eq!(decompress(&stream).unwrap(), content);
+
+        let abbreviated = stream_with(names(&["A85", "Fl"]), None, raw);
+        assert_eq!(decompress(&abbreviated).unwrap(), content);
+    }
+
+    #[test]
+    fn ascii85_handles_zero_groups_whitespace_and_a_short_last_group() {
+        let bytes = [0u8, 0, 0, 0, 1, 2, 3, 4, 5, 6];
+        let mut encoded = ascii85(&bytes);
+        encoded.insert(3, b'\n');
+        encoded.insert(1, b' ');
+        assert_eq!(decode_ascii85(&encoded).unwrap(), bytes);
+        assert_eq!(
+            decode_ascii85(b"<~87cURD]i,\"Ebo7~>").unwrap(),
+            b"Hello World"
+        );
+        assert!(decode_ascii85(b"ab{c~>").is_err());
+    }
+
+    #[test]
+    fn run_length_copies_and_repeats() {
+        // 2 → copy "abc", 254 → repeat 'x' 3 times, 128 → end.
+        let raw = [2, b'a', b'b', b'c', 254, b'x', 128, b'z'];
+        let stream = stream_with(PdfObject::Name(b"RL".to_vec()), None, raw.to_vec());
+        assert_eq!(decompress(&stream).unwrap(), b"abcxxx");
+    }
+
+    /// The example of PDF 32000-1 §7.4.4.2: `-----A---B` encoded with EarlyChange 1.
+    #[test]
+    fn lzw_decodes_the_specification_example() {
+        let encoded = [0x80, 0x0B, 0x60, 0x50, 0x22, 0x0C, 0x0C, 0x85, 0x01];
+        let stream = stream_with(
+            PdfObject::Name(b"LZWDecode".to_vec()),
+            None,
+            encoded.to_vec(),
+        );
+        assert_eq!(decompress(&stream).unwrap(), b"-----A---B");
+    }
+
+    #[test]
+    fn decode_parms_array_runs_parallel_to_the_filters() {
+        // Two rows of three bytes, PNG "Up" predictor on each row.
+        let rows = [2, 1, 2, 3, 2, 1, 1, 1];
+        let raw = ascii85(&zlib(&rows));
+        let mut predictor = BTreeMap::new();
+        predictor.insert(b"Predictor".to_vec(), PdfObject::Integer(12));
+        predictor.insert(b"Columns".to_vec(), PdfObject::Integer(3));
+        let parms = PdfObject::Array(vec![PdfObject::Null, PdfObject::Dict(predictor)]);
+        let stream = stream_with(names(&["A85", "FlateDecode"]), Some(parms), raw);
+        assert_eq!(decompress(&stream).unwrap(), vec![1, 2, 3, 2, 3, 4]);
+    }
+
+    /// An image chain stops before its codec: the bytes handed on are the JPEG itself.
+    #[test]
+    fn an_image_codec_ends_the_lossless_part_of_a_chain() {
+        let jpeg = b"\xFF\xD8\xFF\xE0 not really a jpeg".to_vec();
+        let stream = stream_with(names(&["ASCII85Decode", "DCTDecode"]), None, ascii85(&jpeg));
+        let decoded = decode(&stream).unwrap();
+        assert_eq!(decoded.data, jpeg);
+        assert_eq!(decoded.codec, Some("DCTDecode"));
+        assert!(decompress(&stream).is_err());
+
+        let inline = stream_with(PdfObject::Name(b"DCT".to_vec()), None, jpeg.clone());
+        assert_eq!(decode(&inline).unwrap().codec, Some("DCTDecode"));
     }
 }
