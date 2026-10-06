@@ -261,6 +261,8 @@ pub enum FontFormat {
     Cff,
     /// `/FontFile3` `/OpenType`: an OpenType font (TrueType or CFF outlines).
     OpenType,
+    /// `/FontFile`: a Type 1 font program (cleartext part, then the `eexec`-encrypted one).
+    Type1,
 }
 
 /// How a font's codes select glyphs in its program (ISO 32000-1 §9.6.6, §9.7.4.2).
@@ -549,8 +551,8 @@ pub trait PdfBackend: Send + Sync {
     }
 
     /// The embedded program of the font `font_name` refers to in `scope`, with how its codes
-    /// select glyphs. `None` for a font with no program this reads (not embedded, Type 1,
-    /// Type 3) or a composite font under a CMap other than `Identity-H`/`-V`.
+    /// select glyphs. `None` for a font with no program this reads (not embedded, Type 3)
+    /// or a composite font under a CMap other than `Identity-H`/`-V`.
     fn font_program(&self, _scope: ResourceScope, _font_name: &[u8]) -> Option<FontProgram> {
         None
     }
@@ -1104,8 +1106,8 @@ fn matrix_from(doc: &RawDocument, obj: &RawPdfObject) -> Option<[f32; 6]> {
 }
 
 /// The program a font's (or CIDFont's) descriptor embeds, in a format this reads:
-/// `/FontFile2` (TrueType) or `/FontFile3` with `/Subtype` `/Type1C`, `/CIDFontType0C` (bare
-/// CFF) or `/OpenType`. A `/FontFile` (Type 1) program is not read.
+/// `/FontFile` (Type 1), `/FontFile2` (TrueType) or `/FontFile3` with `/Subtype` `/Type1C`,
+/// `/CIDFontType0C` (bare CFF) or `/OpenType`.
 fn embedded_font_program(
     doc: &RawDocument,
     font_dict: &RawPdfDict,
@@ -1121,6 +1123,9 @@ fn embedded_font_program(
     };
     if let Some(stream) = stream_at(b"FontFile2") {
         return Some((FontFormat::TrueType, read(stream)));
+    }
+    if let Some(stream) = stream_at(b"FontFile") {
+        return Some((FontFormat::Type1, read(stream)));
     }
     let stream = stream_at(b"FontFile3")?;
     let format = match raw_dict_get(&stream.dict, b"Subtype").and_then(|s| s.as_name()) {

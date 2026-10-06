@@ -29,8 +29,8 @@ public sealed class RenderPageOptions
 public sealed class RenderGaps
 {
     /// <summary>
-    /// Text runs not painted, or painted in part: the font is not embedded, or is Type 1 or
-    /// Type 3, or a code selects no glyph in it.
+    /// Text runs not painted, or painted in part: the font is not embedded, or is Type 3, or
+    /// a code selects no glyph in it.
     /// </summary>
     [JsonPropertyName("text_runs")]
     public uint TextRuns { get; init; }

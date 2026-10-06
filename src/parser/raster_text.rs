@@ -3,7 +3,7 @@
 //! Selection follows ISO 32000-1 §9.6.6 (simple fonts) and §9.7.4.2 (CIDFonts), with the
 //! fallbacks real files need: a symbolic TrueType font's codes through its `(3,0)` or `(1,0)`
 //! cmap, a non-symbolic one's through the character its encoding gives the code, a bare
-//! CFF font's through its glyph names or, with no `/Encoding`, its own encoding.
+//! CFF or Type 1 font's through its glyph names or, with no `/Encoding`, its own encoding.
 
 use std::collections::HashMap;
 
@@ -11,6 +11,7 @@ use tiny_skia::{Path, PathBuilder, Transform};
 
 use super::backend::{FontFormat, FontProgram, GlyphSelection};
 use super::encoding::glyph_name_to_unicode;
+use super::type1::{OutlineSink, Type1Font};
 
 /// A font ready to paint: its program, how codes select glyphs, and outlines already built.
 pub(super) struct LoadedFont {
@@ -21,13 +22,22 @@ pub(super) struct LoadedFont {
     cid_to_gid: Option<HashMap<u16, u16>>,
     /// For a bare CFF font: the character each glyph name stands for → glyph index.
     cff_by_char: Option<HashMap<char, u16>>,
+    /// A Type 1 program, parsed once.
+    type1: Option<Type1Font>,
     outlines: HashMap<u16, Option<Path>>,
 }
 
 impl LoadedFont {
     /// `None` when the program does not parse.
     pub(super) fn load(program: FontProgram) -> Option<Self> {
+        let mut type1 = None;
         let (glyph_to_text, cid_to_gid, cff_by_char) = match program.format {
+            FontFormat::Type1 => {
+                let font = Type1Font::parse(&program.data)?;
+                let [a, b, c, d, e, f] = font.font_matrix;
+                type1 = Some(font);
+                (Transform::from_row(a, b, c, d, e, f), None, None)
+            }
             FontFormat::TrueType | FontFormat::OpenType => {
                 let face = ttf_parser::Face::parse(&program.data, 0).ok()?;
                 let upem = f32::from(face.units_per_em().max(1));
@@ -55,6 +65,7 @@ impl LoadedFont {
             glyph_to_text,
             cid_to_gid,
             cff_by_char,
+            type1,
             outlines: HashMap::new(),
         })
     }
@@ -91,6 +102,19 @@ impl LoadedFont {
                     .and_then(|n| glyph_name_to_unicode(n))
                     .or_else(|| chars.as_ref().and_then(|m| m.get(&code).copied()));
                 match self.program.format {
+                    // §9.6.6.2: a `/Differences` name, else what the font's `/Encoding`
+                    // says the code is, else the program's own encoding.
+                    FontFormat::Type1 => {
+                        let font = self.type1.as_ref()?;
+                        name.and_then(|n| font.glyph_by_name(n))
+                            .or_else(|| {
+                                chars
+                                    .as_ref()
+                                    .and_then(|m| m.get(&code))
+                                    .and_then(|&c| font.glyph_by_char(c))
+                            })
+                            .or_else(|| font.glyph_by_builtin_code(code))
+                    }
                     FontFormat::Cff => {
                         let cff = ttf_parser::cff::Table::parse(&self.program.data)?;
                         name.and_then(|n| cff.glyph_index_by_name(n))
@@ -121,6 +145,7 @@ impl LoadedFont {
     /// dictionary declares no widths.
     pub(super) fn program_advance(&self, gid: u16) -> Option<f32> {
         match self.program.format {
+            FontFormat::Type1 => self.type1.as_ref()?.advance(gid),
             FontFormat::Cff => {
                 let cff = ttf_parser::cff::Table::parse(&self.program.data)?;
                 cff.glyph_width(ttf_parser::GlyphId(gid)).map(f32::from)
@@ -139,6 +164,11 @@ impl LoadedFont {
             let mut builder = Outline(PathBuilder::new());
             let id = ttf_parser::GlyphId(gid);
             let drawn = match self.program.format {
+                FontFormat::Type1 => self
+                    .type1
+                    .as_ref()
+                    .and_then(|font| font.outline(gid, &mut builder))
+                    .is_some(),
                 FontFormat::Cff => ttf_parser::cff::Table::parse(&self.program.data)
                     .and_then(|cff| cff.outline(id, &mut builder).ok())
                     .is_some(),
@@ -182,8 +212,24 @@ fn cff_cid_map(cff: &ttf_parser::cff::Table<'_>) -> Option<HashMap<u16, u16>> {
     )
 }
 
-/// ttf-parser's outline callbacks, building a tiny-skia path in glyph space.
+/// Outline callbacks — ttf-parser's and the Type 1 interpreter's — building a tiny-skia path
+/// in glyph space.
 struct Outline(PathBuilder);
+
+impl OutlineSink for Outline {
+    fn move_to(&mut self, x: f32, y: f32) {
+        self.0.move_to(x, y);
+    }
+    fn line_to(&mut self, x: f32, y: f32) {
+        self.0.line_to(x, y);
+    }
+    fn curve_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
+        self.0.cubic_to(x1, y1, x2, y2, x, y);
+    }
+    fn close(&mut self) {
+        self.0.close();
+    }
+}
 
 impl ttf_parser::OutlineBuilder for Outline {
     fn move_to(&mut self, x: f32, y: f32) {

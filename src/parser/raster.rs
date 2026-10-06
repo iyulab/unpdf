@@ -53,7 +53,7 @@ pub enum PageRegion {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RasterGaps {
     /// Text runs not painted, or painted only in part: the font's program is not embedded,
-    /// or is one this does not read (Type 1, Type 3), or a code selects no glyph in it.
+    /// or is one this does not read (Type 3), or a code selects no glyph in it.
     pub text_runs: u32,
     /// Images not painted: a codec this does not decode (JPEG 2000, JBIG2, CCITT), a color
     /// space it does not convert, or data that did not decode.

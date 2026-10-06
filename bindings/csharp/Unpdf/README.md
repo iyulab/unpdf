@@ -150,7 +150,7 @@ for (var n = 1; n <= doc.SectionCount; n++)
         var page = doc.RenderPage(n, new RenderPageOptions { Dpi = 150 });
         File.WriteAllBytes($"page{n}.png", page.Png);
         // page.Gaps counts what could not be painted (text in fonts that are not embedded
-        // or are Type 1/Type 3, some image codecs, inline images, shadings).
+        // or are Type 3, some image codecs, inline images, shadings).
     }
 }
 ```

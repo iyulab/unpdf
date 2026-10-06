@@ -649,9 +649,9 @@ if !page.gaps.is_empty() {
 }
 ```
 
-Painted: text in embedded TrueType, OpenType and CFF fonts, paths, clipping, colors, and
-images (Flate-family and JPEG, with soft and stencil masks). Not yet: text in fonts that are
-not embedded or are Type 1/Type 3, JPEG 2000/JBIG2/CCITT images, inline images and shadings —
+Painted: text in embedded Type 1, TrueType, OpenType and CFF fonts, paths, clipping, colors,
+and images (Flate-family and JPEG, with soft and stencil masks). Not yet: text in fonts that are
+not embedded or are Type 3, JPEG 2000/JBIG2/CCITT images, inline images and shadings —
 each is counted in `gaps`, and the rest of the page is still painted.
 
 ### Detecting Incomplete Extraction

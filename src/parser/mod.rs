@@ -30,6 +30,8 @@ mod table_detector;
 #[cfg(test)]
 pub(crate) mod test_pdf;
 mod text_string;
+#[cfg(feature = "raster")]
+mod type1;
 mod vector_graphics;
 pub mod xycut;
 

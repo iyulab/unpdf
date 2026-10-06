@@ -278,6 +278,99 @@ fn a_bare_cff_font_is_drawn() {
     assert_square_painted(&render(&pdf, &PT));
 }
 
+/// A Type 1 program whose `A` is the fixture square, built the way the format stores it:
+/// charstrings encrypted with key 4330 inside a private part encrypted with key 55665.
+fn square_type1(encoding: &str) -> Vec<u8> {
+    fn encrypt(plain: &[u8], key: u16) -> Vec<u8> {
+        let mut r = key;
+        [0u8; 4]
+            .iter()
+            .chain(plain)
+            .map(|&p| {
+                let c = p ^ (r >> 8) as u8;
+                r = u16::from(c)
+                    .wrapping_add(r)
+                    .wrapping_mul(52845)
+                    .wrapping_add(22719);
+                c
+            })
+            .collect()
+    }
+    // hsbw 0 1000 · rmoveto 100 0 · hlineto 800 · vlineto 800 · hlineto -800 · closepath ·
+    // endchar — numbers in the charstring encoding.
+    let a = [
+        139, 250, 124, 13, 239, 139, 21, 249, 180, 6, 249, 180, 7, 253, 180, 6, 9, 14,
+    ];
+    let notdef = [139, 139, 13, 14];
+    let mut private = b"dup /Private 5 dict dup begin /lenIV 4 def /Subrs 0 array\n".to_vec();
+    private.extend(b"2 index /CharStrings 2 dict dup begin\n");
+    for (name, cs) in [("/.notdef", &notdef[..]), ("/A", &a[..])] {
+        let e = encrypt(cs, 4330);
+        private.extend(format!("{name} {} RD ", e.len()).as_bytes());
+        private.extend(e);
+        private.extend(b" ND\n");
+    }
+    private.extend(b"end end\nmark currentfile closefile\n");
+    let mut program = format!(
+        "%!FontType1-1.0: UnpdfSquareT1\n/FontMatrix [0.001 0 0 0.001 0 0] readonly def\n\
+         /Encoding {encoding} def\ncurrentfile eexec\n"
+    )
+    .into_bytes();
+    program.extend(encrypt(&private, 55665));
+    program
+}
+
+fn type1_page(font_encoding: &str, program_encoding: &str, content: &[u8]) -> Vec<u8> {
+    let program = square_type1(program_encoding);
+    font_page(
+        &format!(
+            "<</Type/Font/Subtype/Type1/BaseFont/UnpdfSquareT1/FirstChar 65/LastChar 66\
+              /Widths[1000 1000]{font_encoding}/FontDescriptor 6 0 R>>"
+        ),
+        vec![
+            b"<</Type/FontDescriptor/FontName/UnpdfSquareT1/Flags 32/FontBBox[0 0 1000 800]\
+               /ItalicAngle 0/Ascent 800/Descent -200/CapHeight 800/StemV 80/FontFile 7 0 R>>"
+                .to_vec(),
+            stream_object(
+                &format!(
+                    "<</Length1 {} /Length2 0 /Length3 0/Length {}>>",
+                    program.len(),
+                    program.len()
+                ),
+                &program,
+            ),
+        ],
+        content,
+    )
+}
+
+#[test]
+fn a_type1_font_is_drawn() {
+    let pdf = type1_page("/Encoding/WinAnsiEncoding", "StandardEncoding", SHOW_A);
+    assert_square_painted(&render(&pdf, &PT));
+}
+
+#[test]
+fn a_type1_font_without_an_encoding_uses_its_own() {
+    // The program's encoding puts `A` at code 66 (`B`); the PDF font names no encoding.
+    let pdf = type1_page(
+        "",
+        "256 array 0 1 255 {1 index exch /.notdef put} for dup 66 /A put readonly",
+        b"BT /F1 100 Tf 100 100 Td (B) Tj ET",
+    );
+    assert_square_painted(&render(&pdf, &PT));
+}
+
+#[test]
+fn a_type1_glyph_is_found_by_its_differences_name() {
+    let pdf = type1_page(
+        "/Encoding<</Differences[66/A]>>",
+        "StandardEncoding",
+        b"BT /F1 100 Tf 100 100 Td (B) Tj ET",
+    );
+    assert_square_painted(&render(&pdf, &PT));
+}
+
 #[test]
 fn a_composite_identity_font_is_drawn_by_glyph_index() {
     // Identity-H: the two-byte code is the CID, and CIDToGIDMap /Identity makes it the glyph

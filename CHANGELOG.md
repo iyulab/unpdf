@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Rendering draws text in embedded Type 1 fonts.** `render_page` reads a font descriptor's
+  `/FontFile` — the Type 1 program's cleartext and `eexec`-encrypted parts, binary or
+  hexadecimal — and draws its charstrings: subroutines, accented characters (`seac`) and flex
+  curves included. Codes select glyphs through `/Differences` names, the font's `/Encoding`, or
+  the program's own encoding when the font names none. Text in such fonts was counted in
+  `gaps.text_runs` and left out; it now paints like TrueType, OpenType and CFF text.
+
 ## 0.29.0 — 2026-10-07
 
 ### Fixed
