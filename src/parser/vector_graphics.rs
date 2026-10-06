@@ -19,10 +19,24 @@ pub struct GraphicsLine {
     pub y0: f32,
     pub x1: f32,
     pub y1: f32,
+    /// Drawn as a line: stroked, or the outline of a filled shape thin enough to be a
+    /// rule. `false` for the outline of a filled area — a chart bar, a shaded band —
+    /// which can complete a ruled grid but is no ruling of its own.
+    pub ruled: bool,
 }
 
-/// Extract every straight line segment actually painted (stroked or filled) by
-/// a content stream, in device-space coordinates.
+/// How thick a filled shape may be and still be a rule. Generators that draw table rules
+/// as filled rectangles (word processors, LaTeX) make them a point or two thick.
+const MAX_FILLED_RULE_THICKNESS: f32 = 3.0;
+
+/// Extract every straight line segment painted by a content stream, in device-space
+/// coordinates, each marked [`GraphicsLine::ruled`] when it is drawn as a line — a
+/// stroked path, or the outline of a filled shape thin enough to be a rule.
+///
+/// The outline of a filled area is still returned: row shading and a frame painted as
+/// one filled ring complete a table's grid. But it is no rule of its own — the bars of a
+/// bar chart are filled areas, and a grid made only of their outlines turned the chart's
+/// value labels into a table. A path filled *and* stroked (`B b`) has its outline drawn.
 ///
 /// Only path-painting operators (`S s f F f* B B* b b*`) produce visible marks —
 /// a path built but never painted (or terminated with `n`, the paint-nothing
@@ -42,7 +56,9 @@ pub fn extract_lines(ops: &[ContentOp]) -> Vec<GraphicsLine> {
     // time each operator executes).
     let mut current: Option<(f32, f32)> = None;
     let mut subpath_start: Option<(f32, f32)> = None;
-    let mut pending: Vec<GraphicsLine> = Vec::new();
+    // Segments of the path under construction, one entry per subpath: a fill keeps or
+    // drops each subpath by its own extent.
+    let mut pending: Vec<Vec<GraphicsLine>> = Vec::new();
 
     for op in ops {
         match op.operator.as_str() {
@@ -67,16 +83,23 @@ pub fn extract_lines(ops: &[ContentOp]) -> Vec<GraphicsLine> {
                 let p = apply_ctm(&ctm, num(&op.operands[0]), num(&op.operands[1]));
                 current = Some(p);
                 subpath_start = Some(p);
+                pending.push(Vec::new());
             }
             "l" if op.operands.len() >= 2 => {
                 let p = apply_ctm(&ctm, num(&op.operands[0]), num(&op.operands[1]));
                 if let Some((x0, y0)) = current {
-                    pending.push(GraphicsLine {
-                        x0,
-                        y0,
-                        x1: p.0,
-                        y1: p.1,
-                    });
+                    if pending.is_empty() {
+                        pending.push(Vec::new());
+                    }
+                    if let Some(subpath) = pending.last_mut() {
+                        subpath.push(GraphicsLine {
+                            x0,
+                            y0,
+                            x1: p.0,
+                            y1: p.1,
+                            ruled: true,
+                        });
+                    }
                 }
                 current = Some(p);
             }
@@ -95,7 +118,15 @@ pub fn extract_lines(ops: &[ContentOp]) -> Vec<GraphicsLine> {
             "h" => {
                 if let (Some((x0, y0)), Some((x1, y1))) = (current, subpath_start) {
                     if (x0, y0) != (x1, y1) {
-                        pending.push(GraphicsLine { x0, y0, x1, y1 });
+                        if let Some(subpath) = pending.last_mut() {
+                            subpath.push(GraphicsLine {
+                                x0,
+                                y0,
+                                x1,
+                                y1,
+                                ruled: true,
+                            });
+                        }
                     }
                     current = subpath_start;
                 }
@@ -109,15 +140,24 @@ pub fn extract_lines(ops: &[ContentOp]) -> Vec<GraphicsLine> {
                 let p1 = apply_ctm(&ctm, x + w, y);
                 let p2 = apply_ctm(&ctm, x + w, y + h);
                 let p3 = apply_ctm(&ctm, x, y + h);
-                pending.push(seg(p0, p1));
-                pending.push(seg(p1, p2));
-                pending.push(seg(p2, p3));
-                pending.push(seg(p3, p0));
+                pending.push(vec![seg(p0, p1), seg(p1, p2), seg(p2, p3), seg(p3, p0)]);
                 current = Some(p0);
                 subpath_start = Some(p0);
             }
-            "S" | "s" | "f" | "F" | "f*" | "B" | "B*" | "b" | "b*" => {
-                lines.append(&mut pending);
+            "S" | "s" | "B" | "B*" | "b" | "b*" => {
+                lines.extend(pending.drain(..).flatten());
+                current = None;
+                subpath_start = None;
+            }
+            "f" | "F" | "f*" => {
+                for subpath in pending.drain(..) {
+                    let ruled = is_rule_thin(&subpath);
+                    lines.extend(
+                        subpath
+                            .into_iter()
+                            .map(|line| GraphicsLine { ruled, ..line }),
+                    );
+                }
                 current = None;
                 subpath_start = None;
             }
@@ -134,6 +174,20 @@ pub fn extract_lines(ops: &[ContentOp]) -> Vec<GraphicsLine> {
     lines
 }
 
+/// Whether a filled subpath is thin enough to be a rule: its extent along one axis is at
+/// most [`MAX_FILLED_RULE_THICKNESS`].
+fn is_rule_thin(subpath: &[GraphicsLine]) -> bool {
+    let (mut min_x, mut min_y) = (f32::INFINITY, f32::INFINITY);
+    let (mut max_x, mut max_y) = (f32::NEG_INFINITY, f32::NEG_INFINITY);
+    for line in subpath {
+        min_x = min_x.min(line.x0).min(line.x1);
+        max_x = max_x.max(line.x0).max(line.x1);
+        min_y = min_y.min(line.y0).min(line.y1);
+        max_y = max_y.max(line.y0).max(line.y1);
+    }
+    !subpath.is_empty() && (max_x - min_x).min(max_y - min_y) <= MAX_FILLED_RULE_THICKNESS
+}
+
 fn num(v: &PdfValue) -> f32 {
     get_number_from_value(v).unwrap_or(0.0)
 }
@@ -144,6 +198,7 @@ fn seg(a: (f32, f32), b: (f32, f32)) -> GraphicsLine {
         y0: a.1,
         x1: b.0,
         y1: b.1,
+        ruled: true,
     }
 }
 
@@ -173,13 +228,15 @@ mod tests {
                 y0: 700.0,
                 x1: 200.0,
                 y1: 700.0,
+                ruled: true,
             }]
         );
     }
 
+    /// A rule drawn as a thin filled rectangle, as word processors and LaTeX draw them.
     #[test]
-    fn rectangle_filled_emits_four_edges() {
-        let ops = vec![op("re", &[0.0, 0.0, 100.0, 20.0]), op("f", &[])];
+    fn thin_filled_rectangle_emits_four_edges() {
+        let ops = vec![op("re", &[0.0, 0.0, 100.0, 0.8]), op("f", &[])];
         let lines = extract_lines(&ops);
         assert_eq!(lines.len(), 4);
         assert_eq!(
@@ -189,8 +246,40 @@ mod tests {
                 y0: 0.0,
                 x1: 100.0,
                 y1: 0.0,
+                ruled: true,
             }
         );
+    }
+
+    /// A filled area — a chart bar, a shaded box — is outlined but not ruled.
+    #[test]
+    fn filled_area_outline_is_not_ruled() {
+        let ops = vec![op("re", &[0.0, 0.0, 100.0, 20.0]), op("f", &[])];
+        let lines = extract_lines(&ops);
+        assert_eq!(lines.len(), 4);
+        assert!(lines.iter().all(|l| !l.ruled));
+    }
+
+    /// Thickness is judged per subpath: one fill painting a rule and a block.
+    #[test]
+    fn a_fill_rules_its_thin_subpaths_only() {
+        let ops = vec![
+            op("re", &[0.0, 0.0, 100.0, 1.0]),
+            op("re", &[0.0, 10.0, 100.0, 40.0]),
+            op("f", &[]),
+        ];
+        let lines = extract_lines(&ops);
+        assert_eq!(lines.iter().filter(|l| l.ruled).count(), 4);
+        assert_eq!(lines.iter().filter(|l| !l.ruled).count(), 4);
+    }
+
+    /// Filled and stroked, the outline is drawn.
+    #[test]
+    fn filled_and_stroked_area_is_ruled() {
+        let ops = vec![op("re", &[0.0, 0.0, 100.0, 20.0]), op("B", &[])];
+        let lines = extract_lines(&ops);
+        assert_eq!(lines.len(), 4);
+        assert!(lines.iter().all(|l| l.ruled));
     }
 
     #[test]
@@ -217,6 +306,7 @@ mod tests {
                 y0: 200.0,
                 x1: 110.0,
                 y1: 200.0,
+                ruled: true,
             }]
         );
     }
@@ -240,6 +330,7 @@ mod tests {
                 y0: 40.0,
                 x1: 30.0,
                 y1: 40.0,
+                ruled: true,
             }]
         );
     }
@@ -263,6 +354,7 @@ mod tests {
                 y0: 0.0,
                 x1: 5.0,
                 y1: 0.0,
+                ruled: true,
             }]
         );
     }
@@ -302,6 +394,7 @@ mod tests {
                 y0: 10.0,
                 x1: 0.0,
                 y1: 0.0,
+                ruled: true,
             }
         );
     }
@@ -324,6 +417,7 @@ mod tests {
                 y0: 0.0,
                 x1: 40.0,
                 y1: 0.0,
+                ruled: true,
             }]
         );
     }

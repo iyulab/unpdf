@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- A chart is no longer read as a table. Ruled-table detection took the outline of every
+  filled shape as a rule, so the bars of a bar chart between its gridlines made a grid and
+  the chart's value labels came out as a sparse table. Rules are now what is stroked, or
+  filled thin enough to be a rule; the outline of a filled area only completes a ruled
+  grid — a shaded row band, a frame painted as a filled ring — and an axis bounded by
+  filled areas alone is not a table.
+- Cell shading inset a few points from the rules around it no longer adds an empty column
+  or row beside each real one.
+
 ## 0.26.0 — 2026-10-06
 
 ### Fixed

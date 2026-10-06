@@ -103,20 +103,10 @@ pub fn infer_grids(lines: &[GraphicsLine], config: &LatticeConfig) -> Vec<Lattic
 /// Build a grid from one connected cluster of ruling lines, or `None` if the
 /// cluster is too sparse to describe a table (e.g. a single frame rectangle).
 fn grid_from_component(component: &[AxisSegment], config: &LatticeConfig) -> Option<LatticeGrid> {
-    let horizontal = |s: &&AxisSegment| s.axis == Axis::Horizontal;
-
-    // Cluster into candidate row/column boundary positions.
-    let mut row_positions = cluster_positions(
-        component.iter().filter(horizontal).map(|s| s.pos),
-        config.cluster_tolerance,
-    );
+    let mut row_positions = boundaries(component, Axis::Horizontal, config)?;
     // Descending: PDF y increases upward, and reading order is top (high y) to bottom.
     row_positions.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
-
-    let mut col_positions = cluster_positions(
-        component.iter().filter(|s| !horizontal(s)).map(|s| s.pos),
-        config.cluster_tolerance,
-    );
+    let mut col_positions = boundaries(component, Axis::Vertical, config)?;
     col_positions.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
     if row_positions.len() < config.min_rows + 1 || col_positions.len() < config.min_columns + 1 {
@@ -131,6 +121,42 @@ fn grid_from_component(component: &[AxisSegment], config: &LatticeConfig) -> Opt
         row_bounds: row_positions,
         col_bounds: col_positions,
     })
+}
+
+/// How far from a rule a filled area's edge still belongs to that rule: cell shading
+/// is commonly inset a few points from the rules around it.
+const FILL_SNAP: f32 = 8.0;
+
+/// The boundary positions of one axis of a grid, or `None` when that axis is not ruled.
+///
+/// Rules decide the boundaries. A filled area's edge adds one only where no rule runs —
+/// the band of a shaded row, a frame painted as a filled ring. Near a rule it is the
+/// same boundary drawn twice: shading inset from the rules around a cell, taken as
+/// boundaries of its own, gave every column an empty neighbour on each side.
+///
+/// An axis needs at least two ruled boundaries. Filled areas complete a ruled grid, but
+/// boundaries from filled areas alone are a figure — the bars of a bar chart between its
+/// stroked gridlines.
+fn boundaries(component: &[AxisSegment], axis: Axis, config: &LatticeConfig) -> Option<Vec<f32>> {
+    let on_axis = || component.iter().filter(move |s| s.axis == axis);
+    let mut positions = cluster_positions(
+        on_axis().filter(|s| s.ruled).map(|s| s.pos),
+        config.cluster_tolerance,
+    );
+    if positions.len() < 2 {
+        return None;
+    }
+    let filled = cluster_positions(
+        on_axis().filter(|s| !s.ruled).map(|s| s.pos),
+        config.cluster_tolerance,
+    );
+    let ruled = positions.clone();
+    positions.extend(
+        filled
+            .into_iter()
+            .filter(|f| ruled.iter().all(|r| (r - f).abs() > FILL_SNAP)),
+    );
+    Some(positions)
 }
 
 /// Group segments into clusters of lines that touch or cross (within
@@ -315,6 +341,8 @@ struct AxisSegment {
     pos: f32,
     lo: f32,
     hi: f32,
+    /// See [`GraphicsLine::ruled`].
+    ruled: bool,
 }
 
 impl AxisSegment {
@@ -347,6 +375,7 @@ fn classify_lines(lines: &[GraphicsLine], config: &LatticeConfig) -> Vec<AxisSeg
                 pos: (line.y0 + line.y1) / 2.0,
                 lo: line.x0.min(line.x1),
                 hi: line.x0.max(line.x1),
+                ruled: line.ruled,
             });
         } else if dx <= config.axis_tolerance && dy >= config.min_line_length {
             segments.push(AxisSegment {
@@ -354,6 +383,7 @@ fn classify_lines(lines: &[GraphicsLine], config: &LatticeConfig) -> Vec<AxisSeg
                 pos: (line.x0 + line.x1) / 2.0,
                 lo: line.y0.min(line.y1),
                 hi: line.y0.max(line.y1),
+                ruled: line.ruled,
             });
         }
         // Diagonal or too-short lines are not ruling-line evidence — ignored.
@@ -399,6 +429,7 @@ mod tests {
             y0: y,
             x1,
             y1: y,
+            ruled: true,
         }
     }
 
@@ -408,6 +439,7 @@ mod tests {
             y0,
             x1: x,
             y1,
+            ruled: true,
         }
     }
 
@@ -422,6 +454,85 @@ mod tests {
             v(150.0, 240.0, 300.0),
             v(250.0, 240.0, 300.0),
         ]
+    }
+
+    /// Bars of a chart between stroked gridlines: the gridlines are rows, the bars'
+    /// outlines would be the columns — filled areas only, so no table.
+    #[test]
+    fn a_bar_chart_between_gridlines_is_not_a_grid() {
+        let mut lines: Vec<GraphicsLine> = [100.0, 150.0, 200.0, 250.0]
+            .iter()
+            .map(|&y| h(y, 50.0, 400.0))
+            .collect();
+        for (x, top) in [
+            (80.0, 230.0),
+            (160.0, 190.0),
+            (240.0, 245.0),
+            (320.0, 160.0),
+        ] {
+            for edge in [
+                v(x, 100.0, top),
+                v(x + 30.0, 100.0, top),
+                h(top, x, x + 30.0),
+            ] {
+                lines.push(GraphicsLine {
+                    ruled: false,
+                    ..edge
+                });
+            }
+        }
+        assert!(infer_grids(&lines, &LatticeConfig::default()).is_empty());
+    }
+
+    /// Rows marked by shading bands, columns by stroked rules: still a table.
+    #[test]
+    fn shaded_rows_with_ruled_columns_are_a_grid() {
+        let mut lines = vec![
+            h(300.0, 50.0, 250.0),
+            h(240.0, 50.0, 250.0),
+            v(50.0, 240.0, 300.0),
+            v(150.0, 240.0, 300.0),
+            v(250.0, 240.0, 300.0),
+        ];
+        for edge in [h(280.0, 50.0, 250.0), h(260.0, 50.0, 250.0)] {
+            lines.push(GraphicsLine {
+                ruled: false,
+                ..edge
+            });
+        }
+        let grids = infer_grids(&lines, &LatticeConfig::default());
+        assert_eq!(grids.len(), 1);
+        assert_eq!(grids[0].row_count(), 3);
+    }
+
+    /// Cell shading inset a few points from the rules around it is the same boundary,
+    /// not an empty column beside each real one.
+    #[test]
+    fn shading_inset_from_the_rules_adds_no_boundaries() {
+        let mut lines = vec![
+            h(300.0, 50.0, 250.0),
+            h(270.0, 50.0, 250.0),
+            h(240.0, 50.0, 250.0),
+            v(50.0, 240.0, 300.0),
+            v(150.0, 240.0, 300.0),
+            v(250.0, 240.0, 300.0),
+        ];
+        // A shaded header cell inset 4pt from its rules on every side.
+        for edge in [
+            h(296.0, 54.0, 146.0),
+            h(274.0, 54.0, 146.0),
+            v(54.0, 274.0, 296.0),
+            v(146.0, 274.0, 296.0),
+        ] {
+            lines.push(GraphicsLine {
+                ruled: false,
+                ..edge
+            });
+        }
+        let grids = infer_grids(&lines, &LatticeConfig::default());
+        assert_eq!(grids.len(), 1);
+        assert_eq!(grids[0].row_count(), 2);
+        assert_eq!(grids[0].column_count(), 2);
     }
 
     #[test]
@@ -466,6 +577,7 @@ mod tests {
                 y0: 0.0,
                 x1: 100.0,
                 y1: 100.0,
+                ruled: true,
             }, // pure diagonal
             h(100.0, 0.0, 100.0),
             h(80.0, 0.0, 100.0),
