@@ -1336,8 +1336,8 @@ const CELL_GAP_EM: f32 = 0.5;
 /// is running text when it has at least [`RUNNING_TEXT_MIN_SPACES`] spaces (between its
 /// spans, or written inside them), none of those between spans wider than the font size or
 /// more than [`WORD_SPACE_SPREAD`] times the typical one, and its words are words rather
-/// than figures. Only text of the row's main size is measured: a margin
-/// tab's letters or a footnote mark set on the same line are not part of it.
+/// than figures. The line is measured where its main-size text runs: a footnote mark or a
+/// superscript inside it belongs to it, a margin tab's letter beyond its end does not.
 fn is_running_text_row(row: &TableRowData) -> bool {
     let mut sizes: Vec<f32> = row.spans.iter().map(|s| s.font_size).collect();
     sizes.sort_by(f32::total_cmp);
@@ -1347,10 +1347,25 @@ fn is_running_text_row(row: &TableRowData) -> bool {
     if size <= 0.0 {
         return false;
     }
+    // The line is where its main-size text runs; a smaller mark inside it (a footnote
+    // reference, a superscript) is part of it, a letter beyond its ends (a margin tab) is not.
+    let main = |s: &&TextSpan| (s.font_size - size).abs() <= size * 0.25;
+    let start = row
+        .spans
+        .iter()
+        .filter(main)
+        .map(|s| s.x)
+        .fold(f32::MAX, f32::min);
+    let end = row
+        .spans
+        .iter()
+        .filter(main)
+        .map(|s| s.x + s.width)
+        .fold(f32::MIN, f32::max);
     let mut spans: Vec<&TextSpan> = row
         .spans
         .iter()
-        .filter(|s| (s.font_size - size).abs() <= size * 0.25)
+        .filter(|s| s.x >= start - 0.5 && s.x + s.width <= end + 0.5)
         .collect();
     spans.sort_by(|a, b| a.x.total_cmp(&b.x));
 
@@ -1909,6 +1924,52 @@ mod tests {
             "running text must not become a table: {tables:?}"
         );
         assert_eq!(remaining.len(), 20);
+    }
+
+    fn row_of(spans: Vec<TextSpan>) -> TableRowData {
+        let sources = (0..spans.len()).collect();
+        TableRowData {
+            y: spans[0].y,
+            spans,
+            sources,
+        }
+    }
+
+    #[test]
+    fn a_footnote_mark_inside_a_line_is_part_of_it() {
+        // A smaller reference mark right after a word, then a word space: measured without
+        // the mark, its place would look like a gap twice the font size.
+        let mut spans = justified_line(&["will", "likely", "slow"], 72.0, 700.0, 40.0, 5.0);
+        let mut mark = make_span_w("12)", 202.0, 702.0, 8.0);
+        mark.width = 17.0;
+        spans.push(mark);
+        spans.extend(justified_line(
+            &["but", "policy", "shifts"],
+            224.0,
+            700.0,
+            40.0,
+            5.0,
+        ));
+        assert!(is_running_text_row(&row_of(spans)));
+    }
+
+    #[test]
+    fn a_margin_letter_beyond_a_line_is_not_part_of_it() {
+        let mut spans = justified_line(&["the", "rate", "was", "held"], 72.0, 700.0, 36.0, 6.0);
+        let mut tab = make_span_w("T", 300.0, 700.0, 7.0);
+        tab.width = 5.0;
+        spans.push(tab);
+        assert!(is_running_text_row(&row_of(spans)));
+    }
+
+    #[test]
+    fn a_row_of_cells_is_not_running_text() {
+        let row = row_of(vec![
+            measured("Gross domestic product", 72.0, 700.0, 130.0),
+            measured("2.1 percent", 240.0, 700.0, 64.0),
+            measured("rose", 360.0, 700.0, 36.0),
+        ]);
+        assert!(!is_running_text_row(&row));
     }
 
     #[test]

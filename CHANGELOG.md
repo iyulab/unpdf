@@ -15,7 +15,8 @@
   the page's reading-order columns first: a candidate table whose rows reach across the gutter
   between two columns of running text is searched for tables column by column. Rows that are
   lines of running text — every space in them a word space, as when justification stretches word
-  spaces past a cell gap — no longer make a table either. Before, two justified columns whose
+  spaces past a cell gap, with any footnote mark set inside the line counted as part of it — no
+  longer make a table either. Before, two justified columns whose
   lines are offset or whose words happen to line up came out as a two- to six-column table
   holding sentences out of order.
 - **Column gutters are found in text drawn word by word.** The column tests measured blocks as
@@ -24,7 +25,10 @@
   from blocks before measuring them, a line drawn across both columns in pieces (a footnote)
   is recognised as crossing the gutter, every whitespace channel is tried rather than only the
   widest, and a figure's labels inside a column no longer keep it from counting as a column of
-  text.
+  text. Where a band set across the columns closes the gutter with too little space above it
+  for a plain cut — a run of footnotes whose continuation lines are no wider than a column, a
+  full-width table — the region is now cut where one part reads as two columns, instead of
+  being read line by line across both.
 - **Letters stacked down the margin are read on their own.** A thumb-index tab set as single
   letters down the page edge was read into the text beside it, splitting its paragraphs line by
   line. A narrow strip at the region's edge whose lines are not on the text's baselines is now a

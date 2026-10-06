@@ -183,7 +183,10 @@ fn partition_recursive(
                     Vec::new()
                 }
             }
-            None => Vec::new(),
+            None => match column_band(&blocks, config) {
+                Some(at) => split_h(at),
+                None => Vec::new(),
+            },
         },
     };
 
@@ -393,7 +396,51 @@ fn narrow_blocks(blocks: &[Block], range: f32, join_gap: f32) -> Vec<Block> {
         .collect()
 }
 
-//// Where `blocks` divide into separate reading flows side by side, if they do: the gutter
+/// The height to cut a region at so that one part reads as two columns of text, when the
+/// region as a whole does not: the columns end (or begin) at a band set across them — a
+/// run of footnotes, a full-width table — that leaves no whitespace channel through the
+/// region and too little space above it for a plain horizontal cut. Lines are tried as cut
+/// points from the outside in, and the cut that leaves the larger columns part wins.
+///
+/// [`spanning_band`] covers the single line set across the columns; this covers the band of
+/// several, whose lines need not even reach across both columns on their own — a
+/// footnote's continuation line can be no wider than a column and still close the gutter.
+fn column_band(blocks: &[Block], config: &XyCutConfig) -> Option<f32> {
+    let centre = |b: &Block| b.y - b.height / 2.0;
+    let mut lines = lines_of(blocks, config.min_gutter);
+    if lines.len() < 2 * GUTTER_MIN_SIDE_BLOCKS + 1 {
+        return None;
+    }
+    lines.sort_by(|a, b| centre(&b.extent).total_cmp(&centre(&a.extent)));
+    let columns = |part: &[Line]| -> bool {
+        let members: Vec<Block> = part
+            .iter()
+            .flat_map(|line| line.members.iter().map(|&i| blocks[i]))
+            .collect();
+        text_column_gutter(&members, config.min_gutter).is_some()
+    };
+    let mut best: Option<(usize, f32)> = None;
+    for cut in GUTTER_MIN_SIDE_BLOCKS..=lines.len() - GUTTER_MIN_SIDE_BLOCKS {
+        let (above, below) = lines.split_at(cut);
+        let (last_above, first_below) = (&above[above.len() - 1].extent, &below[0].extent);
+        // Never between two lines that overlap: that would cut through text.
+        if last_above.bottom() < first_below.y {
+            continue;
+        }
+        let at = (centre(last_above) + centre(first_below)) / 2.0;
+        for part in [above, below] {
+            if best.is_some_and(|(size, _)| size >= part.len()) {
+                continue;
+            }
+            if columns(part) {
+                best = Some((part.len(), at));
+            }
+        }
+    }
+    best.map(|(_, at)| at)
+}
+
+/// Where `blocks` divide into separate reading flows side by side, if they do: the gutter
 /// between two columns of text ([`text_column_gutter`]) or the channel that sets a margin
 /// strip apart — the boundaries XY-Cut reads across only as two flows.
 pub fn reading_boundary(blocks: &[Block], config: &XyCutConfig) -> Option<f32> {

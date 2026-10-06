@@ -394,3 +394,52 @@ fn list_markers_on_the_texts_baselines_stay_with_it() {
     let seg = xycut_partition(&blocks, &BODY_11PT);
     assert_eq!(seg.groups.len(), 1, "{:?}", seg.groups);
 }
+
+#[test]
+fn a_band_of_footnotes_closing_the_gutter_is_cut_off_from_the_columns() {
+    // Footnotes under both columns, a line's space below them (too little for a plain
+    // horizontal cut), some lines full width and some — continuations — no wider than a
+    // column yet crossing the gutter.
+    let mut blocks = word_per_block_columns(10, 280.0);
+    let footnotes = [
+        (72.0, 500.0, 300.0),
+        (72.0, 490.0, 400.0),
+        (86.0, 481.0, 200.0),
+        (72.0, 471.0, 380.0),
+        (86.0, 462.0, 210.0),
+    ];
+    for (x, y, w) in footnotes {
+        // Drawn in word pieces.
+        let mut at = x;
+        while at < x + w {
+            blocks.push(make_block(at, y, 18.0, 7.0));
+            at += 21.0;
+        }
+    }
+    let seg = xycut_partition(&blocks, &BODY_11PT);
+    let group_of = |i: usize| seg.groups.iter().position(|g| g.contains(&i)).unwrap();
+    // Left column's first word and right column's first word are read apart.
+    assert_ne!(group_of(0), group_of(5), "{:?}", seg.groups);
+    assert_eq!(seg.column_count(&blocks), 2, "{:?}", seg.groups);
+}
+
+#[test]
+fn single_column_text_over_a_wide_table_is_not_cut_into_columns() {
+    // One column of text; below it a table whose cells leave channels. Nothing above or
+    // below reads as two columns of text, so no band is cut on that account.
+    let mut blocks = one_column(8);
+    for r in 0..4 {
+        let y = 540.0 - r as f32 * 14.0;
+        for c in 0..4 {
+            blocks.push(make_block(72.0 + c as f32 * 60.0, y, 20.0, 10.0));
+        }
+    }
+    let seg = xycut_partition(&blocks, &BODY_11PT);
+    let group_of = |i: usize| seg.groups.iter().position(|g| g.contains(&i)).unwrap();
+    // The text's words stay together, line by line.
+    assert!(
+        (0..40).all(|i| group_of(i) == group_of(0)),
+        "{:?}",
+        seg.groups
+    );
+}
