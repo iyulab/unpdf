@@ -939,7 +939,7 @@ pub fn stream_object(dict: &str, data: &[u8]) -> Vec<u8> {
     obj
 }
 
-fn assemble(objects: Vec<Vec<u8>>) -> Vec<u8> {
+pub fn assemble(objects: Vec<Vec<u8>>) -> Vec<u8> {
     let mut pdf = b"%PDF-1.4\n".to_vec();
     let mut offsets = Vec::with_capacity(objects.len());
     for (idx, body) in objects.iter().enumerate() {

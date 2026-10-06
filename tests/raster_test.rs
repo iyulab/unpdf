@@ -4,12 +4,15 @@
 mod common;
 
 use common::{page_pdf, page_pdf_with_xobjects, stream_object};
-use unpdf::parser::raster::{RasterOptions, RasteredPage};
+use unpdf::parser::raster::{PageRegion, RasterOptions, RasteredPage};
 use unpdf::parser::PdfParser;
 
 const A4: &str = "/MediaBox[0 0 595 842]";
 /// One pixel per point.
-const PT: RasterOptions = RasterOptions { dpi: 72.0 };
+const PT: RasterOptions = RasterOptions {
+    dpi: 72.0,
+    region: PageRegion::Crop,
+};
 
 fn render(pdf: &[u8], options: &RasterOptions) -> RasteredPage {
     PdfParser::from_bytes(pdf)
@@ -44,7 +47,7 @@ fn a_filled_rectangle_lands_where_the_page_puts_it() {
 
 #[test]
 fn resolution_scales_the_page() {
-    let page = render(&page_pdf("", A4, b""), &RasterOptions { dpi: 144.0 });
+    let page = render(&page_pdf("", A4, b""), &RasterOptions { dpi: 144.0, ..PT });
     assert_eq!((page.width, page.height), (1190, 1684));
 }
 
@@ -201,4 +204,169 @@ fn a_page_out_of_range_is_an_error() {
         parser.render_page(2, &PT),
         Err(unpdf::Error::PageOutOfRange(2, 1))
     ));
+}
+
+// ---------------------------------------------------------------------------------------
+// Text. The fixture fonts (tests/fixtures/make_square_fonts.py) draw `A` as a filled square
+// over 100..900 x 0..800 of a 1000-unit em; `space` has no outline.
+
+const SQUARE_TTF: &[u8] = include_bytes!("fixtures/square.ttf");
+const SQUARE_CFF: &[u8] = include_bytes!("fixtures/square.cff");
+
+/// One page drawing `content` with `/F1` = `font` (object 5); `extra` objects follow from 6.
+fn font_page(font: &str, extra: Vec<Vec<u8>>, content: &[u8]) -> Vec<u8> {
+    let mut objects = vec![
+        b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+        format!("<</Type/Page/Parent 2 0 R{A4}/Resources<</Font<</F1 5 0 R>>>>/Contents 4 0 R>>")
+            .into_bytes(),
+        stream_object(&format!("<</Length {}>>", content.len()), content),
+        font.as_bytes().to_vec(),
+    ];
+    objects.extend(extra);
+    common::assemble(objects)
+}
+
+fn font_file(subtype: &str, data: &[u8]) -> Vec<u8> {
+    stream_object(&format!("<<{subtype}/Length {}>>", data.len()), data)
+}
+
+/// `A` at 100 pt, its square over x 110..190 and y 100..180 of the page.
+const SHOW_A: &[u8] = b"BT /F1 100 Tf 100 100 Td (A) Tj ET";
+
+fn assert_square_painted(page: &RasteredPage) {
+    assert!(
+        near(px(page, 150, 842 - 140), [0, 0, 0]),
+        "inside the glyph: {:?}",
+        px(page, 150, 702)
+    );
+    assert!(near(px(page, 105, 842 - 140), WHITE), "left of it");
+    assert!(near(px(page, 150, 842 - 190), WHITE), "above it");
+    assert_eq!(page.gaps.text_runs, 0, "{:?}", page.gaps);
+}
+
+#[test]
+fn a_simple_truetype_font_is_drawn() {
+    let pdf = font_page(
+        "<</Type/Font/Subtype/TrueType/BaseFont/UnpdfSquare/FirstChar 32/LastChar 65\
+          /Widths[250 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1000]\
+          /Encoding/WinAnsiEncoding/FontDescriptor 6 0 R>>",
+        vec![
+            b"<</Type/FontDescriptor/FontName/UnpdfSquare/Flags 32/FontBBox[0 0 1000 800]\
+               /ItalicAngle 0/Ascent 800/Descent -200/CapHeight 800/StemV 80/FontFile2 7 0 R>>"
+                .to_vec(),
+            font_file("", SQUARE_TTF),
+        ],
+        SHOW_A,
+    );
+    assert_square_painted(&render(&pdf, &PT));
+}
+
+#[test]
+fn a_bare_cff_font_is_drawn() {
+    let pdf = font_page(
+        "<</Type/Font/Subtype/Type1/BaseFont/UnpdfSquareCFF/FirstChar 65/LastChar 65\
+          /Widths[1000]/FontDescriptor 6 0 R>>",
+        vec![
+            b"<</Type/FontDescriptor/FontName/UnpdfSquareCFF/Flags 32/FontBBox[0 0 1000 800]\
+               /ItalicAngle 0/Ascent 800/Descent -200/CapHeight 800/StemV 80/FontFile3 7 0 R>>"
+                .to_vec(),
+            font_file("/Subtype/Type1C", SQUARE_CFF),
+        ],
+        SHOW_A,
+    );
+    assert_square_painted(&render(&pdf, &PT));
+}
+
+#[test]
+fn a_composite_identity_font_is_drawn_by_glyph_index() {
+    // Identity-H: the two-byte code is the CID, and CIDToGIDMap /Identity makes it the glyph
+    // index — glyph 2 is `A`.
+    let pdf = font_page(
+        "<</Type/Font/Subtype/Type0/BaseFont/UnpdfSquare/Encoding/Identity-H\
+          /DescendantFonts[6 0 R]>>",
+        vec![
+            b"<</Type/Font/Subtype/CIDFontType2/BaseFont/UnpdfSquare\
+               /CIDSystemInfo<</Registry(Adobe)/Ordering(Identity)/Supplement 0>>\
+               /FontDescriptor 7 0 R/DW 1000/CIDToGIDMap/Identity>>"
+                .to_vec(),
+            b"<</Type/FontDescriptor/FontName/UnpdfSquare/Flags 4/FontBBox[0 0 1000 800]\
+               /ItalicAngle 0/Ascent 800/Descent -200/CapHeight 800/StemV 80/FontFile2 8 0 R>>"
+                .to_vec(),
+            font_file("", SQUARE_TTF),
+        ],
+        b"BT /F1 100 Tf 100 100 Td <0002> Tj ET",
+    );
+    assert_square_painted(&render(&pdf, &PT));
+}
+
+/// Glyphs advance by the widths extraction measures with: two `A`s 1000 units wide sit side
+/// by side, the second starting 100 pt after the first.
+#[test]
+fn glyphs_advance_by_their_widths() {
+    let pdf = font_page(
+        "<</Type/Font/Subtype/TrueType/BaseFont/UnpdfSquare/FirstChar 65/LastChar 65\
+          /Widths[1000]/Encoding/WinAnsiEncoding/FontDescriptor 6 0 R>>",
+        vec![
+            b"<</Type/FontDescriptor/FontName/UnpdfSquare/Flags 32/FontBBox[0 0 1000 800]\
+               /ItalicAngle 0/Ascent 800/Descent -200/CapHeight 800/StemV 80/FontFile2 7 0 R>>"
+                .to_vec(),
+            font_file("", SQUARE_TTF),
+        ],
+        b"BT /F1 100 Tf 100 100 Td (AA) Tj ET",
+    );
+    let page = render(&pdf, &PT);
+    assert!(near(px(&page, 150, 842 - 140), [0, 0, 0]));
+    assert!(
+        near(px(&page, 200, 842 - 140), WHITE),
+        "the gap between the squares"
+    );
+    assert!(
+        near(px(&page, 250, 842 - 140), [0, 0, 0]),
+        "the second square"
+    );
+}
+
+#[test]
+fn invisible_text_paints_nothing_and_is_no_gap() {
+    let pdf = font_page(
+        "<</Type/Font/Subtype/TrueType/BaseFont/UnpdfSquare/FirstChar 65/LastChar 65\
+          /Widths[1000]/Encoding/WinAnsiEncoding/FontDescriptor 6 0 R>>",
+        vec![
+            b"<</Type/FontDescriptor/FontName/UnpdfSquare/Flags 32/FontBBox[0 0 1000 800]\
+               /ItalicAngle 0/Ascent 800/Descent -200/CapHeight 800/StemV 80/FontFile2 7 0 R>>"
+                .to_vec(),
+            font_file("", SQUARE_TTF),
+        ],
+        b"BT 3 Tr /F1 100 Tf 100 100 Td (A) Tj ET",
+    );
+    let page = render(&pdf, &PT);
+    assert!(near(px(&page, 150, 842 - 140), WHITE));
+    assert!(page.gaps.is_empty());
+}
+
+/// The crop box is what a viewer shows and the default region; the media box is the whole
+/// sheet.
+#[test]
+fn the_crop_box_is_painted_unless_the_media_box_is_asked_for() {
+    let pdf = page_pdf(
+        "",
+        &format!("{A4}/CropBox[100 100 300 400]"),
+        b"1 0 0 rg 100 100 20 20 re f",
+    );
+    let crop = render(&pdf, &PT);
+    assert_eq!((crop.width, crop.height), (200, 300));
+    assert!(
+        near(px(&crop, 10, 300 - 10), RED),
+        "the crop box's corner is the raster's"
+    );
+
+    let media = render(
+        &pdf,
+        &RasterOptions {
+            region: PageRegion::Media,
+            ..PT
+        },
+    );
+    assert_eq!((media.width, media.height), (595, 842));
 }

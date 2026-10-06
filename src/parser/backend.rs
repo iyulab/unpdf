@@ -249,6 +249,45 @@ pub struct RawXObject {
     pub smask: Option<Box<RawXObject>>,
 }
 
+/// The format of an embedded font program.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FontFormat {
+    /// `/FontFile2`: a TrueType font.
+    TrueType,
+    /// `/FontFile3` `/Type1C` or `/CIDFontType0C`: a bare CFF font.
+    Cff,
+    /// `/FontFile3` `/OpenType`: an OpenType font (TrueType or CFF outlines).
+    OpenType,
+}
+
+/// How a font's codes select glyphs in its program (ISO 32000-1 §9.6.6, §9.7.4.2).
+#[derive(Debug, Clone, PartialEq)]
+pub enum GlyphSelection {
+    /// A composite font under `Identity-H`/`-V`: two-byte codes are CIDs, and `cid_to_gid`
+    /// maps a CID to a glyph index (`None`: the CID is the index — `/CIDToGIDMap /Identity`,
+    /// or a CFF font, whose charset maps CIDs itself).
+    Cid { cid_to_gid: Option<Vec<u16>> },
+    /// A simple font: one-byte codes.
+    Simple {
+        /// What the font's `/Encoding` says each code is, if it has one.
+        chars: Option<HashMap<u8, char>>,
+        /// The glyph names `/Differences` gives codes.
+        names: HashMap<u8, String>,
+        /// `/Flags` bit 3: the font's glyphs are outside the standard Latin set, so codes
+        /// select glyphs directly rather than through character names.
+        symbolic: bool,
+    },
+}
+
+/// A font's embedded glyph program, and how its codes select glyphs — what painting the
+/// font's text needs.
+#[derive(Debug, Clone)]
+pub struct FontProgram {
+    pub format: FontFormat,
+    pub data: Vec<u8>,
+    pub selection: GlyphSelection,
+}
+
 /// What a page's rasterizer needs from an `/ExtGState` resource (ISO 32000-1 §8.4.5).
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct ExtGState {
@@ -464,6 +503,15 @@ pub trait PdfBackend: Send + Sync {
         (b.width(), b.height())
     }
 
+    /// The page's visible region: its `/CropBox` (inherited when the page does not set one)
+    /// clipped to its box — what a viewer shows. Defaults to [`page_box`] when there is no
+    /// crop box, or it does not overlap the page box.
+    ///
+    /// [`page_box`]: PdfBackend::page_box
+    fn crop_box(&self, page: PageId) -> PageBox {
+        self.page_box(page)
+    }
+
     /// The page's `/Rotate` (inherited when the page does not set one), normalized to
     /// 0, 90, 180 or 270: how far clockwise the page is turned for display. Defaults to 0.
     fn page_rotation(&self, _page: PageId) -> u16 {
@@ -494,6 +542,13 @@ pub trait PdfBackend: Send + Sync {
 
     /// The `/ExtGState` resource `name` refers to in `scope`.
     fn ext_gstate(&self, _scope: ResourceScope, _name: &[u8]) -> Option<ExtGState> {
+        None
+    }
+
+    /// The embedded program of the font `font_name` refers to in `scope`, with how its codes
+    /// select glyphs. `None` for a font with no program this reads (not embedded, Type 1,
+    /// Type 3) or a composite font under a CMap other than `Identity-H`/`-V`.
+    fn font_program(&self, _scope: ResourceScope, _font_name: &[u8]) -> Option<FontProgram> {
         None
     }
 
@@ -763,6 +818,22 @@ impl PdfBackend for RawBackend {
             .unwrap_or(PageBox::LETTER)
     }
 
+    fn crop_box(&self, page: PageId) -> PageBox {
+        let media = self.page_box(page);
+        inherited_page_attr(&self.doc, page, b"CropBox")
+            .and_then(|obj| page_box_from_array(&self.doc, obj))
+            .and_then(|crop| {
+                let clipped = PageBox {
+                    llx: crop.llx.max(media.llx),
+                    lly: crop.lly.max(media.lly),
+                    urx: crop.urx.min(media.urx),
+                    ury: crop.ury.min(media.ury),
+                };
+                (clipped.width() > 0.0 && clipped.height() > 0.0).then_some(clipped)
+            })
+            .unwrap_or(media)
+    }
+
     fn page_rotation(&self, page: PageId) -> u16 {
         let degrees = inherited_page_attr(&self.doc, page, b"Rotate")
             .map(|obj| self.doc.resolve(obj))
@@ -865,6 +936,10 @@ impl PdfBackend for RawBackend {
             stroke_alpha: number(b"CA"),
             fill_alpha: number(b"ca"),
         })
+    }
+
+    fn font_program(&self, scope: ResourceScope, font_name: &[u8]) -> Option<FontProgram> {
+        self.font_resolver.font_program(&self.doc, scope, font_name)
     }
 
     fn named_color_space(&self, scope: ResourceScope, name: &[u8]) -> Option<ImageColorSpace> {
@@ -1021,6 +1096,34 @@ fn matrix_from(doc: &RawDocument, obj: &RawPdfObject) -> Option<[f32; 6]> {
         };
     }
     Some(m)
+}
+
+/// The program a font's (or CIDFont's) descriptor embeds, in a format this reads:
+/// `/FontFile2` (TrueType) or `/FontFile3` with `/Subtype` `/Type1C`, `/CIDFontType0C` (bare
+/// CFF) or `/OpenType`. A `/FontFile` (Type 1) program is not read.
+fn embedded_font_program(
+    doc: &RawDocument,
+    font_dict: &RawPdfDict,
+) -> Option<(FontFormat, Vec<u8>)> {
+    let descriptor = raw_resolve_dict(doc, raw_dict_get(font_dict, b"FontDescriptor")?)?;
+    let stream_at = |key: &[u8]| {
+        raw_dict_get(descriptor, key)
+            .map(|v| doc.resolve(v))
+            .and_then(|v| v.as_stream())
+    };
+    let read = |stream: &super::raw::tokenizer::PdfStream| {
+        raw_stream::decompress(stream).unwrap_or_else(|_| stream.raw_data.clone())
+    };
+    if let Some(stream) = stream_at(b"FontFile2") {
+        return Some((FontFormat::TrueType, read(stream)));
+    }
+    let stream = stream_at(b"FontFile3")?;
+    let format = match raw_dict_get(&stream.dict, b"Subtype").and_then(|s| s.as_name()) {
+        Some(b"OpenType") => FontFormat::OpenType,
+        Some(b"Type1C") | Some(b"CIDFontType0C") => FontFormat::Cff,
+        _ => return None,
+    };
+    Some((format, read(stream)))
 }
 
 /// A page attribute the page may inherit from its Pages-tree ancestors (ISO 32000-1
@@ -1974,6 +2077,65 @@ impl RawFontResolver {
         let font_data =
             raw_stream::decompress(font_stream).unwrap_or_else(|_| font_stream.raw_data.clone());
         parse_truetype_cmap_table(&font_data)
+    }
+
+    /// The embedded program of a font, and how its codes select glyphs.
+    fn font_program(
+        &self,
+        doc: &RawDocument,
+        scope: ResourceScope,
+        font_name: &[u8],
+    ) -> Option<FontProgram> {
+        let fid = self.find_font_dict(doc, scope, font_name)?;
+        let font_dict = doc.get_dict(fid).ok()?;
+        if self.is_composite_font(doc, fid) {
+            let identity = raw_dict_get(font_dict, b"Encoding")
+                .and_then(|e| e.as_name())
+                .is_some_and(|n| n == b"Identity-H" || n == b"Identity-V");
+            if !identity {
+                return None;
+            }
+            let cid_font = doc.get_dict(self.get_cid_font_id(doc, fid)?).ok()?;
+            let (format, data) = embedded_font_program(doc, cid_font)?;
+            let cid_to_gid = raw_dict_get(cid_font, b"CIDToGIDMap")
+                .map(|m| doc.resolve(m))
+                .and_then(|m| m.as_stream())
+                .map(|stream| {
+                    let bytes = raw_stream::decompress(stream).unwrap_or_default();
+                    bytes
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
+                        .map(|&pair| u16::from_be_bytes(pair))
+                        .collect()
+                });
+            return Some(FontProgram {
+                format,
+                data,
+                selection: GlyphSelection::Cid { cid_to_gid },
+            });
+        }
+
+        let (format, data) = embedded_font_program(doc, font_dict)?;
+        let symbolic = raw_dict_get(font_dict, b"FontDescriptor")
+            .and_then(|d| raw_resolve_dict(doc, d))
+            .and_then(|d| raw_dict_get(d, b"Flags"))
+            .map(|f| doc.resolve(f))
+            .and_then(|f| f.as_i64())
+            .is_some_and(|flags| flags & 4 != 0);
+        let names = raw_dict_get(font_dict, b"Encoding")
+            .and_then(|e| raw_resolve_dict(doc, e))
+            .map(|enc| self.parse_differences(doc, enc).into_iter().collect())
+            .unwrap_or_default();
+        Some(FontProgram {
+            format,
+            data,
+            selection: GlyphSelection::Simple {
+                chars: self.get_encoding_map(doc, fid),
+                names,
+                symbolic,
+            },
+        })
     }
 
     /// Get or parse the encoding map for a font.

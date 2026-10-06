@@ -20,6 +20,8 @@ pub(crate) mod png_encode;
 pub(crate) mod predefined_cmap;
 #[cfg(feature = "raster")]
 pub mod raster;
+#[cfg(feature = "raster")]
+mod raster_text;
 pub mod raw;
 pub(crate) mod sanitize;
 pub mod stream;

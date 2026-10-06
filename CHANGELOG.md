@@ -5,16 +5,21 @@
 ### Added
 
 - **Page rasterization** behind the new `raster` feature: `PdfParser::render_page(page,
-  &RasterOptions { dpi })` paints a page to RGBA (`RasteredPage::to_png` for a PNG). The page is
-  painted from the same content interpretation text extraction reads — the same page tree, page
-  box, `/Rotate` and form handling — so the page rendered is the page extracted. Painted: paths
-  (lines, curves, rectangles) filled and stroked with width, caps, joins and dashes; clipping;
-  colors in the device spaces, indexed spaces and named color spaces; `ExtGState` line width
-  and opacity; images — Flate-family samples and JPEG (DCT) — with soft masks and stencil masks,
-  averaged down when drawn much smaller than their samples. What is not painted yet is counted
-  in `RasteredPage::gaps` by reason (text, images in other codecs, inline images, shadings,
-  undecodable content streams), and the rest of the page is still painted. Off by default; pure
-  Rust (`tiny-skia`, `zune-jpeg`).
+  &RasterOptions { dpi, region })` paints a page to RGBA (`RasteredPage::to_png` for a PNG). The
+  page is painted from the same content interpretation text extraction reads — the same page
+  tree, page box, `/Rotate` and form handling — so the page rendered is the page extracted, and
+  text advances by the same widths extraction measures with. `region` is the crop box (what a
+  viewer shows, the default) or the whole media box. Painted: text in embedded TrueType,
+  OpenType and CFF fonts — simple fonts through their encoding, glyph names or symbolic cmap,
+  composite fonts under `Identity-H`/`-V` through `CIDToGIDMap` or the CFF charset — in fill,
+  stroke and invisible render modes; paths (lines, curves, rectangles) filled and stroked with
+  width, caps, joins and dashes; clipping; colors in the device spaces, indexed spaces and
+  named color spaces; `ExtGState` line width and opacity; images — Flate-family samples and
+  JPEG (DCT) — with soft masks and stencil masks, averaged down when drawn much smaller than
+  their samples. What is not painted yet is counted in `RasteredPage::gaps` by reason (text in
+  fonts that are not embedded or are Type 1 or Type 3, images in other codecs, inline images,
+  shadings, undecodable content streams), and the rest of the page is still painted. Off by
+  default; pure Rust (`tiny-skia`, `ttf-parser`, `zune-jpeg`).
 
 ## 0.27.0 — 2026-10-06
 
