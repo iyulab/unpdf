@@ -854,6 +854,33 @@ pub fn page_pdf(pages_entries: &str, page_entries: &str, content: &[u8]) -> Vec<
     assemble(objects)
 }
 
+/// One page drawing `content` with XObjects of its own: each `(name, object)` becomes object
+/// 5, 6, ... and `/name` in the page's XObject resources. `/F1` is Helvetica.
+pub fn page_pdf_with_xobjects(
+    page_entries: &str,
+    content: &[u8],
+    xobjects: Vec<(&str, Vec<u8>)>,
+) -> Vec<u8> {
+    let font_obj = 5 + xobjects.len();
+    let names: String = xobjects
+        .iter()
+        .enumerate()
+        .map(|(i, (name, _))| format!("/{name} {} 0 R", 5 + i))
+        .collect();
+    let mut objects: Vec<Vec<u8>> = vec![
+        b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+        format!(
+            "<</Type/Page/Parent 2 0 R{page_entries}             /Resources<</Font<</F1 {font_obj} 0 R>>/XObject<<{names}>>>>/Contents 4 0 R>>"
+        )
+        .into_bytes(),
+        stream_object(&format!("<</Length {}>>", content.len()), content),
+    ];
+    objects.extend(xobjects.into_iter().map(|(_, obj)| obj));
+    objects.push(HELVETICA.to_vec());
+    assemble(objects)
+}
+
 pub fn all_fixtures() -> Vec<(&'static str, Vec<u8>)> {
     vec![
         ("image_only_pdf", image_only_pdf()),
@@ -904,7 +931,7 @@ fn gray_pixel_image() -> Vec<u8> {
     )
 }
 
-fn stream_object(dict: &str, data: &[u8]) -> Vec<u8> {
+pub fn stream_object(dict: &str, data: &[u8]) -> Vec<u8> {
     let mut obj = dict.as_bytes().to_vec();
     obj.extend_from_slice(b"\nstream\n");
     obj.extend_from_slice(data);

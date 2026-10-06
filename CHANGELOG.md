@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Page rasterization** behind the new `raster` feature: `PdfParser::render_page(page,
+  &RasterOptions { dpi })` paints a page to RGBA (`RasteredPage::to_png` for a PNG). The page is
+  painted from the same content interpretation text extraction reads — the same page tree, page
+  box, `/Rotate` and form handling — so the page rendered is the page extracted. Painted: paths
+  (lines, curves, rectangles) filled and stroked with width, caps, joins and dashes; clipping;
+  colors in the device spaces, indexed spaces and named color spaces; `ExtGState` line width
+  and opacity; images — Flate-family samples and JPEG (DCT) — with soft masks and stencil masks,
+  averaged down when drawn much smaller than their samples. What is not painted yet is counted
+  in `RasteredPage::gaps` by reason (text, images in other codecs, inline images, shadings,
+  undecodable content streams), and the rest of the page is still painted. Off by default; pure
+  Rust (`tiny-skia`, `zune-jpeg`).
+
 ## 0.27.0 — 2026-10-06
 
 ### Added

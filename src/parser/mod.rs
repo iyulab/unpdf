@@ -18,6 +18,8 @@ mod options;
 mod pdf_parser;
 pub(crate) mod png_encode;
 pub(crate) mod predefined_cmap;
+#[cfg(feature = "raster")]
+pub mod raster;
 pub mod raw;
 pub(crate) mod sanitize;
 pub mod stream;

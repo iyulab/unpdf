@@ -22,6 +22,18 @@ pub struct PdfParser {
 }
 
 impl PdfParser {
+    /// Rasterize page `page_num` (1-indexed) — painted from the same content interpretation
+    /// [`parse`](Self::parse) reads, so it is the same page. Anything the rasterizer cannot
+    /// paint yet is counted in the result's `gaps`; the rest of the page is still painted.
+    #[cfg(feature = "raster")]
+    pub fn render_page(
+        &self,
+        page_num: u32,
+        options: &super::raster::RasterOptions,
+    ) -> Result<super::raster::RasteredPage> {
+        super::raster::render_page(&*self.backend, page_num, options)
+    }
+
     /// Open a PDF file.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {

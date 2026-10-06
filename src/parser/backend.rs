@@ -242,6 +242,22 @@ pub struct RawXObject {
     pub color: Option<ImageColorSpace>,
     /// `/Decode`: how each component's raw sample maps onto its range.
     pub decode: Option<Vec<f32>>,
+    /// `/ImageMask true`: a stencil — one bit per sample, painted in the current fill color
+    /// where the sample is 0 (1 with `/Decode [1 0]`), left untouched elsewhere.
+    pub image_mask: bool,
+    /// `/SMask`: a grayscale image giving each pixel's opacity.
+    pub smask: Option<Box<RawXObject>>,
+}
+
+/// What a page's rasterizer needs from an `/ExtGState` resource (ISO 32000-1 §8.4.5).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct ExtGState {
+    /// `/LW`.
+    pub line_width: Option<f32>,
+    /// `/CA`: stroking opacity.
+    pub stroke_alpha: Option<f32>,
+    /// `/ca`: non-stroking opacity.
+    pub fill_alpha: Option<f32>,
 }
 
 /// A page's decoded content, together with what decoding it had to drop.
@@ -467,6 +483,23 @@ pub trait PdfBackend: Send + Sync {
     /// Defaults to `None` -- every `Do` stays opaque -- so a backend that cannot read
     /// XObjects never claims to know what one paints.
     fn xobject(&self, _scope: ResourceScope, _name: &[u8]) -> Option<PaintedXObject> {
+        None
+    }
+
+    /// The image XObject `name` refers to in `scope`, decoded as far as its filters go —
+    /// what a rasterizer paints for `Do`. `None` when the name is not an image.
+    fn image_xobject(&self, _scope: ResourceScope, _name: &[u8]) -> Option<RawXObject> {
+        None
+    }
+
+    /// The `/ExtGState` resource `name` refers to in `scope`.
+    fn ext_gstate(&self, _scope: ResourceScope, _name: &[u8]) -> Option<ExtGState> {
+        None
+    }
+
+    /// The `/ColorSpace` resource `name` refers to in `scope`, as far as converting colors
+    /// in it needs (`cs`/`CS` with a named space).
+    fn named_color_space(&self, _scope: ResourceScope, _name: &[u8]) -> Option<ImageColorSpace> {
         None
     }
 
@@ -803,6 +836,46 @@ impl PdfBackend for RawBackend {
         })
     }
 
+    fn image_xobject(&self, scope: ResourceScope, name: &[u8]) -> Option<RawXObject> {
+        let id = resource_chain(&self.doc, scope)
+            .into_iter()
+            .find_map(|res| named_resource(&self.doc, res, b"XObject", name))?;
+        let stream = self.doc.resolve(self.doc.get_object(id)?).as_stream()?;
+        let subtype = raw_dict_get(&stream.dict, b"Subtype").and_then(|s| s.as_name());
+        if subtype != Some(b"Image".as_slice()) {
+            return None;
+        }
+        Some(self.read_image(stream, String::from_utf8_lossy(name).into_owned(), 0))
+    }
+
+    fn ext_gstate(&self, scope: ResourceScope, name: &[u8]) -> Option<ExtGState> {
+        let dict = resource_chain(&self.doc, scope)
+            .into_iter()
+            .find_map(|res| {
+                let sub = raw_resolve_dict(&self.doc, raw_dict_get(res, b"ExtGState")?)?;
+                raw_resolve_dict(&self.doc, raw_dict_get(sub, name)?)
+            })?;
+        let number = |key: &[u8]| {
+            raw_dict_get(dict, key)
+                .map(|v| self.doc.resolve(v))
+                .and_then(|v| v.as_f32())
+        };
+        Some(ExtGState {
+            line_width: number(b"LW"),
+            stroke_alpha: number(b"CA"),
+            fill_alpha: number(b"ca"),
+        })
+    }
+
+    fn named_color_space(&self, scope: ResourceScope, name: &[u8]) -> Option<ImageColorSpace> {
+        resource_chain(&self.doc, scope)
+            .into_iter()
+            .find_map(|res| {
+                let sub = raw_resolve_dict(&self.doc, raw_dict_get(res, b"ColorSpace")?)?;
+                resolve_image_color_space(&self.doc, raw_dict_get(sub, name)?, 0)
+            })
+    }
+
     fn acroform_fields(&self) -> Vec<FormField> {
         self.extract_acroform_fields()
     }
@@ -822,6 +895,59 @@ struct XObjectWalk {
 pub(crate) const MAX_FORM_DEPTH: usize = 32;
 
 impl RawBackend {
+    /// Read an image XObject stream: its samples (the lossless filters applied), geometry,
+    /// color space, and — `depth` bounding the chain — its soft mask.
+    fn read_image(
+        &self,
+        stream: &super::raw::tokenizer::PdfStream,
+        name: String,
+        depth: usize,
+    ) -> RawXObject {
+        let dict = &stream.dict;
+        // The lossless filters are applied whatever the chain (`[/ASCII85Decode
+        // /DCTDecode]` hands on the JPEG, `[/ASCII85Decode /FlateDecode]` the
+        // samples); `filter` names the image codec still to apply, `None` when `data`
+        // is samples. A chain that does not decode leaves the stream's bytes, marked
+        // with the reason so they are never read as samples.
+        let (data, filter) = match raw_stream::decode(stream) {
+            Ok(decoded) => (decoded.data, decoded.codec.map(str::to_string)),
+            Err(_) => (stream.raw_data.clone(), Some(UNDECODED_IMAGE.to_string())),
+        };
+        let int = |key: &[u8]| {
+            raw_dict_get(dict, key)
+                .map(|v| self.doc.resolve(v))
+                .and_then(|v| v.as_i64())
+        };
+        let image_mask = matches!(
+            raw_dict_get(dict, b"ImageMask").map(|v| self.doc.resolve(v)),
+            Some(RawPdfObject::Bool(true))
+        );
+        let color_space_entry = raw_dict_get(dict, b"ColorSpace");
+        let smask = (depth == 0)
+            .then(|| raw_dict_get(dict, b"SMask"))
+            .flatten()
+            .and_then(|v| self.doc.resolve(v).as_stream())
+            .map(|mask| Box::new(self.read_image(mask, format!("{name}_smask"), depth + 1)));
+        RawXObject {
+            name,
+            subtype: "Image".to_string(),
+            data,
+            filter,
+            width: int(b"Width").map(|w| w as u32),
+            height: int(b"Height").map(|h| h as u32),
+            bits_per_component: if image_mask {
+                Some(1)
+            } else {
+                int(b"BitsPerComponent").map(|b| b as u8)
+            },
+            color_space: color_space_entry.and_then(|cs| resolve_color_space_name(&self.doc, cs)),
+            color: color_space_entry.and_then(|cs| resolve_image_color_space(&self.doc, cs, 0)),
+            decode: raw_dict_get(dict, b"Decode").and_then(|d| numbers_from(&self.doc, d)),
+            image_mask,
+            smask,
+        }
+    }
+
     /// List the images in `scope`'s XObject resources, descending into its forms.
     fn collect_images(
         &self,
@@ -871,45 +997,7 @@ impl RawBackend {
                 continue;
             }
 
-            // The lossless filters are applied whatever the chain (`[/ASCII85Decode
-            // /DCTDecode]` hands on the JPEG, `[/ASCII85Decode /FlateDecode]` the
-            // samples); `filter` names the image codec still to apply, `None` when `data`
-            // is samples. A chain that does not decode leaves the stream's bytes, marked
-            // with the reason so they are never read as samples.
-            let (data, filter) = match raw_stream::decode(stream) {
-                Ok(decoded) => (decoded.data, decoded.codec.map(str::to_string)),
-                Err(_) => (stream.raw_data.clone(), Some(UNDECODED_IMAGE.to_string())),
-            };
-
-            let width = raw_dict_get(dict, b"Width")
-                .and_then(|w| w.as_i64())
-                .map(|w| w as u32);
-            let height = raw_dict_get(dict, b"Height")
-                .and_then(|h| h.as_i64())
-                .map(|h| h as u32);
-            let bits = raw_dict_get(dict, b"BitsPerComponent")
-                .and_then(|b| b.as_i64())
-                .map(|b| b as u8);
-
-            let color_space_entry = raw_dict_get(dict, b"ColorSpace");
-            let color_space =
-                color_space_entry.and_then(|cs| resolve_color_space_name(&self.doc, cs));
-            let color =
-                color_space_entry.and_then(|cs| resolve_image_color_space(&self.doc, cs, 0));
-            let decode = raw_dict_get(dict, b"Decode").and_then(|d| numbers_from(&self.doc, d));
-
-            out.push(RawXObject {
-                name: label,
-                subtype,
-                data,
-                filter,
-                width,
-                height,
-                bits_per_component: bits,
-                color_space,
-                color,
-                decode,
-            });
+            out.push(self.read_image(stream, label, 0));
         }
     }
 }

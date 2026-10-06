@@ -26,6 +26,21 @@ pub(crate) fn image_to_png(
     decode: Option<&[f32]>,
     data: &[u8],
 ) -> Option<Vec<u8>> {
+    let (output, pixels) = image_pixels(width, height, bits_per_component, color, decode, data)?;
+    encode(width, height, output, &pixels)
+}
+
+/// Convert an image XObject's decompressed samples to 8-bit pixels: gray or RGB, as the
+/// returned colour type says, `width * height` of them row by row. Same inputs and same
+/// `None` cases as [`image_to_png`].
+pub(crate) fn image_pixels(
+    width: u32,
+    height: u32,
+    bits_per_component: u8,
+    color: &ImageColorSpace,
+    decode: Option<&[f32]>,
+    data: &[u8],
+) -> Option<(PngColorType, Vec<u8>)> {
     if !matches!(bits_per_component, 1 | 2 | 4 | 8 | 16) || width == 0 || height == 0 {
         return None;
     }
@@ -62,7 +77,7 @@ pub(crate) fn image_to_png(
             color.push_pixel(&values, &mut pixels)?;
         }
     }
-    encode(width, height, output, &pixels)
+    Some((output, pixels))
 }
 
 /// The `bits`-wide sample starting `bit` bits into `row`, high bits first.
@@ -126,7 +141,7 @@ pub(crate) enum PngColorType {
 }
 
 impl PngColorType {
-    fn channels(self) -> u32 {
+    pub(crate) fn channels(self) -> u32 {
         match self {
             PngColorType::Gray => 1,
             PngColorType::Rgb => 3,
