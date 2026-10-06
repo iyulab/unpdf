@@ -540,7 +540,7 @@ impl TableDetector {
         let mut runs = Vec::new();
         let mut start: Option<usize> = None;
         for (i, row) in rows.iter().enumerate() {
-            if row.spans.len() >= self.config.min_columns {
+            if separated_runs(row) >= self.config.min_columns {
                 start.get_or_insert(i);
             } else if let Some(s) = start.take() {
                 if i - s >= self.config.min_rows {
@@ -1159,6 +1159,36 @@ pub(crate) fn group_into_rows(spans: &[TextSpan], y_tolerance_factor: f32) -> Ve
     attach_script_rows(rows)
 }
 
+/// How many runs of text a row holds once spans set a word space apart are joined.
+///
+/// A span is not a cell: OCR text layers and some producers write one span per word, so a
+/// caption line ("Table 4. Interactive canopy cover ...") arrives as several spans with
+/// word spaces between them, and counted span by span every such line looked like a table
+/// row. A gap wider than [`CELL_GAP_EM`] of the font size separates cells; a word space
+/// (a quarter to a third of the size) does not, and a tight table column gap (two-thirds
+/// of the size, measured) still does.
+fn separated_runs(row: &TableRowData) -> usize {
+    let mut spans: Vec<&TextSpan> = row.spans.iter().collect();
+    spans.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
+    let mut runs = 0;
+    let mut previous_end: Option<f32> = None;
+    for span in spans {
+        let separated = match previous_end {
+            None => true,
+            Some(end) => span.x - end > span.font_size * CELL_GAP_EM,
+        };
+        if separated {
+            runs += 1;
+        }
+        let end = span.x + span.width;
+        previous_end = Some(previous_end.map_or(end, |p| p.max(end)));
+    }
+    runs
+}
+
+/// The gap, in multiples of the font size, beyond which two spans are separate cells.
+const CELL_GAP_EM: f32 = 0.5;
+
 /// Fold a row of superscripts or subscripts into the row of text they mark.
 ///
 /// A superscript (`0.31*`, a footnote mark) sits on a baseline raised by about a
@@ -1378,6 +1408,30 @@ mod tests {
             sized("note", 10.0, 388.0, 7.0),
         ];
         assert_eq!(detector.group_into_rows(&spans).len(), 2);
+    }
+
+    /// A caption written one span per word is one run of text, not a table row.
+    #[test]
+    fn test_word_spans_are_one_run_and_cells_are_separate() {
+        let row = |spans: Vec<TextSpan>| TableRowData {
+            y: 100.0,
+            spans,
+            sources: Vec::new(),
+        };
+        // make_span widths are 6pt per character at 12pt: "Table" ends at 40, a 3pt word
+        // space, then "4." ends at 55, another word space, then the caption.
+        let caption = row(vec![
+            make_span("Table", 10.0, 100.0),
+            make_span("4.", 43.0, 100.0),
+            make_span("Interactive", 58.0, 100.0),
+        ]);
+        assert_eq!(separated_runs(&caption), 1);
+        let cells = row(vec![
+            make_span("Name", 10.0, 100.0),
+            make_span("Age", 60.0, 100.0),
+            make_span("City", 110.0, 100.0),
+        ]);
+        assert_eq!(separated_runs(&cells), 3);
     }
 
     #[test]

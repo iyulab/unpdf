@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- A line of text written one span per word — common in OCR text layers — is no longer taken
+  for a table row. Unruled table detection counted spans as cells, so a run of caption or
+  body lines became a table; spans a word space apart now count as one cell, and only a gap
+  of half the font size or more separates cells.
+
 ## 0.26.1 — 2026-10-06
 
 ### Fixed
