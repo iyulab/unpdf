@@ -534,36 +534,142 @@ fn strip_prefix_bytes(content: &mut Vec<InlineContent>, mut n: usize) {
     }
 }
 
-/// Merge consecutive paragraph blocks that share the same visual row
-/// (Y within 1.5pt of each other) into a single paragraph. Recovers
-/// table-row structure that XY-Cut over-segmented into per-cell blocks.
-/// Headings, tables, images, and rule blocks are never merged.
+/// A block of the page on its way out: its height (a text block's first baseline, a
+/// table's top) and whether it is a single line.
+struct Element {
+    y: f32,
+    single_line: bool,
+    block: Block,
+}
+
+impl Element {
+    fn table(top: f32, table: crate::model::Table) -> Self {
+        Element {
+            y: top,
+            single_line: true,
+            block: Block::Table(table),
+        }
+    }
+}
+
+/// Where an element of a page sits: its top edge and horizontal span, in page space.
+#[derive(Debug, Clone, Copy)]
+struct Extent {
+    top: f32,
+    left: f32,
+    right: f32,
+}
+
+impl Extent {
+    fn of_block(block: &super::layout::TextBlock) -> Self {
+        let top = block
+            .lines
+            .iter()
+            .map(|l| l.y + l.font_size)
+            .fold(f32::MIN, f32::max);
+        let left = block.lines.iter().map(|l| l.x).fold(f32::MAX, f32::min);
+        let right = block
+            .lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.x + s.width)
+            .fold(f32::MIN, f32::max);
+        Extent { top, left, right }
+    }
+
+    fn overlaps_horizontally(&self, other: &Extent) -> bool {
+        self.left < other.right && other.left < self.right
+    }
+}
+
+/// Put each table into the text's reading order: before the first text block that starts
+/// below the table's top and shares its horizontal span — in its own column, or, for a table
+/// across the page, at the start of the band below it. A table no text block shares a span
+/// with goes before the first block that starts below it.
+///
+/// The text keeps the order XY-Cut gave it. Sorting every element by height instead would
+/// interleave the columns of a page that holds a table, block by block.
+fn place_tables_in_reading_order(
+    text: Vec<(Extent, Element)>,
+    mut tables: Vec<(Extent, Vec<Element>)>,
+) -> Vec<Element> {
+    // Taller tables first, so tables bound for the same place keep their top-down order.
+    tables.sort_by(|a, b| b.0.top.total_cmp(&a.0.top));
+    let starts_below = |block: &Extent, table: &Extent| block.top <= table.top + 1.0;
+    let position = |table: &Extent| -> usize {
+        text.iter()
+            .position(|(e, ..)| starts_below(e, table) && e.overlaps_horizontally(table))
+            .or_else(|| {
+                text.iter()
+                    .rposition(|(e, ..)| e.overlaps_horizontally(table))
+                    .map(|i| i + 1)
+            })
+            .or_else(|| text.iter().position(|(e, ..)| starts_below(e, table)))
+            .unwrap_or(text.len())
+    };
+    let mut placed: Vec<(usize, Vec<Element>)> = tables
+        .into_iter()
+        .map(|(extent, unit)| (position(&extent), unit))
+        .collect();
+    // Stable: units bound for the same place stay top-down.
+    placed.sort_by_key(|(at, _)| *at);
+
+    let mut out = Vec::new();
+    let mut pending = placed.into_iter().peekable();
+    for (i, (_, element)) in text.into_iter().enumerate() {
+        while let Some((_, unit)) = pending.next_if(|(at, _)| *at <= i) {
+            out.extend(unit);
+        }
+        out.push(element);
+    }
+    for (_, unit) in pending {
+        out.extend(unit);
+    }
+    out
+}
+
+/// Merge consecutive single-line paragraphs that share the same visual row (baselines
+/// within [`ROW_Y_TOLERANCE`]) into one paragraph. Recovers table-row structure XY-Cut
+/// over-segmented into per-cell blocks. Headings, tables, images and rule blocks are never
+/// merged — and neither is a paragraph of more than one line: two such paragraphs side by
+/// side are columns of text that start at the same height, not cells of a row.
 ///
 /// The merge appends inline content rather than re-joining plain text so any
 /// per-span bold/italic styling survives (a bold row label stays bold next to
 /// its regular-weight value).
-fn merge_same_row_paragraphs(elements: Vec<(f32, Block)>) -> Vec<(f32, Block)> {
-    // Tolerance ≈ half of body line height. Table cells in Hancom PDFs
-    // frequently sit on slightly offset baselines within the same visual row
-    // (header centred vs. body top-aligned). 6pt catches most real rows
-    // without merging across line breaks.
-    const ROW_Y_TOLERANCE: f32 = 6.0;
-    let mut out: Vec<(f32, Block)> = Vec::with_capacity(elements.len());
-    for (y, block) in elements {
-        // Only plain paragraphs (not headings or list items) are merge candidates.
+fn merge_same_row_paragraphs(elements: Vec<Element>) -> Vec<Element> {
+    let mut out: Vec<Element> = Vec::with_capacity(elements.len());
+    for element in elements {
+        let Element {
+            y,
+            single_line,
+            block,
+        } = element;
+        // Only plain single-line paragraphs (not headings or list items) are merge candidates.
         let para = match block {
             Block::Paragraph(p)
-                if p.style.heading_level.is_none() && p.style.list_info.is_none() =>
+                if single_line
+                    && p.style.heading_level.is_none()
+                    && p.style.list_info.is_none() =>
             {
                 p
             }
             other => {
-                out.push((y, other));
+                out.push(Element {
+                    y,
+                    single_line,
+                    block: other,
+                });
                 continue;
             }
         };
 
-        if let Some((prev_y, Block::Paragraph(prev_p))) = out.last_mut().map(|(y, b)| (y, b)) {
+        if let Some(Element {
+            y: prev_y,
+            single_line: true,
+            block: Block::Paragraph(prev_p),
+        }) = out.last_mut()
+        {
             if prev_p.style.heading_level.is_none()
                 && prev_p.style.list_info.is_none()
                 && (*prev_y - y).abs() <= ROW_Y_TOLERANCE
@@ -585,10 +691,19 @@ fn merge_same_row_paragraphs(elements: Vec<(f32, Block)>) -> Vec<(f32, Block)> {
             }
         }
 
-        out.push((y, Block::Paragraph(para)));
+        out.push(Element {
+            y,
+            single_line,
+            block: Block::Paragraph(para),
+        });
     }
     out
 }
+
+/// Tolerance ≈ half of body line height. Table cells in Hancom PDFs frequently sit on
+/// slightly offset baselines within the same visual row (header centred vs. body
+/// top-aligned). 6pt catches most real rows without merging across line breaks.
+const ROW_Y_TOLERANCE: f32 = 6.0;
 
 /// Render a table row detected with low confidence as plain paragraph text.
 ///
@@ -628,11 +743,16 @@ fn extract_page_with_tables_fn(
     // *guess* structure from text position when no such evidence exists.
     // Spans a lattice table consumes are removed before stream-mode
     // detection runs, so the same content isn't extracted twice.
-    let mut lattice_tables: Vec<(f32, crate::model::Table)> = Vec::new();
+    let mut lattice_tables: Vec<(Extent, crate::model::Table)> = Vec::new();
     let mut lattice_consumed = std::collections::HashSet::new();
     for grid in &lattice_grids {
         if let Some((table, consumed)) = super::lattice::build_table(grid, &spans) {
-            lattice_tables.push((grid.top_y, table));
+            let extent = Extent {
+                top: grid.top_y,
+                left: grid.left_x,
+                right: grid.right_x,
+            };
+            lattice_tables.push((extent, table));
             lattice_consumed.extend(consumed);
         }
     }
@@ -661,34 +781,51 @@ fn extract_page_with_tables_fn(
             page_num
         );
 
-        let mut elements: Vec<(f32, Block)> = Vec::new();
+        // Tables (and the rows of tables too uncertain to keep, as paragraphs) — each one
+        // unit, placed into the text's reading order below.
+        let mut tables: Vec<(Extent, Vec<Element>)> = Vec::new();
 
-        for (top_y, table) in lattice_tables {
-            elements.push((top_y, Block::Table(table)));
+        for (extent, table) in lattice_tables {
+            tables.push((extent, vec![Element::table(extent.top, table)]));
         }
 
         const TABLE_CONFIDENCE_THRESHOLD: f32 = 0.4;
         for detected in &detected_tables {
+            let extent = Extent {
+                top: detected.top_y,
+                left: detected.left_x,
+                right: detected.right_x,
+            };
             if detected.confidence < TABLE_CONFIDENCE_THRESHOLD {
                 log::debug!(
                     "Table at y={} has low confidence ({:.2}), converting to paragraphs",
                     detected.top_y,
                     detected.confidence
                 );
-                for row in &detected.rows {
-                    let text = low_confidence_row_text(row);
-                    if !text.trim().is_empty() {
-                        elements.push((row.y, Block::Paragraph(Paragraph::with_text(text))));
-                    }
+                let rows: Vec<Element> = detected
+                    .rows
+                    .iter()
+                    .map(|row| (row.y, low_confidence_row_text(row)))
+                    .filter(|(_, text)| !text.trim().is_empty())
+                    .map(|(y, text)| Element {
+                        y,
+                        single_line: true,
+                        block: Block::Paragraph(Paragraph::with_text(text)),
+                    })
+                    .collect();
+                if !rows.is_empty() {
+                    tables.push((extent, rows));
                 }
             } else {
                 let table = table_detector.to_table_model(detected);
                 if !table.is_empty() {
-                    elements.push((detected.top_y, Block::Table(table)));
+                    tables.push((extent, vec![Element::table(extent.top, table)]));
                 }
             }
         }
 
+        // The text around the tables, in the reading order XY-Cut gave it.
+        let mut text: Vec<(Extent, Element)> = Vec::new();
         if !remaining_spans.is_empty() {
             let a = &mut *analyzer;
             for span in &remaining_spans {
@@ -702,12 +839,13 @@ fn extract_page_with_tables_fn(
 
             for block in text_blocks {
                 if !block.is_empty() {
-                    let text = block.text();
-                    let y_pos = block.lines.first().map(|l| l.y).unwrap_or(0.0);
+                    let extent = Extent::of_block(&block);
+                    let baseline = block.lines.first().map(|l| l.y).unwrap_or(0.0);
+                    let text_of_block = block.text();
                     let para_block = match block.block_type {
                         super::layout::BlockType::Heading => {
                             let level = block.heading_level.clamp(1, 6);
-                            Block::Paragraph(Paragraph::heading(text, level))
+                            Block::Paragraph(Paragraph::heading(text_of_block, level))
                         }
                         super::layout::BlockType::Paragraph | super::layout::BlockType::Unknown => {
                             Block::Paragraph(styled_paragraph(&block))
@@ -716,14 +854,21 @@ fn extract_page_with_tables_fn(
                             Block::Paragraph(list_item_paragraph(&block))
                         }
                     };
-                    elements.push((y_pos, para_block));
+                    text.push((
+                        extent,
+                        Element {
+                            y: baseline,
+                            single_line: block.lines.len() == 1,
+                            block: para_block,
+                        },
+                    ));
                 }
             }
         }
 
-        elements.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        let elements = place_tables_in_reading_order(text, tables);
         let merged = merge_same_row_paragraphs(elements);
-        blocks = merged.into_iter().map(|(_, block)| block).collect();
+        blocks = merged.into_iter().map(|e| e.block).collect();
     } else {
         let text_blocks = analyzer.extract_page_blocks(page_num)?;
         for block in text_blocks {

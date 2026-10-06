@@ -256,6 +256,14 @@ impl TableDetector {
                 // the next row, which a table cell does not do.
                 let cells = Self::column_texts(&table_rows, &table_columns);
 
+                // A table puts values side by side: its rows hold two cells or more.
+                // Lines that each fill one column — the staggered lines of two text
+                // columns, whose heights never pair up — make a region of one-cell rows.
+                if Self::rows_with_several_cells(&cells) < self.config.min_rows {
+                    log::debug!("TableDetector: skipping region — no row holds two cells");
+                    continue;
+                }
+
                 // A region found only as a run of multi-span rows has no page-wide
                 // alignment behind it, so it must look like a grid on its own.
                 if local_regions.contains(&(start_row, end_row)) && !Self::reads_as_grid(&cells) {
@@ -733,6 +741,14 @@ impl TableDetector {
             any_sparse
         );
         any_sparse
+    }
+
+    /// How many rows hold text in two cells or more.
+    fn rows_with_several_cells(cells: &[Vec<String>]) -> usize {
+        cells
+            .iter()
+            .filter(|row| row.iter().filter(|c| !c.trim().is_empty()).count() >= 2)
+            .count()
     }
 
     /// The text of each row, split into the region's columns (same assignment rule as

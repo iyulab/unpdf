@@ -24,6 +24,15 @@
 
 ### Fixed
 
+- On a page that holds a table, the text keeps its reading order: columns are read one after
+  the other, and the table is read where it stands — after the text above it in its column,
+  before the text below. Every block on such a page used to be sorted by height, which
+  interleaved the columns block by block, and two paragraphs that started at the same height
+  in different columns were joined into one. Joining blocks on the same row now applies only
+  to single lines (the cells of a row), never to paragraphs.
+- Two columns of text whose lines sit at different heights are no longer read as a table:
+  each row of such a "table" held a single cell. A detected table needs rows with two cells
+  or more.
 - A page whose `/MediaBox` does not start at the origin had the wrong size — the box's
   upper-right corner was taken for its width and height — and its page-number margins were
   measured from the wrong edge.
