@@ -35,6 +35,10 @@ pub struct TableRowData {
     pub y: f32,
     /// Spans in this row, sorted by X
     pub spans: Vec<TextSpan>,
+    /// Indices, into the spans the rows were grouped from, of every span this row
+    /// holds — including marks folded into a span's text — so a table consumes
+    /// exactly what it took, whatever became of the text.
+    pub sources: Vec<usize>,
 }
 
 /// Table detector configuration.
@@ -287,19 +291,11 @@ impl TableDetector {
                     confidence
                 );
 
-                // Mark spans as used
+                // Mark spans as used — by the index each row carries, not by
+                // matching text: a span whose marks were folded into it no longer
+                // reads as it did on the page.
                 for row in &table_rows {
-                    for span in &row.spans {
-                        // Find index in original spans
-                        for (i, orig_span) in spans.iter().enumerate() {
-                            if (orig_span.x - span.x).abs() < 0.1
-                                && (orig_span.y - span.y).abs() < 0.1
-                                && orig_span.text == span.text
-                            {
-                                used_span_indices.insert(i);
-                            }
-                        }
-                    }
+                    used_span_indices.extend(row.sources.iter().copied());
                 }
 
                 detected_tables.push(DetectedTable {
@@ -327,58 +323,7 @@ impl TableDetector {
 
     /// Group spans into rows by Y position.
     fn group_into_rows(&self, spans: &[TextSpan]) -> Vec<TableRowData> {
-        if spans.is_empty() {
-            return vec![];
-        }
-
-        // Sort by Y (descending for PDF coords) then X
-        let mut sorted_spans = spans.to_vec();
-        sorted_spans.sort_by(|a, b| {
-            let y_cmp = b.y.partial_cmp(&a.y).unwrap_or(std::cmp::Ordering::Equal);
-            if y_cmp == std::cmp::Ordering::Equal {
-                a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal)
-            } else {
-                y_cmp
-            }
-        });
-
-        let mut rows: Vec<TableRowData> = Vec::new();
-        let mut current_row_spans: Vec<TextSpan> = Vec::new();
-        let mut current_y: Option<f32> = None;
-
-        for span in sorted_spans {
-            let y_tolerance = span.font_size * self.config.y_tolerance_factor;
-
-            match current_y {
-                Some(y) if (span.y - y).abs() <= y_tolerance => {
-                    current_row_spans.push(span);
-                }
-                _ => {
-                    if !current_row_spans.is_empty() {
-                        let avg_y = current_row_spans.iter().map(|s| s.y).sum::<f32>()
-                            / current_row_spans.len() as f32;
-                        rows.push(TableRowData {
-                            y: avg_y,
-                            spans: std::mem::take(&mut current_row_spans),
-                        });
-                    }
-                    current_y = Some(span.y);
-                    current_row_spans.push(span);
-                }
-            }
-        }
-
-        // Don't forget the last row
-        if !current_row_spans.is_empty() {
-            let avg_y =
-                current_row_spans.iter().map(|s| s.y).sum::<f32>() / current_row_spans.len() as f32;
-            rows.push(TableRowData {
-                y: avg_y,
-                spans: current_row_spans,
-            });
-        }
-
-        rows
+        group_into_rows(spans, self.config.y_tolerance_factor)
     }
 
     /// Detect column boundaries from text edges.
@@ -1155,6 +1100,156 @@ fn is_number_marker(text: &str) -> bool {
     false
 }
 
+/// Group spans into rows by baseline, top row first and left to right within a
+/// row, with superscripts and subscripts kept in the row they mark
+/// ([`attach_script_rows`]). Shared by stream-mode detection and by the cells of a
+/// ruled table, so both read a row the same way.
+pub(crate) fn group_into_rows(spans: &[TextSpan], y_tolerance_factor: f32) -> Vec<TableRowData> {
+    if spans.is_empty() {
+        return vec![];
+    }
+
+    // Sort by Y (descending for PDF coords) then X
+    let mut order: Vec<usize> = (0..spans.len()).collect();
+    order.sort_by(|&a, &b| {
+        let (a, b) = (&spans[a], &spans[b]);
+        let y_cmp = b.y.partial_cmp(&a.y).unwrap_or(std::cmp::Ordering::Equal);
+        if y_cmp == std::cmp::Ordering::Equal {
+            a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal)
+        } else {
+            y_cmp
+        }
+    });
+
+    fn finish(indices: Vec<usize>, spans: &[TextSpan]) -> TableRowData {
+        let row_spans: Vec<TextSpan> = indices.iter().map(|&i| spans[i].clone()).collect();
+        let avg_y = row_spans.iter().map(|s| s.y).sum::<f32>() / row_spans.len() as f32;
+        TableRowData {
+            y: avg_y,
+            spans: row_spans,
+            sources: indices,
+        }
+    }
+
+    let mut rows: Vec<TableRowData> = Vec::new();
+    let mut current: Vec<usize> = Vec::new();
+    let mut current_y: Option<f32> = None;
+
+    for i in order {
+        let span = &spans[i];
+        let y_tolerance = span.font_size * y_tolerance_factor;
+
+        match current_y {
+            Some(y) if (span.y - y).abs() <= y_tolerance => current.push(i),
+            _ => {
+                if !current.is_empty() {
+                    rows.push(finish(std::mem::take(&mut current), spans));
+                }
+                current_y = Some(span.y);
+                current.push(i);
+            }
+        }
+    }
+
+    // Don't forget the last row
+    if !current.is_empty() {
+        rows.push(finish(current, spans));
+    }
+
+    attach_script_rows(rows)
+}
+
+/// Fold a row of superscripts or subscripts into the row of text they mark.
+///
+/// A superscript (`0.31*`, a footnote mark) sits on a baseline raised by about a
+/// third of the text size and is set smaller, so row grouping — which compares
+/// baselines against a fraction of the font size — gives it a row of its own
+/// directly above its line. Its cell then reads the mark first (`* 0.31`), or the
+/// table gains a row of nothing but marks.
+///
+/// A row is a script row of the row next to it only when it looks like marks on
+/// that text and nothing else: every span is short (a mark, a footnote number),
+/// clearly smaller, on a baseline within the text's line height, and set right
+/// against the end of a span of that row. Smaller text in a neighbouring column
+/// on a slightly different baseline shares the first three and fails the last —
+/// folding it in turns running text into rows of a table.
+fn attach_script_rows(rows: Vec<TableRowData>) -> Vec<TableRowData> {
+    const MAX_MARK_CHARS: usize = 4;
+
+    fn largest(row: &TableRowData) -> f32 {
+        row.spans.iter().map(|s| s.font_size).fold(0.0, f32::max)
+    }
+    fn is_script_of(script: &TableRowData, text: &TableRowData) -> bool {
+        let size = largest(text);
+        let ratio = largest(script) / size;
+        // Scripts are set at roughly 55-75% of the text size. Text at a fifth of the
+        // size of the row next to it is ordinary text beside a display line or a
+        // watermark, not a mark on it.
+        if !(0.45..=0.8).contains(&ratio) || (script.y - text.y).abs() > size * 0.6 {
+            return false;
+        }
+        // Set against a span of the text row, or against another mark that is (`1•2`).
+        let against = |mark: &TextSpan, other: &TextSpan| {
+            let end = other.x + other.width;
+            mark.x >= end - size * 0.3 && mark.x <= end + size * 0.5
+        };
+        let anchored = script
+            .spans
+            .iter()
+            .any(|mark| text.spans.iter().any(|base| against(mark, base)));
+        anchored
+            && script.spans.iter().all(|mark| {
+                mark.text.trim().chars().count() <= MAX_MARK_CHARS
+                    && (text.spans.iter().any(|base| against(mark, base))
+                        || script
+                            .spans
+                            .iter()
+                            .any(|other| !std::ptr::eq(other, mark) && against(mark, other)))
+            })
+    }
+
+    let mut out: Vec<TableRowData> = Vec::with_capacity(rows.len());
+    let mut pending: Option<TableRowData> = None;
+    for row in rows {
+        // Rows run top to bottom: a superscript row arrives before its text row.
+        if let Some(script) = pending.take() {
+            if script.y > row.y && is_script_of(&script, &row) {
+                let mut row = row;
+                fold_marks(&mut row, script);
+                pending = Some(row);
+                continue;
+            }
+            out.push(script);
+        }
+        match out.last_mut() {
+            Some(text) if row.y < text.y && is_script_of(&row, text) => fold_marks(text, row),
+            _ => pending = Some(row),
+        }
+    }
+    out.extend(pending);
+    out
+}
+
+/// Append each mark of `script` to the span of `text` it is set against, so the
+/// mark reads after its value (`0.31*`) and the row keeps its spans — a mark is
+/// part of the token it marks, not a column of its own.
+fn fold_marks(text: &mut TableRowData, script: TableRowData) {
+    text.sources.extend(script.sources);
+    let mut marks = script.spans;
+    marks.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
+    for mark in marks {
+        let base = text.spans.iter_mut().min_by(|a, b| {
+            let da = (mark.x - (a.x + a.width)).abs();
+            let db = (mark.x - (b.x + b.width)).abs();
+            da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        if let Some(base) = base {
+            base.text.push_str(mark.text.trim());
+            base.width = (mark.x + mark.width).max(base.x + base.width) - base.x;
+        }
+    }
+}
+
 /// Check if a text string looks like a list marker (number, bullet, etc.).
 #[cfg(test)]
 fn is_list_marker(text: &str) -> bool {
@@ -1200,6 +1295,91 @@ mod tests {
         assert_eq!(rows[1].spans.len(), 2);
     }
 
+    fn sized(text: &str, x: f32, y: f32, size: f32) -> TextSpan {
+        TextSpan {
+            font_size: size,
+            ..make_span(text, x, y)
+        }
+    }
+
+    /// `0.31*` with the star set as a superscript: one row, the star after the value.
+    #[test]
+    fn test_group_into_rows_keeps_superscripts_with_their_row() {
+        let detector = TableDetector::new();
+        let spans = vec![
+            sized("IM", 10.0, 400.0, 8.0),
+            sized("0.31", 60.0, 400.0, 8.0),
+            sized("*", 84.0, 404.0, 5.0),
+            sized("0.77", 120.0, 400.0, 8.0),
+            sized("**", 144.0, 404.0, 5.0),
+            sized("IBE", 10.0, 390.0, 8.0),
+            sized("0.30", 60.0, 390.0, 8.0),
+            sized("2", 84.0, 387.0, 5.0),
+        ];
+
+        let rows = detector.group_into_rows(&spans);
+        let texts: Vec<Vec<&str>> = rows
+            .iter()
+            .map(|r| r.spans.iter().map(|s| s.text.as_str()).collect())
+            .collect();
+        assert_eq!(
+            texts,
+            vec![vec!["IM", "0.31*", "0.77**"], vec!["IBE", "0.302"],]
+        );
+    }
+
+    /// Smaller text in the next column, on a baseline a little above, is running
+    /// text of its own — not marks on this row.
+    #[test]
+    fn test_group_into_rows_keeps_a_neighbouring_columns_line_apart() {
+        let detector = TableDetector::new();
+        let spans = vec![
+            sized("True-crime series looks at", 10.0, 400.0, 9.0),
+            sized("grimly chasing", 200.0, 404.5, 7.0),
+        ];
+        assert_eq!(detector.group_into_rows(&spans).len(), 2);
+    }
+
+    /// Body-size cells beside a large watermark glyph are not marks on the watermark.
+    #[test]
+    fn test_group_into_rows_does_not_fold_text_into_a_watermark() {
+        let detector = TableDetector::new();
+        let spans = vec![
+            sized("A", 100.0, 440.0, 40.0),
+            sized("PPO", 124.0, 430.0, 8.0),
+            sized("31.1", 160.0, 430.0, 8.0),
+        ];
+        assert_eq!(detector.group_into_rows(&spans).len(), 2);
+    }
+
+    /// Marks set one after another (`1•2`) fold into the token before them and leave
+    /// the row's span count alone — a caption with footnote marks is still one cell.
+    #[test]
+    fn test_group_into_rows_folds_chained_marks_into_their_token() {
+        let detector = TableDetector::new();
+        let spans = vec![
+            sized("season.", 10.0, 400.0, 7.6),
+            sized("1", 52.0, 404.5, 5.2),
+            sized("2", 58.0, 404.5, 5.2),
+        ];
+        let rows = detector.group_into_rows(&spans);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].spans.len(), 1);
+        assert_eq!(rows[0].spans[0].text, "season.12");
+    }
+
+    /// A row of smaller text a full line below is its own row, not a subscript.
+    #[test]
+    fn test_group_into_rows_keeps_a_smaller_row_at_line_spacing() {
+        let detector = TableDetector::new();
+        let spans = vec![
+            sized("A", 10.0, 400.0, 10.0),
+            sized("B", 60.0, 400.0, 10.0),
+            sized("note", 10.0, 388.0, 7.0),
+        ];
+        assert_eq!(detector.group_into_rows(&spans).len(), 2);
+    }
+
     #[test]
     fn test_detect_columns() {
         let detector = TableDetector::new();
@@ -1207,14 +1387,17 @@ mod tests {
             TableRowData {
                 y: 100.0,
                 spans: vec![make_span("A1", 10.0, 100.0), make_span("B1", 60.0, 100.0)],
+                sources: Vec::new(),
             },
             TableRowData {
                 y: 85.0,
                 spans: vec![make_span("A2", 10.0, 85.0), make_span("B2", 60.0, 85.0)],
+                sources: Vec::new(),
             },
             TableRowData {
                 y: 70.0,
                 spans: vec![make_span("A3", 10.0, 70.0), make_span("B3", 60.0, 70.0)],
+                sources: Vec::new(),
             },
         ];
 
@@ -1244,6 +1427,33 @@ mod tests {
         let table = &tables[0];
         assert_eq!(table.rows.len(), 3);
         assert_eq!(table.columns.len(), 2);
+    }
+
+    /// A mark folded into its value's text is consumed with the table: matching
+    /// consumed spans by their text left both the changed span and the mark behind,
+    /// and they reappeared as body text after the table.
+    #[test]
+    fn test_detect_consumes_folded_marks_with_the_table() {
+        let detector = TableDetector::new();
+        let spans = vec![
+            sized("Name", 10.0, 100.0, 12.0),
+            sized("Value", 60.0, 100.0, 12.0),
+            sized("Alice", 10.0, 85.0, 12.0),
+            sized("30", 60.0, 85.0, 12.0),
+            sized("*", 72.0, 90.0, 7.0),
+            sized("Bob", 10.0, 70.0, 12.0),
+            sized("25", 60.0, 70.0, 12.0),
+        ];
+
+        let (tables, remaining) = detector.detect(spans);
+        assert_eq!(tables.len(), 1);
+        assert!(remaining.is_empty(), "left behind: {remaining:?}");
+        let texts: Vec<&str> = tables[0].rows[1]
+            .spans
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect();
+        assert_eq!(texts, vec!["Alice", "30*"]);
     }
 
     #[test]
@@ -1276,10 +1486,12 @@ mod tests {
                         make_span("Name", 10.0, 100.0),
                         make_span("Age", 60.0, 100.0),
                     ],
+                    sources: Vec::new(),
                 },
                 TableRowData {
                     y: 85.0,
                     spans: vec![make_span("Alice", 10.0, 85.0), make_span("30", 60.0, 85.0)],
+                    sources: Vec::new(),
                 },
             ],
             confidence: 1.0,

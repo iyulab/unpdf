@@ -11,7 +11,8 @@
 //! strong structural evidence (explicit borders), so it bypasses stream
 //! mode's alignment/occupancy heuristics entirely.
 
-use super::layout::TextSpan;
+use super::layout::{TextLine, TextSpan};
+use super::table_detector::group_into_rows;
 use super::vector_graphics::GraphicsLine;
 use crate::model::{Table, TableCell, TableRow};
 
@@ -187,6 +188,10 @@ const MIN_OCCUPANCY: f32 = 0.1;
 /// detection or the plain text pipeline, so a span isn't extracted twice.
 /// Returns `None` when too few cells actually hold text (see [`MIN_OCCUPANCY`])
 /// — most likely a decorative box or diagram frame, not a real table.
+/// Baseline tolerance, as a fraction of the font size, for lines inside one cell —
+/// the stream-mode detector's default.
+const CELL_LINE_TOLERANCE: f32 = 0.4;
+
 pub(crate) fn build_table(grid: &LatticeGrid, spans: &[TextSpan]) -> Option<(Table, Vec<usize>)> {
     let rows = grid.row_count();
     let cols = grid.column_count();
@@ -210,7 +215,7 @@ pub(crate) fn build_table(grid: &LatticeGrid, spans: &[TextSpan]) -> Option<(Tab
             })
     });
 
-    let mut cell_text: Vec<Vec<Vec<String>>> = vec![vec![Vec::new(); cols]; rows];
+    let mut cell_spans: Vec<Vec<Vec<TextSpan>>> = vec![vec![Vec::new(); cols]; rows];
     let mut consumed = Vec::new();
 
     for i in order {
@@ -221,12 +226,28 @@ pub(crate) fn build_table(grid: &LatticeGrid, spans: &[TextSpan]) -> Option<(Tab
         ) else {
             continue;
         };
-        let text = span.text.trim();
-        if !text.is_empty() {
-            cell_text[r][c].push(text.to_string());
+        if !span.text.trim().is_empty() {
+            cell_spans[r][c].push(span.clone());
         }
         consumed.push(i);
     }
+
+    // A cell reads line by line, a superscript with the line it marks (`0.31*`,
+    // not `* 0.31`) — the same rows stream-mode detection builds.
+    let cell_text: Vec<Vec<Vec<String>>> = cell_spans
+        .into_iter()
+        .map(|row| {
+            row.into_iter()
+                .map(|cell| {
+                    group_into_rows(&cell, CELL_LINE_TOLERANCE)
+                        .into_iter()
+                        .map(|line| TextLine::from_spans(line.spans).text().trim().to_string())
+                        .filter(|text| !text.is_empty())
+                        .collect()
+                })
+                .collect()
+        })
+        .collect();
 
     let non_empty = cell_text.iter().flatten().filter(|c| !c.is_empty()).count();
     let occupancy = non_empty as f32 / (rows * cols) as f32;
@@ -631,11 +652,31 @@ mod tests {
     #[test]
     fn build_table_multi_fragment_cell_joins_left_to_right() {
         let grid = two_by_two_grid();
-        // Two spans in the same cell (e.g. a wrapped or kerned run split by
-        // the font decoder) should join in x order, not arrive concatenated.
-        let spans = vec![span("Hello", 60.0, 290.0), span("World", 90.0, 290.0)];
+        // Two spans in the same cell join in x order, with a space where the page
+        // leaves a word gap and none where the runs touch (a kerned run split by
+        // the font decoder) — the same joining as a line of body text.
+        let spans = vec![span("Hello", 60.0, 290.0), span("World", 94.0, 290.0)];
         let (table, _) = build_table(&grid, &spans).expect("should build a table");
         assert_eq!(table.rows[0].cells[0].plain_text(), "Hello World");
+
+        let spans = vec![span("Hel", 60.0, 290.0), span("lo", 78.0, 290.0)];
+        let (table, _) = build_table(&grid, &spans).expect("should build a table");
+        assert_eq!(table.rows[0].cells[0].plain_text(), "Hello");
+    }
+
+    /// A superscript sits on a higher baseline than the value it marks; read by
+    /// baseline alone it came first (`* 0.31`).
+    #[test]
+    fn build_table_reads_a_superscript_after_its_value() {
+        let grid = two_by_two_grid();
+        let star = TextSpan {
+            font_size: 7.0,
+            width: 4.0,
+            ..span("*", 84.0, 294.0)
+        };
+        let spans = vec![span("0.31", 60.0, 290.0), star, span("Next", 160.0, 290.0)];
+        let (table, _) = build_table(&grid, &spans).expect("should build a table");
+        assert_eq!(table.rows[0].cells[0].plain_text(), "0.31*");
     }
 
     #[test]

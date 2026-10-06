@@ -850,6 +850,7 @@ mod tests {
                 span_at("....................", 160.0, 120.0),
                 span_at("6", 290.0, 6.0),
             ],
+            sources: Vec::new(),
         };
 
         assert_eq!(low_confidence_row_text(&row), "Chapter 1  (p.6)");
@@ -860,6 +861,7 @@ mod tests {
         let row = TableRowData {
             y: 500.0,
             spans: vec![span_at("Name", 100.0, 30.0), span_at("Value", 200.0, 30.0)],
+            sources: Vec::new(),
         };
 
         assert_eq!(low_confidence_row_text(&row), "Name  Value");

@@ -23,13 +23,22 @@
 - A numbered section title set in bold at body size (`5. The dynamics`, `3.1. Status`) is a
   heading, its level taken from the number's depth.
 
+- A number on a line of its own that ends the line before — the second half of a page range
+  (`432: 298-` / `306.`) — is kept as text. It was read as an empty numbered list item and
+  dropped. A range broken at its hyphen is rejoined (`298-306`).
+- The standard cleanup preset no longer removes line breaks after a number, a Korean
+  syllable followed by `.` or `)`, or a hyphen at the end of a line, as though each were a
+  list marker standing alone: consecutive references ran together (`866-75.23. Koorstra`)
+  and Korean sentences lost the space between them (`…합니다.다음`). Only a marker that is the
+  whole line is joined to the line below.
+- A superscript or subscript in a table cell is read with the value it marks, after it
+  (`0.31*`, not `* 0.31`), in ruled and unruled tables alike.
 - **Python:** a document with no extractable text converts to an empty string instead of
   raising `UnpdfError` with kind 0 ("Unknown error") — an image-only page, for instance.
   The string results were declared as `c_char_p`, so an empty result looked like the null
   that signals failure, and no returned string was ever given back to `unpdf_free_string`:
   every conversion leaked its output. Strings are now copied and then freed, as the .NET
   binding already did.
-
 - **.NET:** the binding works in apps that disable reflection-based `System.Text.Json`
   serialization — trimmed and Native AOT apps, and file-based apps (`dotnet run app.cs`).
   `ParseFile`/`ParseBytes` with `ParseOptions`, `GetExtractionQuality`, `GetPageStats` and
