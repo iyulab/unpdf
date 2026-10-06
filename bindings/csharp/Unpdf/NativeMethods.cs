@@ -202,6 +202,18 @@ internal static class NativeMethods
         out UIntPtr outLen);
 
     /// <summary>
+    /// Render a page to a PNG. <paramref name="outInfo"/> receives a JSON report (free with
+    /// <see cref="unpdf_free_string"/>); the PNG is freed with <see cref="unpdf_free_bytes"/>.
+    /// </summary>
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+    public static extern IntPtr unpdf_render_page(
+        IntPtr doc,
+        int pageNum,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string? optionsJson,
+        out UIntPtr outLen,
+        out IntPtr outInfo);
+
+    /// <summary>
     /// Free binary data allocated by the library.
     /// </summary>
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]

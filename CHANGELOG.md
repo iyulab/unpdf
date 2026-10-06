@@ -20,6 +20,13 @@
   fonts that are not embedded or are Type 1 or Type 3, images in other codecs, inline images,
   shadings, undecodable content streams), and the rest of the page is still painted. Off by
   default; pure Rust (`tiny-skia`, `ttf-parser`, `zune-jpeg`).
+- **Rendering through the C ABI and the bindings.** `unpdf_render_page(doc, page, options_json,
+  &len, &info)` returns the page as a PNG and a JSON report (size and gaps). The document
+  handle now keeps the parser that read the document, so pages render without reading the file
+  again; the `ffi` feature includes `raster`. .NET: `UnpdfDocument.RenderPage(page, options)`
+  → `RenderedPage { Png, Width, Height, Gaps }`. Python: `unpdf.Document(source)` keeps a
+  document open for `render_page` and `get_page_stats`; `unpdf.render_page(...)` renders in
+  one call.
 
 ## 0.27.0 — 2026-10-06
 

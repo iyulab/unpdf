@@ -23,7 +23,7 @@ crate-type = ["lib", "cdylib"]
 
 [features]
 default = ["fast-parse", "refine", "ai"]
-ffi = []
+ffi = ["raster"]  # the C ABI includes page rasterization (`unpdf_render_page`)
 async = ["tokio"]
 fast-parse = []  # Enable nom_parser for faster PDF parsing
 # Shape-refinement pass (RenderOptions.refine). Enables unparser-shared's

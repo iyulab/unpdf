@@ -701,3 +701,45 @@ class TestNativeStringResults:
         unpdf.get_resource_ids(pdf)
         assert len(freed) == 6
         assert all(freed)
+
+
+class TestRenderPage:
+    """Rendering a page to a PNG, through a document kept open."""
+
+    def test_render_page_is_a_png_of_the_page(self):
+        with unpdf.Document(_image_only_pdf()) as doc:
+            page = doc.render_page(1, dpi=72)
+        assert page.png[:8] == b"\x89PNG\r\n\x1a\n"
+        # An A4 page: 595 x 842 points, one pixel each at 72 dpi.
+        assert (page.width, page.height) == (595, 842)
+        assert int.from_bytes(page.png[16:20], "big") == 595
+        assert all(v == 0 for v in page.gaps.values())
+
+    def test_one_open_document_serves_stats_and_renders(self):
+        with unpdf.Document(_image_only_pdf()) as doc:
+            assert doc.get_page_stats(1)["image_coverage"] == pytest.approx(1.0, abs=1e-3)
+            first = doc.render_page(1, dpi=36)
+            second = doc.render_page(1, dpi=36, region="media")
+        assert first.png == second.png  # no crop box: the crop box is the media box
+
+    def test_text_in_a_font_that_is_not_embedded_is_a_gap(self, tmp_path):
+        pdf_file = tmp_path / "text.pdf"
+        pdf_file.write_bytes(_text_pdf())
+        page = unpdf.render_page(str(pdf_file), 1)
+        assert page.width == 1240  # 150 dpi by default
+        assert page.gaps["text_runs"] >= 1
+
+    def test_errors_carry_their_kind(self):
+        with unpdf.Document(_image_only_pdf()) as doc:
+            with pytest.raises(unpdf.UnpdfError) as err:
+                doc.render_page(2)
+            assert err.value.kind == unpdf.ErrorKind.PAGE_OUT_OF_RANGE
+            with pytest.raises(unpdf.UnpdfError) as err:
+                doc.render_page(1, region="bleed")
+            assert err.value.kind == unpdf.ErrorKind.INVALID_ARGUMENT
+
+    def test_a_closed_document_refuses_further_calls(self):
+        doc = unpdf.Document(_image_only_pdf())
+        doc.close()
+        with pytest.raises(ValueError):
+            doc.render_page(1)

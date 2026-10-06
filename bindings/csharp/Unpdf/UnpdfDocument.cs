@@ -586,6 +586,61 @@ public class UnpdfDocument : IDisposable
     }
 
     /// <summary>
+    /// Render a page to a PNG — painted from the content this document was parsed from, so it
+    /// is the same page text extraction reads, without reading the file again.
+    /// </summary>
+    /// <remarks>
+    /// Anything the renderer cannot paint yet (text in fonts that are not embedded or are
+    /// Type 1/Type 3, some image codecs, inline images, shadings) is left out and counted in
+    /// <see cref="RenderedPage.Gaps"/>; the rest of the page is painted.
+    /// </remarks>
+    /// <param name="pageNumber">Page number (1-indexed).</param>
+    /// <param name="options">Resolution and region; <c>null</c> for 150 dpi of the crop box.</param>
+    /// <exception cref="UnpdfException">
+    /// <see cref="UnpdfErrorKind.PageOutOfRange"/> for a page the document does not have;
+    /// <see cref="UnpdfErrorKind.InvalidArgument"/> for options it cannot use.
+    /// </exception>
+    public RenderedPage RenderPage(int pageNumber, RenderPageOptions? options = null)
+    {
+        ThrowIfDisposed();
+        options ??= new RenderPageOptions();
+        var json = JsonSerializer.Serialize(
+            new RenderOptionsPayload
+            {
+                Dpi = options.Dpi,
+                Region = options.Region == PageRegion.Media ? "media" : "crop",
+            },
+            UnpdfJsonContext.Default.RenderOptionsPayload);
+        var ptr = NativeMethods.unpdf_render_page(_handle, pageNumber, json, out var length, out var info);
+        if (ptr == IntPtr.Zero)
+            throw Failure($"Failed to render page {pageNumber}");
+
+        try
+        {
+            var png = new byte[(int)length];
+            Marshal.Copy(ptr, png, 0, png.Length);
+            var report = info == IntPtr.Zero
+                ? null
+                : JsonSerializer.Deserialize(PtrToStringUtf8(info), UnpdfJsonContext.Default.RenderInfoPayload);
+            if (report is null)
+                throw new UnpdfException("Failed to read the render report");
+            return new RenderedPage
+            {
+                Png = png,
+                Width = report.Width,
+                Height = report.Height,
+                Gaps = report.Gaps,
+            };
+        }
+        finally
+        {
+            NativeMethods.unpdf_free_bytes(ptr, length);
+            if (info != IntPtr.Zero)
+                NativeMethods.unpdf_free_string(info);
+        }
+    }
+
+    /// <summary>
     /// Get binary data for a resource.
     /// </summary>
     /// <param name="resourceId">The resource ID</param>

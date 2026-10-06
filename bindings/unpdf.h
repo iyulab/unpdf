@@ -9,8 +9,8 @@
  * Memory rules:
  *  - Every char* returned by a function documented as "must be freed" is
  *    owned by the caller and released with unpdf_free_string().
- *  - Byte buffers from unpdf_get_resource_data() are released with
- *    unpdf_free_bytes().
+ *  - Byte buffers from unpdf_get_resource_data() and unpdf_render_page() are
+ *    released with unpdf_free_bytes().
  *  - Document handles are released with unpdf_free_document().
  *  - unpdf_version() / unpdf_last_error() return borrowed pointers —
  *    do not free them.
@@ -254,6 +254,29 @@ char* unpdf_get_resource_info(const UnpdfDocument* doc, const char* resource_id)
 uint8_t* unpdf_get_resource_data(const UnpdfDocument* doc,
                                  const char* resource_id,
                                  size_t* out_len);
+
+/**
+ * Render a page to a PNG, painted from the content the document was parsed
+ * from (the handle keeps the parser — no second read of the file).
+ *
+ * Anything the renderer cannot paint yet (text in fonts that are not embedded
+ * or are Type 1/Type 3, some image codecs, inline images, shadings) is left
+ * out and counted in out_info; the rest of the page is painted.
+ *
+ * @param page_number 1-indexed page number.
+ * @param options_json NULL, or {"dpi": 150, "region": "crop" | "media"}.
+ * @param out_len Receives the PNG length in bytes.
+ * @param out_info NULL, or receives {"width":N,"height":N,"gaps":{"text_runs":N,
+ *        "images":N,"inline_images":N,"shadings":N,"undecodable_content_streams":N}}
+ *        (must be freed with unpdf_free_string).
+ * @return PNG bytes (must be freed with unpdf_free_bytes), or NULL on error
+ *         (PageOutOfRange, Render, InvalidArgument).
+ */
+uint8_t* unpdf_render_page(const UnpdfDocument* doc,
+                           int page_number,
+                           const char* options_json,
+                           size_t* out_len,
+                           char** out_info);
 
 /**
  * Convert a single page to Markdown.

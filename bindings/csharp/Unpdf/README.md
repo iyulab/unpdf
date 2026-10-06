@@ -136,6 +136,25 @@ foreach (var id in doc.GetResourceIds())
 Use `GetPageStats` instead of `ResourceCount` to detect image-only pages without
 paying the extraction cost.
 
+### Rendering a page
+
+`RenderPage` paints a page of the parsed document to a PNG — the same page text extraction
+reads, without reading the file again. Pick the pages to re-read from their statistics:
+
+```csharp
+using var doc = UnpdfDocument.ParseFile("report.pdf");
+for (var n = 1; n <= doc.SectionCount; n++)
+{
+    if (doc.GetPageStats(n).ImageCoverage > 0.9)
+    {
+        var page = doc.RenderPage(n, new RenderPageOptions { Dpi = 150 });
+        File.WriteAllBytes($"page{n}.png", page.Png);
+        // page.Gaps counts what could not be painted (text in fonts that are not embedded
+        // or are Type 1/Type 3, some image codecs, inline images, shadings).
+    }
+}
+```
+
 ## API Reference
 
 ### `UnpdfDocument`

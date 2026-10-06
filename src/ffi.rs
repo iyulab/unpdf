@@ -14,7 +14,7 @@
 //! to retrieve the error message and `unpdf_last_error_kind` to classify it without
 //! parsing that message.
 
-use std::ffi::{c_char, c_int};
+use std::ffi::{c_char, c_int, CString};
 use std::ptr;
 
 use unparser_shared::ffi::{self, invalid_argument, FfiError, LastErrorSlot};
@@ -56,9 +56,51 @@ fn json_err(e: serde_json::Error) -> FfiError {
     (ErrorKind::Render as c_int, e.to_string())
 }
 
+/// A parsed document, and the parser that read it — kept so a page can be painted
+/// ([`unpdf_render_page`]) without reading the file again. Reads as the [`Document`].
+pub struct HeldDocument {
+    document: Document,
+    parser: Option<crate::PdfParser>,
+}
+
+impl HeldDocument {
+    fn parsed(parser: crate::PdfParser) -> crate::Result<Self> {
+        let document = parser.parse()?;
+        Ok(Self {
+            document,
+            parser: Some(parser),
+        })
+    }
+}
+
+// Every entry point runs inside `catch_unwind`, which asks whether a handle observed after
+// a caught panic could be in a broken state. The document is read-only. The parser's caches
+// sit behind `RwLock`s: a panic while one is held poisons it, and every later use of that
+// cache then fails — through the same `catch_unwind` — instead of reading a half-written
+// entry. A caller sees errors, never wrong output.
+impl std::panic::RefUnwindSafe for HeldDocument {}
+impl std::panic::UnwindSafe for HeldDocument {}
+
+impl From<Document> for HeldDocument {
+    fn from(document: Document) -> Self {
+        Self {
+            document,
+            parser: None,
+        }
+    }
+}
+
+impl std::ops::Deref for HeldDocument {
+    type Target = Document;
+
+    fn deref(&self) -> &Document {
+        &self.document
+    }
+}
+
 unparser_shared::export_handle! {
     /// Opaque handle to a parsed document.
-    handle UnpdfDocument { inner: Document },
+    handle UnpdfDocument { inner: HeldDocument },
 
     /// Free a document handle.
     ///
@@ -300,7 +342,8 @@ pub unsafe extern "C" fn unpdf_parse_file(path: *const c_char) -> *mut UnpdfDocu
     let result: Result<*mut UnpdfDocument, FfiError> = ffi::catch(|| {
         let path_str = unparser_shared::with_c_str!(path)?;
 
-        crate::parse_file(path_str)
+        crate::PdfParser::open(path_str)
+            .and_then(HeldDocument::parsed)
             .map(|doc| Box::into_raw(Box::new(UnpdfDocument { inner: doc })))
             .map_err(ffi_err)
     });
@@ -333,7 +376,8 @@ pub unsafe extern "C" fn unpdf_parse_bytes(data: *const u8, len: usize) -> *mut 
     let result: Result<*mut UnpdfDocument, FfiError> = ffi::catch(|| {
         let bytes = std::slice::from_raw_parts(data, len);
 
-        crate::parse_bytes(bytes)
+        crate::PdfParser::from_bytes(bytes)
+            .and_then(HeldDocument::parsed)
             .map(|doc| Box::into_raw(Box::new(UnpdfDocument { inner: doc })))
             .map_err(ffi_err)
     });
@@ -541,7 +585,8 @@ pub unsafe extern "C" fn unpdf_parse_file_with_options(
         let path_str = unparser_shared::with_c_str!(path)?;
         let options = parse_options_from_json(options_json)?;
 
-        crate::parse_file_with_options(path_str, options)
+        crate::PdfParser::open_with_options(path_str, options)
+            .and_then(HeldDocument::parsed)
             .map(|doc| Box::into_raw(Box::new(UnpdfDocument { inner: doc })))
             .map_err(ffi_err)
     });
@@ -581,7 +626,8 @@ pub unsafe extern "C" fn unpdf_parse_bytes_with_options(
         let bytes = std::slice::from_raw_parts(data, len);
         let options = parse_options_from_json(options_json)?;
 
-        crate::parse_bytes_with_options(bytes, options)
+        crate::PdfParser::from_bytes_with_options(bytes, options)
+            .and_then(HeldDocument::parsed)
             .map(|doc| Box::into_raw(Box::new(UnpdfDocument { inner: doc })))
             .map_err(ffi_err)
     });
@@ -940,6 +986,118 @@ unparser_shared::export_string_getter!(
     }
 );
 
+/// Deserializable mirror of [`RasterOptions`](crate::parser::raster::RasterOptions) for
+/// `unpdf_render_page`: `{"dpi": 150, "region": "crop"}`. Every field is optional.
+#[derive(serde::Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+struct FfiRasterOptions {
+    dpi: Option<f32>,
+    /// `"crop"` (default) or `"media"`.
+    region: Option<String>,
+}
+
+/// Rasterize a page to a PNG.
+///
+/// The page is painted from the content interpretation the document was parsed with, by
+/// the parser the handle keeps — the same page, and no second read of the file. What the
+/// rasterizer cannot paint yet (text in fonts that are not embedded or are Type 1/Type 3,
+/// some image codecs, inline images, shadings) is left out and counted in `out_info`; the
+/// rest of the page is painted.
+///
+/// `options_json`: null, or `{"dpi": 150, "region": "crop" | "media"}` — resolution in dots
+/// per inch (default 150) and the box painted (default the crop box, what a viewer shows).
+///
+/// `out_info`, when not null, receives `{"width":N,"height":N,"gaps":{"text_runs":N,
+/// "images":N,"inline_images":N,"shadings":N,"undecodable_content_streams":N}}` — free it
+/// with `unpdf_free_string`.
+///
+/// # Safety
+///
+/// - `doc` must be a valid document handle from one of the `unpdf_parse_*` functions.
+/// - `options_json` must be null or a valid null-terminated UTF-8 string.
+/// - `out_len` must be a valid pointer; `out_info` must be null or a valid pointer.
+/// - Returns null on error (`PageOutOfRange`, `Render`, `InvalidArgument`); see
+///   `unpdf_last_error`.
+/// - The returned PNG must be freed with `unpdf_free_bytes`.
+#[no_mangle]
+pub unsafe extern "C" fn unpdf_render_page(
+    doc: *const UnpdfDocument,
+    page_number: c_int,
+    options_json: *const c_char,
+    out_len: *mut usize,
+    out_info: *mut *mut c_char,
+) -> *mut u8 {
+    LAST_ERROR.with(|slot| slot.clear());
+    if doc.is_null() || out_len.is_null() {
+        LAST_ERROR
+            .with(|slot| slot.set_error(&invalid_argument("doc and out_len must not be null")));
+        return ptr::null_mut();
+    }
+    if !out_info.is_null() {
+        *out_info = ptr::null_mut();
+    }
+
+    let result: Result<(Vec<u8>, String), FfiError> = ffi::catch(|| {
+        let options: FfiRasterOptions = if options_json.is_null() {
+            FfiRasterOptions::default()
+        } else {
+            let json = unparser_shared::ffi::c_str_utf8(options_json)?;
+            serde_json::from_str(json).map_err(|e| invalid_argument(e.to_string()))?
+        };
+        let region = match options.region.as_deref() {
+            None | Some("crop") => crate::parser::raster::PageRegion::Crop,
+            Some("media") => crate::parser::raster::PageRegion::Media,
+            Some(other) => {
+                return Err(invalid_argument(format!(
+                    "region must be \"crop\" or \"media\", got {other:?}"
+                )))
+            }
+        };
+        let raster_options = crate::parser::raster::RasterOptions {
+            dpi: options.dpi.unwrap_or(150.0),
+            region,
+        };
+        let parser = (*doc).inner.parser.as_ref().ok_or_else(|| {
+            (
+                ErrorKind::Render as c_int,
+                "this document handle holds no parser to render with".to_string(),
+            )
+        })?;
+        let page_number = u32::try_from(page_number).unwrap_or(0);
+        let page = parser
+            .render_page(page_number, &raster_options)
+            .map_err(ffi_err)?;
+        let g = page.gaps;
+        let info = serde_json::json!({
+            "width": page.width,
+            "height": page.height,
+            "gaps": {
+                "text_runs": g.text_runs,
+                "images": g.images,
+                "inline_images": g.inline_images,
+                "shadings": g.shadings,
+                "undecodable_content_streams": g.undecodable_content_streams,
+            },
+        });
+        Ok((page.to_png(), info.to_string()))
+    });
+
+    match result {
+        Ok((png, info)) => {
+            if !out_info.is_null() {
+                *out_info = CString::new(info).map_or(ptr::null_mut(), CString::into_raw);
+            }
+            *out_len = png.len();
+            Box::into_raw(png.into_boxed_slice()) as *mut u8
+        }
+        Err(error) => {
+            LAST_ERROR.with(|slot| slot.set_error(&error));
+            *out_len = 0;
+            ptr::null_mut()
+        }
+    }
+}
+
 unparser_shared::export_bytes_getter!(
     /// Get resource binary data.
     ///
@@ -1115,7 +1273,7 @@ mod tests {
     #[test]
     fn test_absent_metadata_is_not_reported_as_a_failure() {
         let doc = Box::into_raw(Box::new(UnpdfDocument {
-            inner: Document::new(),
+            inner: Document::new().into(),
         }));
 
         assert!(unsafe { unpdf_get_title(doc) }.is_null());
@@ -1135,7 +1293,9 @@ mod tests {
         let mut document = Document::new();
         document.metadata.title = Some("has\0interior nul".to_string());
         document.metadata.author = Some("also\0bad".to_string());
-        let doc = Box::into_raw(Box::new(UnpdfDocument { inner: document }));
+        let doc = Box::into_raw(Box::new(UnpdfDocument {
+            inner: document.into(),
+        }));
 
         assert!(unsafe { unpdf_get_title(doc) }.is_null());
         assert_eq!(unpdf_last_error_kind(), UNPDF_ERROR_INVALID_OUTPUT);
@@ -1152,7 +1312,7 @@ mod tests {
     #[test]
     fn test_rejected_arguments_leave_out_len_untouched() {
         let doc = Box::into_raw(Box::new(UnpdfDocument {
-            inner: Document::new(),
+            inner: Document::new().into(),
         }));
         let id = CString::new("image1").unwrap();
         const SEEDED: usize = 0xDEAD;

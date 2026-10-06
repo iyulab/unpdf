@@ -7,8 +7,10 @@ from .unpdf import (
     UNPDF_FLAG_FRONTMATTER,
     UNPDF_FLAG_PAGE_MARKERS,
     UNPDF_FLAG_REFINE,
+    Document,
     ErrorKind,
     ParseOptions,
+    RenderedPage,
     PdfSource,
     UnpdfError,
     to_markdown,
@@ -22,6 +24,7 @@ from .unpdf import (
     get_resource_info,
     get_resource_data,
     is_pdf,
+    render_page,
     version,
 )
 
@@ -30,8 +33,10 @@ __all__ = [
     "UNPDF_FLAG_FRONTMATTER",
     "UNPDF_FLAG_PAGE_MARKERS",
     "UNPDF_FLAG_REFINE",
+    "Document",
     "ErrorKind",
     "ParseOptions",
+    "RenderedPage",
     "PdfSource",
     "UnpdfError",
     "to_markdown",
@@ -45,5 +50,6 @@ __all__ = [
     "get_resource_info",
     "get_resource_data",
     "is_pdf",
+    "render_page",
     "version",
 ]

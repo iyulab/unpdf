@@ -193,6 +193,15 @@ _lib.unpdf_get_resource_data.restype = ctypes.POINTER(ctypes.c_uint8)
 _lib.unpdf_free_bytes.argtypes = [ctypes.POINTER(ctypes.c_uint8), ctypes.c_size_t]
 _lib.unpdf_free_bytes.restype = None
 
+_lib.unpdf_render_page.argtypes = [
+    ctypes.c_void_p,
+    ctypes.c_int,
+    ctypes.c_char_p,
+    ctypes.POINTER(ctypes.c_size_t),
+    ctypes.POINTER(ctypes.c_void_p),
+]
+_lib.unpdf_render_page.restype = ctypes.POINTER(ctypes.c_uint8)
+
 # Export constants
 UNPDF_FLAG_FRONTMATTER = 1
 UNPDF_FLAG_ESCAPE_SPECIAL = 2

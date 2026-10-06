@@ -149,6 +149,25 @@ info = unpdf.get_info("document.pdf", options={"extract_resources": True})
 print(info["resource_count"])
 ```
 
+## Rendering pages
+
+`Document` keeps a parsed PDF open, so pages can be rendered — and their statistics read —
+without parsing it again for every call. The page rendered is the page text extraction reads.
+
+```python
+import unpdf
+
+with unpdf.Document("report.pdf") as doc:
+    stats = doc.get_page_stats(3)
+    if stats["image_coverage"] > 0.9:
+        page = doc.render_page(3, dpi=150)          # region="crop" (default) or "media"
+        open("page3.png", "wb").write(page.png)
+        print(page.width, page.height, page.gaps)   # gaps: what could not be painted
+```
+
+`unpdf.render_page(source, page_number, dpi=150, region="crop")` renders one page in one call
+(parsing the document for it).
+
 ## Embedded resources
 
 ```python

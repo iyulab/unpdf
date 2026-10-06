@@ -5,6 +5,7 @@ High-level Python API for unpdf.
 import ctypes
 import json
 import os
+from dataclasses import dataclass
 from enum import IntEnum
 from typing import Any, Union
 
@@ -530,6 +531,118 @@ def get_resource_data(
             lib.unpdf_free_bytes(result, out_len.value)
     finally:
         lib.unpdf_free_document(handle)
+
+
+@dataclass(frozen=True)
+class RenderedPage:
+    """A rendered page: a PNG, its size in pixels, and what it could not show.
+
+    ``gaps`` counts, by reason, what the renderer left out — ``text_runs``
+    (text in fonts that are not embedded or are Type 1/Type 3), ``images``
+    (codecs it does not decode), ``inline_images``, ``shadings`` and
+    ``undecodable_content_streams``. All zero means everything was painted;
+    otherwise the rest of the page still was.
+    """
+
+    png: bytes
+    width: int
+    height: int
+    gaps: "dict[str, int]"
+
+
+def _render(lib: ctypes.CDLL, handle: Any, page_number: int, dpi: float, region: str) -> RenderedPage:
+    options = json.dumps({"dpi": dpi, "region": region}).encode("utf-8")
+    out_len = ctypes.c_size_t(0)
+    info = ctypes.c_void_p(None)
+    result = lib.unpdf_render_page(
+        handle, page_number, options, ctypes.byref(out_len), ctypes.byref(info)
+    )
+    if not result:
+        raise _native_error(lib)
+    try:
+        png = ctypes.string_at(result, out_len.value)
+    finally:
+        lib.unpdf_free_bytes(result, out_len.value)
+    report = json.loads(_take_string(lib, info.value)) if info.value else {}
+    return RenderedPage(
+        png=png,
+        width=int(report.get("width", 0)),
+        height=int(report.get("height", 0)),
+        gaps=dict(report.get("gaps", {})),
+    )
+
+
+class Document:
+    """A parsed PDF kept open, so its pages can be rendered — and their statistics
+    read — without parsing the file again for every call.
+
+    Use it as a context manager, or call :meth:`close`::
+
+        with unpdf.Document("report.pdf") as doc:
+            for n in pages_to_reread:
+                if doc.get_page_stats(n)["image_coverage"] > 0.9:
+                    png = doc.render_page(n).png
+    """
+
+    def __init__(self, source: PdfSource, options: "dict[str, Any] | None" = None) -> None:
+        self._lib = get_library()
+        self._handle: Any = _parse_file(self._lib, source, options)
+
+    def render_page(self, page_number: int, dpi: float = 150.0, region: str = "crop") -> RenderedPage:
+        """Render a page (1-indexed) to a PNG — painted from the content this document
+        was parsed from, so it is the same page text extraction reads.
+
+        Args:
+            page_number: Page number (1-indexed).
+            dpi: Resolution; a page point is ``dpi / 72`` pixels.
+            region: ``"crop"`` (what a viewer shows) or ``"media"`` (the whole sheet).
+
+        Raises:
+            UnpdfError: ``kind == ErrorKind.PAGE_OUT_OF_RANGE`` for a page the
+                document does not have; ``INVALID_ARGUMENT`` for options it cannot use.
+        """
+        return _render(self._lib, self._live(), page_number, dpi, region)
+
+    def get_page_stats(self, page_number: int) -> "dict[str, Any]":
+        """Statistics for a page — see :func:`get_page_stats`."""
+        result = self._lib.unpdf_page_stats(self._live(), page_number)
+        if not result:
+            raise _native_error(self._lib)
+        return json.loads(_take_string(self._lib, result))
+
+    def close(self) -> None:
+        """Release the document. Further calls raise ``ValueError``."""
+        if self._handle:
+            self._lib.unpdf_free_document(self._handle)
+            self._handle = None
+
+    def _live(self) -> Any:
+        if not self._handle:
+            raise ValueError("the document is closed")
+        return self._handle
+
+    def __enter__(self) -> "Document":
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        self.close()
+
+
+def render_page(
+    source: PdfSource,
+    page_number: int,
+    dpi: float = 150.0,
+    region: str = "crop",
+    options: "dict[str, Any] | None" = None,
+) -> RenderedPage:
+    """Render one page to a PNG. Parses the document for this call — to render
+    several pages of one document, open it once with :class:`Document`.
+    """
+    with Document(source, options) as doc:
+        return doc.render_page(page_number, dpi, region)
 
 
 def get_page_count(

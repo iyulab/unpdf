@@ -39,6 +39,8 @@ internal sealed class ParseOptionsPayload
 [JsonSerializable(typeof(ParseOptionsPayload))]
 [JsonSerializable(typeof(ExtractionQuality))]
 [JsonSerializable(typeof(PageStats))]
+[JsonSerializable(typeof(RenderInfoPayload))]
+[JsonSerializable(typeof(RenderOptionsPayload))]
 [JsonSerializable(typeof(string[]))]
 internal sealed partial class UnpdfJsonContext : JsonSerializerContext
 {

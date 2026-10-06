@@ -631,6 +631,29 @@ There is one `ErrorKind` variant per `Error` variant. The discriminants are expl
 and part of the public contract — they cross the C ABI as `unpdf_last_error_kind`
 return values, so existing values are never renumbered.
 
+### Rendering a Page
+
+With the `raster` feature (included in the C ABI, .NET and Python packages), a page renders
+to an image — painted from the same content interpretation text extraction reads, so it is
+the same page, box and rotation:
+
+```rust
+use unpdf::parser::raster::RasterOptions;
+use unpdf::parser::PdfParser;
+
+let parser = PdfParser::open("document.pdf")?;
+let page = parser.render_page(3, &RasterOptions { dpi: 150.0, ..Default::default() })?;
+std::fs::write("page3.png", page.to_png())?;
+if !page.gaps.is_empty() {
+    // Something on the page could not be painted — see `RasterGaps`.
+}
+```
+
+Painted: text in embedded TrueType, OpenType and CFF fonts, paths, clipping, colors, and
+images (Flate-family and JPEG, with soft and stencil masks). Not yet: text in fonts that are
+not embedded or are Type 1/Type 3, JPEG 2000/JBIG2/CCITT images, inline images and shadings —
+each is counted in `gaps`, and the rest of the page is still painted.
+
 ### Detecting Incomplete Extraction
 
 A damaged PDF does not always fail. When the cross-reference table survives but the
