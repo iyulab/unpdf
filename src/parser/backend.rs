@@ -103,6 +103,9 @@ pub struct BackendFontInfo {
     pub name: Vec<u8>,
     /// Base font name (e.g., "Helvetica-Bold").
     pub base_font: String,
+    /// Whether the font declares itself bold — by its descriptor's `/FontWeight` or
+    /// `/Flags` ForceBold, or its embedded program's own weight — whatever its name says.
+    pub bold: bool,
 }
 
 /// A value from a PDF content stream operand.
@@ -1138,6 +1141,72 @@ fn embedded_font_program(
     Some((format, read(stream)))
 }
 
+/// Whether a font program's weight name is a bold one: Bold, Semibold, Demibold, Extrabold,
+/// Black, Heavy and the like — not Medium, Book or Regular.
+fn weight_name_is_bold(weight: &str) -> bool {
+    let w = weight.to_ascii_lowercase();
+    ["bold", "black", "heavy", "demi"]
+        .iter()
+        .any(|t| w.contains(t))
+}
+
+#[cfg(test)]
+mod weight_tests {
+    use super::*;
+
+    #[test]
+    fn bold_weight_names() {
+        for w in [
+            "Bold",
+            "Semibold",
+            "DemiBold",
+            "Demi",
+            "ExtraBold",
+            "Black",
+            "Heavy",
+        ] {
+            assert!(weight_name_is_bold(w), "{w}");
+        }
+        for w in ["Regular", "Medium", "Book", "Light", "Roman"] {
+            assert!(!weight_name_is_bold(w), "{w}");
+        }
+    }
+
+    #[test]
+    fn the_os2_weight_class_is_found_by_table_tag() {
+        // An sfnt with two table records; OS/2 at offset 48, usWeightClass 700.
+        let mut sfnt = vec![0, 1, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0];
+        sfnt.extend(b"head");
+        sfnt.extend([0; 4]);
+        sfnt.extend(40u32.to_be_bytes());
+        sfnt.extend(4u32.to_be_bytes());
+        sfnt.extend(b"OS/2");
+        sfnt.extend([0; 4]);
+        sfnt.extend(48u32.to_be_bytes());
+        sfnt.extend(6u32.to_be_bytes());
+        sfnt.extend([0; 4]);
+        sfnt.extend([0, 3, 0, 0, 2, 188]);
+        assert_eq!(os2_weight_class(&sfnt), Some(700));
+        assert_eq!(os2_weight_class(b"nope"), None);
+    }
+}
+
+/// A TrueType or OpenType program's OS/2 `usWeightClass` (400 regular, 700 bold).
+fn os2_weight_class(data: &[u8]) -> Option<u16> {
+    let u16_at = |at: usize| Some(u16::from_be_bytes([*data.get(at)?, *data.get(at + 1)?]));
+    let u32_at = |at: usize| {
+        let b = data.get(at..at + 4)?;
+        Some(u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
+    };
+    let tables = usize::from(u16_at(4)?);
+    (0..tables).find_map(|i| {
+        let record = 12 + 16 * i;
+        (data.get(record..record + 4)? == b"OS/2")
+            .then(|| u16_at(usize::try_from(u32_at(record + 8)?).ok()? + 4))
+            .flatten()
+    })
+}
+
 /// A page attribute the page may inherit from its Pages-tree ancestors (ISO 32000-1
 /// §7.7.3.4 — `/MediaBox`, `/CropBox`, `/Rotate`, `/Resources`): the page's own value, or
 /// the nearest ancestor's. The walk stops at a repeated node or after 64 levels, so a
@@ -1627,6 +1696,7 @@ struct RawFontResolver {
     cmap_cache: RwLock<HashMap<PageId, Option<ToUnicodeMap>>>,
     encoding_cache: RwLock<HashMap<PageId, Option<HashMap<u8, char>>>>,
     program_encoding_cache: RwLock<HashMap<PageId, Option<HashMap<u8, char>>>>,
+    bold_cache: RwLock<HashMap<PageId, bool>>,
     cid_system_info_cache: RwLock<HashMap<PageId, Option<(String, String)>>>,
     metrics_cache: RwLock<HashMap<PageId, Option<FontMetrics>>>,
 }
@@ -1637,6 +1707,7 @@ impl RawFontResolver {
             cmap_cache: RwLock::new(HashMap::new()),
             encoding_cache: RwLock::new(HashMap::new()),
             program_encoding_cache: RwLock::new(HashMap::new()),
+            bold_cache: RwLock::new(HashMap::new()),
             cid_system_info_cache: RwLock::new(HashMap::new()),
             metrics_cache: RwLock::new(HashMap::new()),
         }
@@ -2337,6 +2408,53 @@ impl RawFontResolver {
         result
     }
 
+    /// Whether the font declares itself bold (§9.8.1): its descriptor's `/FontWeight` is 600
+    /// or more or its `/Flags` sets ForceBold, or its embedded program names a bold weight —
+    /// a Type 1 program's `FontInfo /Weight`, a CFF one's `Weight`, a TrueType or OpenType
+    /// one's OS/2 weight class. A composite font answers through its descendant. Names alone
+    /// miss the weights a family calls something else (URW's `-Medi` is its bold).
+    fn declares_bold(&self, doc: &RawDocument, font_obj_id: PageId) -> bool {
+        if let Some(&cached) = self.bold_cache.read().unwrap().get(&font_obj_id) {
+            return cached;
+        }
+        let bold = (|| -> Option<bool> {
+            let mut dict = doc.get_dict(font_obj_id).ok()?;
+            if self.is_composite_font(doc, font_obj_id) {
+                let descendants = doc
+                    .resolve(raw_dict_get(dict, b"DescendantFonts")?)
+                    .as_array()?;
+                dict = raw_resolve_dict(doc, descendants.first()?)?;
+            }
+            let descriptor = raw_resolve_dict(doc, raw_dict_get(dict, b"FontDescriptor")?)?;
+            let number = |key: &[u8]| {
+                raw_dict_get(descriptor, key)
+                    .map(|v| doc.resolve(v))
+                    .and_then(|v| v.as_f32())
+            };
+            const FORCE_BOLD: i64 = 1 << 18;
+            if number(b"FontWeight").is_some_and(|w| w >= 600.0)
+                || number(b"Flags").is_some_and(|f| (f as i64) & FORCE_BOLD != 0)
+            {
+                return Some(true);
+            }
+            let (format, data) = embedded_font_program(doc, dict)?;
+            Some(match format {
+                FontFormat::Type1 => {
+                    super::type1::declared_weight(&data).is_some_and(|w| weight_name_is_bold(&w))
+                }
+                FontFormat::Cff => {
+                    super::cff::declared_weight(&data).is_some_and(|w| weight_name_is_bold(&w))
+                }
+                FontFormat::TrueType | FontFormat::OpenType => {
+                    os2_weight_class(&data).is_some_and(|w| w >= 600)
+                }
+            })
+        })()
+        .unwrap_or(false);
+        self.bold_cache.write().unwrap().insert(font_obj_id, bold);
+        bold
+    }
+
     /// The fonts the names in `scope` can refer to -- an inner name hides an outer one.
     fn page_fonts(&self, doc: &RawDocument, scope: ResourceScope) -> Vec<BackendFontInfo> {
         let mut result: Vec<BackendFontInfo> = Vec::new();
@@ -2356,9 +2474,13 @@ impl RawFontResolver {
                     .and_then(|o| o.as_name())
                     .map(|n| String::from_utf8_lossy(n).to_string())
                     .unwrap_or_else(|| "Unknown".to_string());
+                let bold = val
+                    .as_reference()
+                    .is_some_and(|id| self.declares_bold(doc, id));
                 result.push(BackendFontInfo {
                     name: name.clone(),
                     base_font,
+                    bold,
                 });
             }
         }

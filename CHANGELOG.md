@@ -4,6 +4,13 @@
 
 ### Fixed
 
+- **A font that declares itself bold is bold.** Bold was read from the font's name alone
+  (`Bold`, `Black`, `Heavy`), so families that call their bold weight something else — URW's
+  `NimbusRomNo9L-Medi`, TeX's `CMBX12` — came out as plain text, and their section titles were
+  missed. A font is now bold when its descriptor's `/FontWeight` is 600 or more or its `/Flags`
+  set ForceBold (ISO 32000-1 §9.8.1), or when its embedded program names a bold weight (a
+  Type 1 program's `FontInfo /Weight`, a CFF program's `Weight`, a TrueType or OpenType
+  program's OS/2 weight class); the name still counts.
 - **A short bold line titling what follows is a heading.** A line in the body face's bold,
   at body size, a dozen words at most and not ending a sentence, standing between plain lines
   and followed by plain body text ("Procedure:", "Steps for Using the Microscope") now comes

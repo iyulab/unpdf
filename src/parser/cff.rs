@@ -62,6 +62,20 @@ pub(crate) fn builtin_encoding_chars(data: &[u8]) -> Option<HashMap<u8, char>> {
     )
 }
 
+/// The weight a bare CFF program's Top DICT names (`Weight`), if any.
+pub(crate) fn declared_weight(data: &[u8]) -> Option<String> {
+    let header_size = usize::from(*data.get(2)?);
+    let (_names, at) = index(data, header_size)?;
+    let (top_dicts, at) = index(data, at)?;
+    let (strings, _) = index(data, at)?;
+    let sid = usize::from(Dict::parse(top_dicts.first()?)?.weight?);
+    let name = match sid.checked_sub(STANDARD_STRINGS.len()) {
+        None => STANDARD_STRINGS.get(sid).copied(),
+        Some(custom) => std::str::from_utf8(strings.get(custom)?).ok(),
+    }?;
+    Some(name.to_string())
+}
+
 /// What an encoding entry points at: a glyph by index, or (a supplement) by its name's
 /// string ID.
 enum Glyph {
@@ -156,6 +170,8 @@ fn charset_sid(data: &[u8], charset: usize, glyphs: usize, gid: usize) -> Option
 
 /// The Top DICT entries this reads.
 struct Dict {
+    /// `Weight` (operator 4): a string ID.
+    weight: Option<u16>,
     charset: usize,
     encoding: usize,
     charstrings: Option<usize>,
@@ -165,6 +181,7 @@ struct Dict {
 impl Dict {
     fn parse(dict: &[u8]) -> Option<Self> {
         let mut out = Dict {
+            weight: None,
             charset: 0,
             encoding: 0,
             charstrings: None,
@@ -220,6 +237,7 @@ impl Dict {
                         .copied()
                         .and_then(|v| usize::try_from(v).ok());
                     match op {
+                        4 => out.weight = last.and_then(|v| u16::try_from(v).ok()),
                         15 => out.charset = last?,
                         16 => out.encoding = last?,
                         17 => out.charstrings = last,
@@ -392,6 +410,17 @@ mod tests {
         // ROS (12 30) in the Top DICT.
         let data = program(&["A"], Some(vec![0, 1, 65]), &[139, 139, 139, 12, 30]);
         assert!(builtin_encoding_chars(&data).is_none());
+    }
+
+    #[test]
+    fn the_declared_weight_is_read_from_the_top_dict() {
+        // Weight (operator 4) = standard string 384 ("Bold").
+        assert_eq!(STANDARD_STRINGS[384], "Bold");
+        let mut extra = int(384);
+        extra.push(4);
+        let data = program(&["A"], None, &extra);
+        assert_eq!(declared_weight(&data).as_deref(), Some("Bold"));
+        assert_eq!(declared_weight(&program(&["A"], None, &[])), None);
     }
 
     #[test]

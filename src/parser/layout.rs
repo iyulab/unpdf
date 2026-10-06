@@ -739,7 +739,15 @@ impl<'a> LayoutAnalyzer<'a> {
             .page_fonts(scope)
             .unwrap_or_default()
             .into_iter()
-            .map(|fi| (fi.name, FontInfo { name: fi.base_font }))
+            .map(|fi| {
+                (
+                    fi.name,
+                    FontInfo {
+                        name: fi.base_font,
+                        bold: fi.bold,
+                    },
+                )
+            })
             .collect()
     }
 
@@ -968,10 +976,12 @@ impl<'a> LayoutAnalyzer<'a> {
                         let fonts = fonts
                             .entry(op.form)
                             .or_insert_with(|| self.font_names(op.scope(page_id)));
-                        text_state.font = match fonts.get(font_name.as_slice()) {
+                        let info = fonts.get(font_name.as_slice());
+                        text_state.font = match info {
                             Some(info) => info.name.clone(),
                             None => String::from_utf8_lossy(font_name.as_slice()).to_string(),
                         };
+                        text_state.font_bold = info.is_some_and(|info| info.bold);
                     }
                     text_state.font_size = operand(1).unwrap_or(12.0);
                 }
@@ -1123,6 +1133,7 @@ impl<'a> LayoutAnalyzer<'a> {
                         );
                         let mut span =
                             TextSpan::new(text, x, y, effective_size, text_state.font.clone());
+                        span.is_bold |= text_state.font_bold;
                         if let Some(width) = measured_width {
                             span.width = width;
                         }
@@ -1670,6 +1681,8 @@ fn is_page_number_pattern(text: &str) -> bool {
 #[derive(Debug, Clone)]
 struct FontInfo {
     name: String,
+    /// The font declares itself bold, whatever its name says.
+    bold: bool,
 }
 
 /// The text-related parameters of the graphics state (ISO 32000-1 §9.3).
@@ -1679,6 +1692,8 @@ struct TextState {
     font_resource: Vec<u8>,
     /// The font's base name, for bold/italic detection.
     font: String,
+    /// The font declares itself bold (descriptor or program), whatever its name says.
+    font_bold: bool,
     /// `Tfs`, in unscaled text space units.
     font_size: f32,
     /// `Tc`, in unscaled text space units.
@@ -1696,6 +1711,7 @@ impl Default for TextState {
         Self {
             font_resource: Vec::new(),
             font: String::new(),
+            font_bold: false,
             font_size: 12.0,
             char_spacing: 0.0,
             word_spacing: 0.0,

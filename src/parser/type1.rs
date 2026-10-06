@@ -552,6 +552,21 @@ pub(crate) fn builtin_encoding_chars(data: &[u8]) -> Option<HashMap<u8, char>> {
     })
 }
 
+/// The weight a Type 1 program's `FontInfo` names (`/Weight (Bold) readonly def`), from its
+/// cleartext part.
+pub(crate) fn declared_weight(data: &[u8]) -> Option<String> {
+    let clear = &data[..find(data, b"eexec")?];
+    let at = find(clear, b"/Weight")?;
+    let rest = &clear[at + 7..];
+    let open = rest.iter().position(|&b| b == b'(')?;
+    // Only the value of this key: the parenthesis must open before the line ends.
+    if rest[..open].contains(&b'\n') {
+        return None;
+    }
+    let close = rest[open..].iter().position(|&b| b == b')')? + open;
+    Some(String::from_utf8_lossy(&rest[open + 1..close]).into_owned())
+}
+
 /// `/FontMatrix [a b c d e f]` in the cleartext.
 fn font_matrix(clear: &[u8]) -> Option<[f32; 6]> {
     let at = find(clear, b"/FontMatrix")?;
@@ -966,6 +981,25 @@ mod tests {
         let font = Type1Font::parse(&data).unwrap();
         let mut rec = Recorder::default();
         assert!(font.outline(0, &mut rec).is_none());
+    }
+
+    #[test]
+    fn the_declared_weight_is_read_from_the_cleartext() {
+        let mut data = b"%!PS-AdobeFont-1.0: T\n/FontInfo 8 dict dup begin\n/Weight (Bold) readonly def\nend readonly def\n".to_vec();
+        data.extend(program(
+            &[("A", square())],
+            &[],
+            "StandardEncoding readonly def",
+            false,
+        ));
+        assert_eq!(declared_weight(&data).as_deref(), Some("Bold"));
+        let plain = program(
+            &[("A", square())],
+            &[],
+            "StandardEncoding readonly def",
+            false,
+        );
+        assert_eq!(declared_weight(&plain), None);
     }
 
     #[test]
