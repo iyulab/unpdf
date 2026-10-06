@@ -1,6 +1,8 @@
 //! PDF parsing module.
 
 pub mod backend;
+#[rustfmt::skip]
+mod agl_data;
 pub mod bidi;
 mod clip;
 pub mod cmap_table;
@@ -30,8 +32,7 @@ mod table_detector;
 #[cfg(test)]
 pub(crate) mod test_pdf;
 mod text_string;
-#[cfg(feature = "raster")]
-mod type1;
+pub(crate) mod type1;
 mod vector_graphics;
 pub mod xycut;
 

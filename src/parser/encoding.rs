@@ -2,7 +2,7 @@
 //!
 //! Provides character code → Unicode mappings for WinAnsiEncoding,
 //! MacRomanEncoding, and StandardEncoding, plus glyph name → Unicode
-//! lookup via a subset of the Adobe Glyph List (AGL).
+//! lookup via the Adobe Glyph List (AGL).
 
 use std::collections::HashMap;
 
@@ -703,7 +703,7 @@ const STANDARD_ENC: [Option<char>; 256] = {
 };
 
 // ---------------------------------------------------------------------------
-// Adobe Glyph List (AGL) — glyph name → Unicode
+// Adobe Glyph List (AGL) — glyph name → Unicode (`agl_data`, generated)
 // ---------------------------------------------------------------------------
 
 /// Look up a glyph name in the Adobe Glyph List, returning its Unicode character.
@@ -743,241 +743,11 @@ fn agl_component_to_unicode(name: &str) -> Option<char> {
         }
     }
 
-    // Static AGL lookup
-    match name {
-        "A" => Some('A'),
-        "AE" => Some('\u{00C6}'),
-        "Aacute" => Some('\u{00C1}'),
-        "Acircumflex" => Some('\u{00C2}'),
-        "Adieresis" => Some('\u{00C4}'),
-        "Agrave" => Some('\u{00C0}'),
-        "Aring" => Some('\u{00C5}'),
-        "Atilde" => Some('\u{00C3}'),
-        "B" => Some('B'),
-        "C" => Some('C'),
-        "Ccedilla" => Some('\u{00C7}'),
-        "D" => Some('D'),
-        "E" => Some('E'),
-        "Eacute" => Some('\u{00C9}'),
-        "Ecircumflex" => Some('\u{00CA}'),
-        "Edieresis" => Some('\u{00CB}'),
-        "Egrave" => Some('\u{00C8}'),
-        "Eth" => Some('\u{00D0}'),
-        "Euro" => Some('\u{20AC}'),
-        "F" => Some('F'),
-        "G" => Some('G'),
-        "H" => Some('H'),
-        "I" => Some('I'),
-        "Iacute" => Some('\u{00CD}'),
-        "Icircumflex" => Some('\u{00CE}'),
-        "Idieresis" => Some('\u{00CF}'),
-        "Igrave" => Some('\u{00CC}'),
-        "J" => Some('J'),
-        "K" => Some('K'),
-        "L" => Some('L'),
-        "Lslash" => Some('\u{0141}'),
-        "M" => Some('M'),
-        "N" => Some('N'),
-        "Ntilde" => Some('\u{00D1}'),
-        "O" => Some('O'),
-        "OE" => Some('\u{0152}'),
-        "Oacute" => Some('\u{00D3}'),
-        "Ocircumflex" => Some('\u{00D4}'),
-        "Odieresis" => Some('\u{00D6}'),
-        "Ograve" => Some('\u{00D2}'),
-        "Oslash" => Some('\u{00D8}'),
-        "Otilde" => Some('\u{00D5}'),
-        "P" => Some('P'),
-        "Q" => Some('Q'),
-        "R" => Some('R'),
-        "S" => Some('S'),
-        "Scaron" => Some('\u{0160}'),
-        "T" => Some('T'),
-        "Thorn" => Some('\u{00DE}'),
-        "U" => Some('U'),
-        "Uacute" => Some('\u{00DA}'),
-        "Ucircumflex" => Some('\u{00DB}'),
-        "Udieresis" => Some('\u{00DC}'),
-        "Ugrave" => Some('\u{00D9}'),
-        "V" => Some('V'),
-        "W" => Some('W'),
-        "X" => Some('X'),
-        "Y" => Some('Y'),
-        "Yacute" => Some('\u{00DD}'),
-        "Ydieresis" => Some('\u{0178}'),
-        "Z" => Some('Z'),
-        "Zcaron" => Some('\u{017D}'),
-        "a" => Some('a'),
-        "aacute" => Some('\u{00E1}'),
-        "acircumflex" => Some('\u{00E2}'),
-        "acute" => Some('\u{00B4}'),
-        "adieresis" => Some('\u{00E4}'),
-        "ae" => Some('\u{00E6}'),
-        "agrave" => Some('\u{00E0}'),
-        "ampersand" => Some('&'),
-        "aring" => Some('\u{00E5}'),
-        "asciicircum" => Some('^'),
-        "asciitilde" => Some('~'),
-        "asterisk" => Some('*'),
-        "at" => Some('@'),
-        "atilde" => Some('\u{00E3}'),
-        "b" => Some('b'),
-        "backslash" => Some('\\'),
-        "bar" => Some('|'),
-        "braceleft" => Some('{'),
-        "braceright" => Some('}'),
-        "bracketleft" => Some('['),
-        "bracketright" => Some(']'),
-        "breve" => Some('\u{02D8}'),
-        "brokenbar" => Some('\u{00A6}'),
-        "bullet" => Some('\u{2022}'),
-        "c" => Some('c'),
-        "caron" => Some('\u{02C7}'),
-        "ccedilla" => Some('\u{00E7}'),
-        "cedilla" => Some('\u{00B8}'),
-        "cent" => Some('\u{00A2}'),
-        "circumflex" => Some('\u{02C6}'),
-        "colon" => Some(':'),
-        "comma" => Some(','),
-        "copyright" => Some('\u{00A9}'),
-        "currency" => Some('\u{00A4}'),
-        "d" => Some('d'),
-        "dagger" => Some('\u{2020}'),
-        "daggerdbl" => Some('\u{2021}'),
-        "degree" => Some('\u{00B0}'),
-        "dieresis" => Some('\u{00A8}'),
-        "divide" => Some('\u{00F7}'),
-        "dollar" => Some('$'),
-        "dotaccent" => Some('\u{02D9}'),
-        "dotlessi" => Some('\u{0131}'),
-        "e" => Some('e'),
-        "eacute" => Some('\u{00E9}'),
-        "ecircumflex" => Some('\u{00EA}'),
-        "edieresis" => Some('\u{00EB}'),
-        "egrave" => Some('\u{00E8}'),
-        "eight" => Some('8'),
-        "ellipsis" => Some('\u{2026}'),
-        "emdash" => Some('\u{2014}'),
-        "endash" => Some('\u{2013}'),
-        "equal" => Some('='),
-        "eth" => Some('\u{00F0}'),
-        "exclam" => Some('!'),
-        "exclamdown" => Some('\u{00A1}'),
-        "f" => Some('f'),
-        "fi" => Some('\u{FB01}'),
-        "five" => Some('5'),
-        "fl" => Some('\u{FB02}'),
-        "florin" => Some('\u{0192}'),
-        "four" => Some('4'),
-        "fraction" => Some('\u{2044}'),
-        "g" => Some('g'),
-        "germandbls" => Some('\u{00DF}'),
-        "grave" => Some('`'),
-        "greater" => Some('>'),
-        "guillemotleft" => Some('\u{00AB}'),
-        "guillemotright" => Some('\u{00BB}'),
-        "guilsinglleft" => Some('\u{2039}'),
-        "guilsinglright" => Some('\u{203A}'),
-        "h" => Some('h'),
-        "hungarumlaut" => Some('\u{02DD}'),
-        "hyphen" => Some('-'),
-        "i" => Some('i'),
-        "iacute" => Some('\u{00ED}'),
-        "icircumflex" => Some('\u{00EE}'),
-        "idieresis" => Some('\u{00EF}'),
-        "igrave" => Some('\u{00EC}'),
-        "j" => Some('j'),
-        "k" => Some('k'),
-        "l" => Some('l'),
-        "less" => Some('<'),
-        "logicalnot" => Some('\u{00AC}'),
-        "lslash" => Some('\u{0142}'),
-        "m" => Some('m'),
-        "macron" => Some('\u{00AF}'),
-        "minus" => Some('\u{2212}'),
-        "mu" => Some('\u{00B5}'),
-        "multiply" => Some('\u{00D7}'),
-        "n" => Some('n'),
-        "nbspace" => Some('\u{00A0}'),
-        "nine" => Some('9'),
-        "ntilde" => Some('\u{00F1}'),
-        "numbersign" => Some('#'),
-        "o" => Some('o'),
-        "oacute" => Some('\u{00F3}'),
-        "ocircumflex" => Some('\u{00F4}'),
-        "odieresis" => Some('\u{00F6}'),
-        "oe" => Some('\u{0153}'),
-        "ograve" => Some('\u{00F2}'),
-        "ogonek" => Some('\u{02DB}'),
-        "one" => Some('1'),
-        "onehalf" => Some('\u{00BD}'),
-        "onequarter" => Some('\u{00BC}'),
-        "onesuperior" => Some('\u{00B9}'),
-        "ordfeminine" => Some('\u{00AA}'),
-        "ordmasculine" => Some('\u{00BA}'),
-        "oslash" => Some('\u{00F8}'),
-        "otilde" => Some('\u{00F5}'),
-        "p" => Some('p'),
-        "paragraph" => Some('\u{00B6}'),
-        "parenleft" => Some('('),
-        "parenright" => Some(')'),
-        "percent" => Some('%'),
-        "period" => Some('.'),
-        "periodcentered" => Some('\u{00B7}'),
-        "perthousand" => Some('\u{2030}'),
-        "plus" => Some('+'),
-        "plusminus" => Some('\u{00B1}'),
-        "q" => Some('q'),
-        "question" => Some('?'),
-        "questiondown" => Some('\u{00BF}'),
-        "quotedbl" => Some('"'),
-        "quotedblbase" => Some('\u{201E}'),
-        "quotedblleft" => Some('\u{201C}'),
-        "quotedblright" => Some('\u{201D}'),
-        "quoteleft" => Some('\u{2018}'),
-        "quoteright" => Some('\u{2019}'),
-        "quotesinglbase" => Some('\u{201A}'),
-        "quotesingle" => Some('\''),
-        "r" => Some('r'),
-        "registered" => Some('\u{00AE}'),
-        "ring" => Some('\u{02DA}'),
-        "s" => Some('s'),
-        "scaron" => Some('\u{0161}'),
-        "section" => Some('\u{00A7}'),
-        "semicolon" => Some(';'),
-        "seven" => Some('7'),
-        "sfthyphen" => Some('\u{00AD}'),
-        "six" => Some('6'),
-        "slash" => Some('/'),
-        "space" => Some(' '),
-        "sterling" => Some('\u{00A3}'),
-        "t" => Some('t'),
-        "thorn" => Some('\u{00FE}'),
-        "three" => Some('3'),
-        "threequarters" => Some('\u{00BE}'),
-        "threesuperior" => Some('\u{00B3}'),
-        "tilde" => Some('\u{02DC}'),
-        "trademark" => Some('\u{2122}'),
-        "two" => Some('2'),
-        "twosuperior" => Some('\u{00B2}'),
-        "u" => Some('u'),
-        "uacute" => Some('\u{00FA}'),
-        "ucircumflex" => Some('\u{00FB}'),
-        "udieresis" => Some('\u{00FC}'),
-        "ugrave" => Some('\u{00F9}'),
-        "underscore" => Some('_'),
-        "v" => Some('v'),
-        "w" => Some('w'),
-        "x" => Some('x'),
-        "y" => Some('y'),
-        "yacute" => Some('\u{00FD}'),
-        "ydieresis" => Some('\u{00FF}'),
-        "yen" => Some('\u{00A5}'),
-        "z" => Some('z'),
-        "zcaron" => Some('\u{017E}'),
-        "zero" => Some('0'),
-        _ => None,
-    }
+    // The Adobe Glyph List.
+    super::agl_data::AGL
+        .binary_search_by(|(n, _)| n.as_bytes().cmp(name.as_bytes()))
+        .ok()
+        .map(|i| super::agl_data::AGL[i].1)
 }
 
 #[cfg(test)]
@@ -1035,6 +805,25 @@ mod tests {
         assert_eq!(glyph_name_to_unicode("Euro"), Some('\u{20AC}'));
         assert_eq!(glyph_name_to_unicode("fi"), Some('\u{FB01}'));
         assert_eq!(glyph_name_to_unicode("emdash"), Some('\u{2014}'));
+    }
+
+    #[test]
+    fn the_whole_glyph_list_is_known() {
+        // Ligatures TeX's fonts name, Greek, and a name from deep in the list.
+        assert_eq!(glyph_name_to_unicode("ff"), Some('\u{FB00}'));
+        assert_eq!(glyph_name_to_unicode("ffi"), Some('\u{FB03}'));
+        assert_eq!(glyph_name_to_unicode("ffl"), Some('\u{FB04}'));
+        assert_eq!(glyph_name_to_unicode("alpha"), Some('\u{03B1}'));
+        assert_eq!(glyph_name_to_unicode("Gamma"), Some('\u{0393}'));
+        assert_eq!(glyph_name_to_unicode("zukatakana"), Some('\u{30BA}'));
+        assert_eq!(glyph_name_to_unicode("notaglyphname"), None);
+    }
+
+    #[test]
+    fn the_glyph_list_is_sorted_for_binary_search() {
+        assert!(super::super::agl_data::AGL
+            .windows(2)
+            .all(|w| w[0].0.as_bytes() < w[1].0.as_bytes()));
     }
 
     #[test]

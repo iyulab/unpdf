@@ -7,6 +7,10 @@
 //! stack program that draws a glyph's outline: [`Type1Font::outline`] runs it, `seac`
 //! accented characters, `callsubr` subroutines and the flex mechanism included. Hints only
 //! steer rasterization at small sizes and are skipped.
+//!
+//! Text extraction reads only the cleartext part — the built-in encoding
+//! ([`builtin_encoding_chars`]); the outlines are for the rasterizer.
+#![cfg_attr(not(feature = "raster"), allow(dead_code))]
 
 use std::collections::HashMap;
 
@@ -529,6 +533,23 @@ fn private_programs(private: &[u8]) -> (Vec<Vec<u8>>, Vec<NamedCharstring>) {
         back = [std::mem::take(&mut back[1]), token.to_vec()];
     }
     (subrs, glyphs)
+}
+
+/// What each code is in a Type 1 program's built-in encoding, by its glyph names — the
+/// encoding a font with no `/Encoding` uses, and the base its `/Differences` apply to when
+/// it names none (ISO 32000-1 §9.6.6.1). Only the cleartext part is read. `None` when
+/// `data` is not a Type 1 program.
+pub(crate) fn builtin_encoding_chars(data: &[u8]) -> Option<HashMap<u8, char>> {
+    let eexec = find(data, b"eexec")?;
+    Some(match builtin_encoding(&data[..eexec]) {
+        BuiltinEncoding::Standard => (0..=255u8)
+            .filter_map(|code| Some((code, BaseEncoding::Standard.decode_char(code)?)))
+            .collect(),
+        BuiltinEncoding::Custom(names) => names
+            .into_iter()
+            .filter_map(|(code, name)| Some((code, glyph_name_to_unicode(&name)?)))
+            .collect(),
+    })
 }
 
 /// `/FontMatrix [a b c d e f]` in the cleartext.

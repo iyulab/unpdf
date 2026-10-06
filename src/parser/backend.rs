@@ -10,7 +10,9 @@ use crate::error::{Error, Result};
 use crate::model::{FieldType, FieldValue, FormField};
 
 use super::core14::StandardFont;
-use super::encoding::{build_encoding_map, decode_with_encoding_map, BaseEncoding};
+use super::encoding::{
+    build_encoding_map, decode_with_encoding_map, glyph_name_to_unicode, BaseEncoding,
+};
 use super::font::{
     is_likely_binary, parse_to_unicode_cmap, parse_truetype_cmap_table, ToUnicodeMap,
 };
@@ -1624,6 +1626,7 @@ impl RawBackend {
 struct RawFontResolver {
     cmap_cache: RwLock<HashMap<PageId, Option<ToUnicodeMap>>>,
     encoding_cache: RwLock<HashMap<PageId, Option<HashMap<u8, char>>>>,
+    program_encoding_cache: RwLock<HashMap<PageId, Option<HashMap<u8, char>>>>,
     cid_system_info_cache: RwLock<HashMap<PageId, Option<(String, String)>>>,
     metrics_cache: RwLock<HashMap<PageId, Option<FontMetrics>>>,
 }
@@ -1633,6 +1636,7 @@ impl RawFontResolver {
         Self {
             cmap_cache: RwLock::new(HashMap::new()),
             encoding_cache: RwLock::new(HashMap::new()),
+            program_encoding_cache: RwLock::new(HashMap::new()),
             cid_system_info_cache: RwLock::new(HashMap::new()),
             metrics_cache: RwLock::new(HashMap::new()),
         }
@@ -1858,6 +1862,19 @@ impl RawFontResolver {
         // without ToUnicode), so emit nothing rather than unreadable text.
         if is_identity_h || is_composite {
             return DecodedText::suppressed(TextSuppression::CompositeUnresolved);
+        }
+
+        // 5b. A font that embeds its program and gives no `/Encoding` uses the program's
+        //     built-in encoding (ISO 32000-1 §9.6.6.1) — TeX's fonts, for one, put
+        //     ligatures, quotes and dashes at codes no Latin encoding has there. Before
+        //     the binary judgement below: those codes are control characters in Latin-1.
+        if let Some(fid) = font_obj_id {
+            if let Some(enc_map) = self.program_encoding(doc, fid) {
+                let decoded = decode_with_encoding_map(bytes, &enc_map);
+                if !decoded.is_empty() {
+                    return DecodedText::text(decoded);
+                }
+            }
         }
 
         // 6. A standard 14 font without `/Encoding` uses its built-in encoding
@@ -2169,6 +2186,43 @@ impl RawFontResolver {
         result
     }
 
+    /// The built-in encoding of the font's embedded program, as characters: what a code is
+    /// when the font dictionary gives no `/Encoding`, and the base `/Differences` apply to
+    /// when it names no `/BaseEncoding` (ISO 32000-1 §9.6.6.1 — for an embedded program the
+    /// implicit base is the program's own encoding, not StandardEncoding). Read for a Type 1
+    /// program (`/FontFile`); `None` for any other font.
+    fn program_encoding(
+        &self,
+        doc: &RawDocument,
+        font_obj_id: PageId,
+    ) -> Option<HashMap<u8, char>> {
+        if let Some(cached) = self
+            .program_encoding_cache
+            .read()
+            .unwrap()
+            .get(&font_obj_id)
+        {
+            return cached.clone();
+        }
+        let result = doc
+            .get_dict(font_obj_id)
+            .ok()
+            .filter(|dict| {
+                !self.is_composite_font(doc, font_obj_id)
+                    && raw_dict_get(dict, b"FontDescriptor").is_some()
+            })
+            .and_then(|dict| embedded_font_program(doc, dict))
+            .and_then(|(format, data)| match format {
+                FontFormat::Type1 => super::type1::builtin_encoding_chars(&data),
+                _ => None,
+            });
+        self.program_encoding_cache
+            .write()
+            .unwrap()
+            .insert(font_obj_id, result.clone());
+        result
+    }
+
     /// Parse the /Encoding entry from a font dictionary.
     ///
     /// The /Encoding can be:
@@ -2191,12 +2245,8 @@ impl RawFontResolver {
             }
             // Encoding dictionary with optional BaseEncoding and Differences
             RawPdfObject::Dict(dict) => {
-                let base = raw_dict_get(dict, b"BaseEncoding")
-                    .and_then(|b| b.as_name())
-                    .and_then(BaseEncoding::from_name);
-
                 let differences = self.parse_differences(doc, dict);
-                Some(build_encoding_map(base, &differences))
+                Some(self.encoding_over_base(doc, font_obj_id, dict, &differences))
             }
             RawPdfObject::Reference(n, g) => {
                 let obj = doc.get_object((*n, *g))?;
@@ -2207,17 +2257,40 @@ impl RawFontResolver {
                         Some(build_encoding_map(Some(base), &[]))
                     }
                     RawPdfObject::Dict(dict) => {
-                        let base = raw_dict_get(dict, b"BaseEncoding")
-                            .and_then(|b| b.as_name())
-                            .and_then(BaseEncoding::from_name);
                         let differences = self.parse_differences(doc, dict);
-                        Some(build_encoding_map(base, &differences))
+                        Some(self.encoding_over_base(doc, font_obj_id, dict, &differences))
                     }
                     _ => None,
                 }
             }
             _ => None,
         }
+    }
+
+    /// An encoding dictionary's map: its `/Differences` over its `/BaseEncoding` — or, when
+    /// it names none, over the embedded program's own encoding if the font has one, else
+    /// StandardEncoding.
+    fn encoding_over_base(
+        &self,
+        doc: &RawDocument,
+        font_obj_id: PageId,
+        dict: &RawPdfDict,
+        differences: &[(u8, String)],
+    ) -> HashMap<u8, char> {
+        let named = raw_dict_get(dict, b"BaseEncoding")
+            .and_then(|b| b.as_name())
+            .and_then(BaseEncoding::from_name);
+        if named.is_none() {
+            if let Some(mut map) = self.program_encoding(doc, font_obj_id) {
+                for (code, name) in differences {
+                    if let Some(ch) = glyph_name_to_unicode(name) {
+                        map.insert(*code, ch);
+                    }
+                }
+                return map;
+            }
+        }
+        build_encoding_map(named, differences)
     }
 
     /// Parse a /Differences array from an encoding dictionary.

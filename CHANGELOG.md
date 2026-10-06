@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Fixed
+
+- **Text in fonts that embed a Type 1 program reads through the program's own encoding.** A
+  font with no `/Encoding` now uses its program's built-in encoding, and an encoding dictionary
+  with no `/BaseEncoding` applies its `/Differences` to it (ISO 32000-1 §9.6.6.1) — before,
+  both fell back to StandardEncoding or a Latin-1 guess. TeX's fonts are the common case: they
+  put ligatures, quotes and dashes at codes no Latin encoding has there, so `coefficient` came
+  out as `coecient`, `“fair”` as `\fair"` and `23.5–54` as `23.5{54`.
+- **Every name in the Adobe Glyph List resolves.** Glyph names were looked up in a hand-kept
+  subset of the list; `ff`, `ffi`, `ffl`, Greek letters and most of the other 4,000-odd names
+  were missing, so a `/Differences` entry or a font program naming them lost the character.
+  The list is now generated whole (`scripts/gen_agl.py`).
+
 ### Added
 
 - **Rendering draws text in embedded Type 1 fonts.** `render_page` reads a font descriptor's
