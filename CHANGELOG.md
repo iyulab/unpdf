@@ -15,6 +15,11 @@
   as text. Such punctuation is now written outside the markers (`32, *s*`), and a run that is
   only punctuation there is written plain. Both `to_markdown` and the streaming renderer.
 
+### Changed
+
+- Requires `unparser-shared` 0.3 — the rule for where an emphasis delimiter may stand is now
+  shared with the family's other Markdown writers.
+
 ## 0.31.0 — 2026-10-07
 
 ### Fixed

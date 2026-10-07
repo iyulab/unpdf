@@ -17,6 +17,7 @@
 
 use super::{RenderOptions, TableFallback};
 use crate::model::{Alignment, Block, InlineContent, Table, TableRow, TextStyle};
+use unparser_shared::markdown::emphasis_span;
 
 /// Whether `block` is a list item.
 fn is_list_item(block: &Block) -> bool {
@@ -55,27 +56,22 @@ pub(super) fn apply_text_style(
         return text.to_string();
     }
 
-    let mut leading_len = text.len() - text.trim_start().len();
-    let mut core_end = text.len() - (text.len() - text.trim_end().len());
-    if leading_len >= core_end {
-        // All whitespace — nothing to emphasise.
+    // The delimiters land against the neighbours only when nothing is wrapped around them;
+    // inside a tag they touch `>` and `<`, which CommonMark always accepts.
+    let outer_delimiter = (style.bold || style.italic || style.strikethrough)
+        && !(style.superscript || style.subscript || style.underline);
+    let span = if outer_delimiter {
+        emphasis_span(text, before, after)
+    } else {
+        emphasis_span(text, None, None)
+    };
+    let Some(span) = span else {
+        // Nothing to emphasise: whitespace, or punctuation between words.
         return text.to_string();
-    }
-    if style.bold || style.italic || style.strikethrough {
-        let touches_a_word = |c: Option<char>| c.is_some_and(|c| !is_flanking_neutral(c));
-        if leading_len == 0 && touches_a_word(before) {
-            leading_len = core_start_past_punctuation(text, leading_len, core_end);
-        }
-        if core_end == text.len() && touches_a_word(after) {
-            core_end = core_end_before_punctuation(text, leading_len, core_end);
-        }
-        if leading_len >= core_end {
-            return text.to_string();
-        }
-    }
-    let leading = &text[..leading_len];
-    let core = &text[leading_len..core_end];
-    let trailing = &text[core_end..];
+    };
+    let leading = &text[..span.start];
+    let trailing = &text[span.end..];
+    let core = &text[span];
 
     // Apply styles (innermost first), matching the historical nesting order.
     let mut styled = core.to_string();
@@ -109,55 +105,6 @@ pub(super) fn leading_char(item: &InlineContent) -> Option<char> {
         InlineContent::Link { .. } => Some('['),
         InlineContent::Image { .. } => Some('!'),
     }
-}
-
-/// Whitespace or punctuation — what CommonMark lets an emphasis delimiter touch on its
-/// outside when its inside is punctuation. Punctuation is the Unicode P and S categories; a
-/// character that is neither alphanumeric nor whitespace nor a control is one of them, save
-/// for combining marks, which do not stand at a run's edge.
-fn is_flanking_neutral(c: char) -> bool {
-    c.is_whitespace() || !(c.is_alphanumeric() || c.is_control())
-}
-
-/// The characters of `text[start..end]` as units, a backslash escape (`\*`) being one unit
-/// — so the escape and its character never split across an emphasis delimiter.
-fn escape_units(text: &str, start: usize, end: usize) -> Vec<(usize, usize)> {
-    let mut units = Vec::new();
-    let mut chars = text[start..end].char_indices().peekable();
-    while let Some((i, c)) = chars.next() {
-        let mut j = i + c.len_utf8();
-        if c == '\\' {
-            if let Some(&(k, escaped)) = chars.peek() {
-                j = k + escaped.len_utf8();
-                chars.next();
-            }
-        }
-        units.push((start + i, start + j));
-    }
-    units
-}
-
-/// Where the emphasised core starts once leading punctuation and spaces are left out.
-fn core_start_past_punctuation(text: &str, start: usize, end: usize) -> usize {
-    escape_units(text, start, end)
-        .into_iter()
-        .find(|&(i, j)| {
-            let c = text[i..j].chars().last().unwrap_or(' ');
-            !is_flanking_neutral(c)
-        })
-        .map_or(end, |(i, _)| i)
-}
-
-/// Where the emphasised core ends once trailing punctuation and spaces are left out.
-fn core_end_before_punctuation(text: &str, start: usize, end: usize) -> usize {
-    escape_units(text, start, end)
-        .into_iter()
-        .rev()
-        .find(|&(i, j)| {
-            let c = text[i..j].chars().last().unwrap_or(' ');
-            !is_flanking_neutral(c)
-        })
-        .map_or(start, |(_, j)| j)
 }
 
 /// Render a table to Markdown, honoring [`RenderOptions::table_fallback`] for a table
