@@ -21,6 +21,10 @@ pub struct TextSpan {
     pub y: f32,
     /// Width of the text
     pub width: f32,
+    /// Whether `width` is the run's advance from the font's glyph widths. Otherwise it is an
+    /// estimate from the characters and the font size — a plausible box, too coarse to
+    /// measure gaps with.
+    pub width_measured: bool,
     /// Font size in points
     pub font_size: f32,
     /// Font name (e.g., "Helvetica-Bold")
@@ -45,6 +49,7 @@ impl TextSpan {
             x,
             y,
             width: 0.0, // Will be calculated later if needed
+            width_measured: false,
             font_size,
             font_name,
             is_bold,
@@ -62,6 +67,21 @@ impl TextSpan {
         self.y + self.font_size * 0.8 // Approximate ascender
     }
 }
+
+/// A gap between two runs of one line wider than this fraction of the font size separates
+/// words; narrower ones are kerning, or a change of font inside a word.
+const WORD_GAP_EM: f32 = 0.15;
+
+/// How much more room than a syllable and a space, in ems of the line's font size, a line
+/// of a producer that breaks at any syllable may show — the slack of reading glyph extents.
+const SYLLABLE_ROOM_SLACK: f32 = 0.25;
+
+/// A line ending within this fraction of an em of its block's right edge runs to it.
+const FLUSH_EM: f32 = 0.25;
+
+/// Below this much room, in ems (a Hangul syllable's width), a justified column's line that
+/// breaks between two syllables ends inside a word more often than not.
+const IN_WORD_ROOM_EM: f32 = 0.8;
 
 /// A text line composed of multiple spans on the same baseline.
 #[derive(Debug, Clone)]
@@ -250,6 +270,58 @@ impl TextLine {
         segs
     }
 
+    /// Where the line's text ends on the right.
+    fn right(&self) -> f32 {
+        self.spans
+            .iter()
+            .map(|s| s.x + s.width)
+            .fold(self.x, f32::max)
+    }
+
+    /// The gaps between the line's spans that separate words — wider than [`WORD_GAP_EM`]
+    /// of an em — or `None` when the line's spacing cannot be read off its gaps: some span's
+    /// width is an estimate, or some span holds whitespace (its producer writes spaces as
+    /// glyphs, and how far those were stretched does not show).
+    pub(crate) fn word_gaps(&self) -> Option<Vec<f32>> {
+        if self.spans.is_empty()
+            || self
+                .spans
+                .iter()
+                .any(|s| !s.width_measured || s.text.contains(char::is_whitespace))
+        {
+            return None;
+        }
+        Some(
+            self.spans
+                .windows(2)
+                .map(|pair| pair[1].x - (pair[0].x + pair[0].width))
+                .filter(|&gap| gap > self.font_size * WORD_GAP_EM)
+                .collect(),
+        )
+    }
+
+    /// How wide the line's first unit of breaking is for a producer that breaks lines at any
+    /// syllable: one syllable (an em) when the line starts with Hangul or another script
+    /// broken anywhere, otherwise the leading run of characters that is not — a Latin word
+    /// or a number, which is not broken.
+    fn leading_unit_width(&self) -> f32 {
+        let Some(first) = self.spans.first() else {
+            return 0.0;
+        };
+        let breaks_anywhere = |c: char| is_hangul_char(c) || is_spaceless_script_char(c);
+        let chars = first.text.chars().count().max(1);
+        let lead = first
+            .text
+            .chars()
+            .take_while(|&c| !breaks_anywhere(c) && !c.is_whitespace())
+            .count();
+        if lead == 0 {
+            first.font_size
+        } else {
+            first.width * lead as f32 / chars as f32
+        }
+    }
+
     /// Check if the line is predominantly bold.
     pub fn is_bold(&self) -> bool {
         let bold_chars: usize = self
@@ -329,7 +401,7 @@ impl TextBlock {
     /// Whitespace a line ends or starts with at a join is the line break's, not text, and
     /// does not double the space.
     pub fn text(&self) -> String {
-        let marks = self.marks_word_boundaries();
+        let in_word = self.hangul_breaks_in_words();
         let texts: Vec<String> = self.lines.iter().map(TextLine::text).collect();
         let last = texts.len().saturating_sub(1);
         let mut out = String::new();
@@ -341,24 +413,111 @@ impl TextBlock {
             };
             let piece = if i < last { piece.trim_end() } else { piece };
             if i > 0 {
-                out.push_str(line_join(&texts[i - 1], text, marks));
+                out.push_str(line_join(&texts[i - 1], text, in_word[i - 1]));
             }
             out.push_str(piece);
         }
         out
     }
 
+    /// For each line break of the block (after line `i`), whether a break there between two
+    /// Hangul syllables with no space falls inside a word — what [`line_join`] needs to join
+    /// Korean, which uses spaces between words but may break a line at any syllable. Such a
+    /// break says nothing by itself; the block has to show how its producer breaks lines:
+    ///
+    /// - It writes a space at the breaks between words ([`Self::marks_word_boundaries`]):
+    ///   every break without one is inside a word.
+    /// - It draws word gaps as moves, so its lines show how full they are
+    ///   ([`Self::tight_breaks`]): in a justified column, a line that lacks less of it than
+    ///   most of a syllable ends inside a word.
+    pub(crate) fn hangul_breaks_in_words(&self) -> Vec<bool> {
+        let breaks = self.lines.len().saturating_sub(1);
+        if self.marks_word_boundaries() {
+            vec![true; breaks]
+        } else {
+            self.tight_breaks()
+        }
+    }
+
     /// Whether the producer writes a space at the line breaks that fall between words: some
     /// line of the block ends with one, or the next starts with one. Then a break with none
-    /// is inside a word — what [`line_join`] needs to join Korean, which uses spaces between
-    /// words but breaks lines at any syllable.
-    pub(crate) fn marks_word_boundaries(&self) -> bool {
+    /// is inside a word.
+    fn marks_word_boundaries(&self) -> bool {
         self.lines.windows(2).any(|pair| {
             let (a, b) = (pair[0].text(), pair[1].text());
             !a.trim().is_empty()
                 && !b.trim().is_empty()
                 && (a.ends_with(char::is_whitespace) || b.starts_with(char::is_whitespace))
         })
+    }
+
+    /// For each line break, whether the line before it is too full to end between words.
+    ///
+    /// This reads a justified column: its lines run to the column's right edge, and a line
+    /// hands what it lacks of the column — its *room* — to its word gaps, which stretch past
+    /// the block's narrowest one by that much. A producer that breaks at any syllable leaves
+    /// a line less room than the next line's first syllable (or unbreakable run of Latin or
+    /// digits) and a space; one that breaks only between words leaves up to a whole word.
+    ///
+    /// In a column of the first kind a line ending inside a word has less room than a
+    /// syllable, and one ending between words keeps the dropped space in its room as well,
+    /// so the two overlap but lean apart: below [`IN_WORD_ROOM_EM`] of a syllable a break is
+    /// inside a word about three times in four, above it mostly between words (measured on
+    /// justified Korean reports, a few hundred breaks). The break is joined below it.
+    ///
+    /// The block reads as such a column when most of its lines whose word gaps can be
+    /// measured ([`TextLine::word_gaps`]) — two at least — run to its right edge, and hardly
+    /// any of those has more room than a producer breaking at syllables would leave. Lines
+    /// that stop short are not read: a paragraph's last line, where blocks hold several.
+    fn tight_breaks(&self) -> Vec<bool> {
+        let breaks = self.lines.len().saturating_sub(1);
+        let no = vec![false; breaks];
+        let gaps: Vec<Option<Vec<f32>>> = self.lines.iter().map(TextLine::word_gaps).collect();
+        let Some(space) = gaps
+            .iter()
+            .flatten()
+            .flatten()
+            .copied()
+            .min_by(f32::total_cmp)
+        else {
+            return no;
+        };
+        let right = self
+            .lines
+            .iter()
+            .zip(&gaps)
+            .filter(|(_, g)| g.is_some())
+            .map(|(line, _)| line.right())
+            .fold(f32::MIN, f32::max);
+        // The room of each line before a break that runs to the right edge.
+        let rooms: Vec<Option<f32>> = (0..breaks)
+            .map(|i| {
+                let line = &self.lines[i];
+                let line_gaps = gaps[i].as_ref()?;
+                (right - line.right() < line.font_size * FLUSH_EM)
+                    .then(|| line_gaps.iter().map(|g| g - space).sum())
+            })
+            .collect();
+        let measured = gaps[..breaks].iter().flatten().count();
+        let flush = rooms.iter().flatten().count();
+        // Lines with more room than breaking at syllables leaves. One in ten is tolerated:
+        // something else on the line — a page number set on its baseline — widens a gap.
+        let roomy = (0..breaks)
+            .filter(|&i| {
+                rooms[i].is_some_and(|room| {
+                    let next = &self.lines[i + 1];
+                    room >= next.leading_unit_width() + space + next.font_size * SYLLABLE_ROOM_SLACK
+                })
+            })
+            .count();
+        if flush < 2 || flush * 2 < measured || roomy * 10 > flush {
+            return no;
+        }
+        (0..breaks)
+            .map(|i| {
+                rooms[i].is_some_and(|room| room < self.lines[i + 1].font_size * IN_WORD_ROOM_EM)
+            })
+            .collect()
     }
 
     /// The list item's visible text with its marker (bullet or `N.`/`N)`) and
@@ -1203,6 +1362,7 @@ impl<'a> LayoutAnalyzer<'a> {
                         span.is_italic |= text_state.font_italic;
                         if let Some(width) = measured_width {
                             span.width = width;
+                            span.width_measured = true;
                         }
                         spans.push(span);
                     } else if text.chars().any(char::is_whitespace) {
@@ -2102,17 +2262,16 @@ fn ctm_y_scale(ctm: &[f32; 6]) -> f32 {
     (ctm[2] * ctm[2] + ctm[3] * ctm[3]).sqrt().max(0.01)
 }
 
-/// Check if a character is a Hangul (Korean) syllable or jamo.
 /// What joins line `prev` to the next line `next` of one block: a space, unless the break
 /// falls inside a word.
 ///
 /// A space the producer wrote at the break says it is a word boundary. Without one, two
 /// characters of a script with no spaces between words (CJK ideographs, kana) join directly,
-/// and so do two Hangul syllables when the block shows the producer marking its word
-/// boundaries (`marks_word_boundaries`) — Korean breaks a line at any syllable, so a
-/// break with no space there is inside a word. Anything else keeps the space: a Latin
-/// line's producer rarely writes one, and its words never break without a hyphen.
-pub(crate) fn line_join(prev: &str, next: &str, marks_word_boundaries: bool) -> &'static str {
+/// and so do two Hangul syllables when the block shows this break is inside a word
+/// (`hangul_in_word`, from [`TextBlock::hangul_breaks_in_words`]) — Korean may break a line
+/// at any syllable. Anything else keeps the space: a Latin line's producer rarely writes
+/// one, and its words never break without a hyphen.
+pub(crate) fn line_join(prev: &str, next: &str, hangul_in_word: bool) -> &'static str {
     if prev.ends_with(char::is_whitespace) || next.starts_with(char::is_whitespace) {
         return " ";
     }
@@ -2123,7 +2282,7 @@ pub(crate) fn line_join(prev: &str, next: &str, marks_word_boundaries: bool) -> 
         return " ";
     };
     let spaceless = is_spaceless_script_char(a) && is_spaceless_script_char(b);
-    let hangul_word = marks_word_boundaries && is_hangul_char(a) && is_hangul_char(b);
+    let hangul_word = hangul_in_word && is_hangul_char(a) && is_hangul_char(b);
     if spaceless || hangul_word {
         ""
     } else {
@@ -2131,6 +2290,7 @@ pub(crate) fn line_join(prev: &str, next: &str, marks_word_boundaries: bool) -> 
     }
 }
 
+/// Check if a character is a Hangul (Korean) syllable or jamo.
 fn is_hangul_char(c: char) -> bool {
     let code = c as u32;
     // Hangul Syllables
@@ -2144,10 +2304,6 @@ fn is_hangul_char(c: char) -> bool {
     || (0xD7B0..=0xD7FF).contains(&code)
 }
 
-/// Check if a character is a CJK (Chinese/Japanese/Korean) character.
-///
-/// CJK characters typically don't need spaces between them.
-/// Compute the median font size from a slice of spans.
 /// One XY-Cut block per span: where its text lies on the page.
 pub(crate) fn xycut_blocks(spans: &[TextSpan]) -> Vec<super::xycut::Block> {
     spans
@@ -2498,6 +2654,7 @@ fn merge_fragmented_spans(spans: Vec<TextSpan>) -> Vec<TextSpan> {
         if let Some(prev) = result.last_mut() {
             if prev.width > 0.0 && span.width > 0.0 && abuts(prev, &span) {
                 prev.width = prev.width.max(span.x + span.width - prev.x);
+                prev.width_measured &= span.width_measured;
                 prev.text.push_str(&span.text);
                 continue;
             }
@@ -2549,6 +2706,7 @@ fn merge_fragmented_spans(spans: Vec<TextSpan>) -> Vec<TextSpan> {
             // Update width to cover the merged extent
             let new_end = span.x + span.font_size * 0.6 * span.text.chars().count() as f32;
             prev.width = new_end - prev.x;
+            prev.width_measured = false;
             prev.text.push_str(&span.text);
 
             // A merged fragment that now ends in a word space is a completed word:
@@ -2648,6 +2806,7 @@ mod tests {
                 .iter()
                 .map(|&(text, x, y, size)| TextSpan {
                     width: estimate_text_width(text, size),
+                    width_measured: false,
                     ..TextSpan::new(text.to_string(), x, y, size, "Helvetica".to_string())
                 })
                 .collect(),
@@ -3201,6 +3360,7 @@ mod tests {
                 x: 100.0 + i as f32 * 6.0,
                 y: 500.0,
                 width: 0.0, // width=0 is the fragmentation signal
+                width_measured: false,
                 font_size: 12.0,
                 font_name: "Helvetica".to_string(),
                 is_bold: false,
@@ -3222,6 +3382,7 @@ mod tests {
                 x: 100.0,
                 y: 500.0,
                 width: 30.0,
+                width_measured: true,
                 font_size: 12.0,
                 font_name: "Helvetica".to_string(),
                 is_bold: false,
@@ -3232,6 +3393,7 @@ mod tests {
                 x: 145.0, // gap indicates word space
                 y: 500.0,
                 width: 30.0,
+                width_measured: true,
                 font_size: 12.0,
                 font_name: "Helvetica".to_string(),
                 is_bold: false,
@@ -3300,6 +3462,7 @@ mod tests {
     fn span_at(text: &str, x: f32, width: f32) -> TextSpan {
         TextSpan {
             width,
+            width_measured: true,
             ..TextSpan::new(text.to_string(), x, 500.0, 12.0, "Helvetica".to_string())
         }
     }

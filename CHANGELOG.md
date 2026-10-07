@@ -10,6 +10,20 @@
   boundary — whitespace at the break; between two CJK ideographs or kana it is nothing, and
   between two Hangul syllables it is nothing when the paragraph shows its producer writing a
   space at the breaks that fall between words. Latin text is joined as before.
+- **Korean in justified columns whose word gaps are drawn as moves joins inside a word too.**
+  Such producers write no space at any break, so nothing above applied. A column that breaks
+  lines at any syllable leaves each line less room than a syllable and a space; a line of it
+  with less than most of a syllable's room — read off how far its word gaps were stretched —
+  now joins the next line without a space. A block whose lines show room for whole words
+  (a producer that breaks only between words) keeps every break spaced. On justified Korean
+  reports about four in five of the breaks it joins are inside a word; a break between words
+  with as little room is joined too, which no producer-independent evidence can tell apart.
+
+### Changed
+
+- **`TextSpan` has a `width_measured` field** — whether `width` is the run's advance from the
+  font's glyph widths or an estimate from its characters. Code building `TextSpan` with a
+  struct literal sets it.
 
 ## 0.33.1 — 2026-10-07
 

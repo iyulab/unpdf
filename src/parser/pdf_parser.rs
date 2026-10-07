@@ -480,7 +480,7 @@ fn styled_paragraph(block: &super::layout::TextBlock) -> Paragraph {
     }
 
     let mut runs: Vec<TextRun> = Vec::new();
-    let marks = block.marks_word_boundaries();
+    let in_word = block.hangul_breaks_in_words();
     for (line_idx, line) in block.lines.iter().enumerate() {
         // At a join the line break is what `line_join` says, as in `TextBlock::text`:
         // whitespace on either side of it is dropped.
@@ -494,8 +494,11 @@ fn styled_paragraph(block: &super::layout::TextBlock) -> Paragraph {
                 }
                 runs.pop();
             }
-            let join =
-                super::layout::line_join(&block.lines[line_idx - 1].text(), &line.text(), marks);
+            let join = super::layout::line_join(
+                &block.lines[line_idx - 1].text(),
+                &line.text(),
+                in_word[line_idx - 1],
+            );
             if !join.is_empty() {
                 push_run(&mut runs, join, false, false);
             }
@@ -1044,12 +1047,134 @@ mod tests {
         )
     }
 
+    /// A column `width` wide of `lines` as a producer draws them that writes each word as its
+    /// own run, measured, with the word gaps as moves: every line but the last justified to
+    /// the column by stretching its gaps, the last set with natural gaps. Each syllable is
+    /// 10pt wide (an em), a natural word gap 3.5pt.
+    fn justified_block(lines: &[&str], width: f32) -> super::super::layout::TextBlock {
+        use super::super::layout::{BlockType, TextBlock, TextLine, TextSpan};
+        let last = lines.len() - 1;
+        let lines = lines.iter().enumerate().map(|(i, text)| {
+            let words: Vec<&str> = text.split(' ').collect();
+            let ink: f32 = words.iter().map(|w| w.chars().count() as f32 * 10.0).sum();
+            let natural = ink + 3.5 * (words.len() - 1) as f32;
+            let gap = if i == last || words.len() < 2 {
+                3.5
+            } else {
+                3.5 + (width - natural) / (words.len() - 1) as f32
+            };
+            let mut x = 72.0;
+            let spans = words
+                .iter()
+                .map(|word| {
+                    let w = word.chars().count() as f32 * 10.0;
+                    let span = TextSpan {
+                        width: w,
+                        width_measured: true,
+                        ..TextSpan::new(
+                            word.to_string(),
+                            x,
+                            700.0 - i as f32 * 14.0,
+                            10.0,
+                            "Batang".to_string(),
+                        )
+                    };
+                    x += w + gap;
+                    span
+                })
+                .collect();
+            TextLine::from_spans(spans)
+        });
+        TextBlock::new(lines.collect(), BlockType::Paragraph)
+    }
+
     /// Both joins — the plain text and the styled runs — give the same text.
     fn joined(lines: &[&str]) -> String {
-        let block = block_of(lines);
+        joined_block(&block_of(lines))
+    }
+
+    fn joined_block(block: &super::super::layout::TextBlock) -> String {
         let plain = block.text();
-        assert_eq!(styled_paragraph(&block).plain_text(), plain);
+        assert_eq!(styled_paragraph(block).plain_text(), plain);
         plain
+    }
+
+    /// A justified column whose producer marks no word boundary with a space glyph: the
+    /// lines that lack less of the column than most of a syllable end inside a word; the one
+    /// with more room ends between words.
+    #[test]
+    fn a_justified_korean_column_shows_its_breaks_inside_words_by_how_full_lines_are() {
+        let block = justified_block(
+            &[
+                // 211pt of 212: inside 둔화.
+                "먼저 회의 결과 물가상승률이 매우 기조적인 둔",
+                // 201pt: more than a syllable's room — between words.
+                "화 흐름을 계속 지속하고 있지만 여전히 높은",
+                // 211pt: inside 기준금리를.
+                "수준이고 전망 등 불확실성도 큰 만큼 기준금리",
+                "를 현재의 수준에서 유지하였다.",
+            ],
+            212.0,
+        );
+        assert_eq!(
+            joined_block(&block),
+            "먼저 회의 결과 물가상승률이 매우 기조적인 둔화 흐름을 계속 지속하고 있지만 \
+             여전히 높은 수준이고 전망 등 불확실성도 큰 만큼 기준금리를 현재의 수준에서 \
+             유지하였다."
+        );
+    }
+
+    /// A line that lacks more of the column than a syllable and a space — here stretched
+    /// across the column with 125pt of room — is a producer that breaks between words: no
+    /// line's fullness is read as a break inside a word.
+    #[test]
+    fn a_column_with_a_roomy_line_keeps_every_korean_break_spaced() {
+        let block = justified_block(
+            &[
+                "먼저 회의 결과 물가상승률이 매우 기조적인 둔",
+                "화 흐름을 지속하고",
+                "있지만 여전히 높은 수준이었다.",
+            ],
+            212.0,
+        );
+        assert_eq!(
+            joined_block(&block),
+            "먼저 회의 결과 물가상승률이 매우 기조적인 둔 화 흐름을 지속하고 있지만 여전히 \
+             높은 수준이었다."
+        );
+    }
+
+    /// Spaces written as glyphs inside the runs hide how far they were stretched, so the
+    /// lines' fullness is not read at all.
+    #[test]
+    fn korean_lines_with_space_glyphs_inside_runs_are_not_read_by_fullness() {
+        use super::super::layout::{BlockType, TextBlock, TextLine, TextSpan};
+        let line = |text: &str, i: usize| {
+            TextLine::from_spans(vec![TextSpan {
+                width: 212.0,
+                width_measured: true,
+                ..TextSpan::new(
+                    text.to_string(),
+                    72.0,
+                    700.0 - i as f32 * 14.0,
+                    10.0,
+                    "Batang".to_string(),
+                )
+            }])
+        };
+        let block = TextBlock::new(
+            vec![
+                line("먼저 회의 결과 물가상승률이 매우 기조적인 둔", 0),
+                line("화 흐름을 계속 지속하고 있지만 여전히 높은", 1),
+                line("수준이었다.", 2),
+            ],
+            BlockType::Paragraph,
+        );
+        assert_eq!(
+            joined_block(&block),
+            "먼저 회의 결과 물가상승률이 매우 기조적인 둔 화 흐름을 계속 지속하고 있지만 \
+             여전히 높은 수준이었다."
+        );
     }
 
     #[test]
@@ -1118,6 +1243,7 @@ mod tests {
     fn span_at(text: &str, x: f32, width: f32) -> TextSpan {
         TextSpan {
             width,
+            width_measured: true,
             ..TextSpan::new(text.to_string(), x, 500.0, 12.0, "Helvetica".into())
         }
     }
