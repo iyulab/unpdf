@@ -2773,7 +2773,7 @@ dependencies = [
 
 [[package]]
 name = "unpdf"
-version = "0.31.0"
+version = "0.32.0"
 dependencies = [
  "aes",
  "cbc",
@@ -2807,7 +2807,7 @@ dependencies = [
 
 [[package]]
 name = "unpdf-cli"
-version = "0.31.0"
+version = "0.32.0"
 dependencies = [
  "clap",
  "colored",
@@ -2825,7 +2825,7 @@ dependencies = [
 
 [[package]]
 name = "unpdf-wasm"
-version = "0.31.0"
+version = "0.32.0"
 dependencies = [
  "js-sys",
  "serde_json",
