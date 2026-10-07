@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **The `raster` feature reads TrueType, OpenType and bare CFF programs with `skrifa`** (and its
+  `read-fonts` PostScript reader) instead of `ttf-parser`, which is no longer maintained
+  (RUSTSEC-2026-0192). Pages render the same.
+
 ## 0.32.0 — 2026-10-07
 
 ### Fixed

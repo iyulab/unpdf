@@ -38,7 +38,7 @@ ai = ["unparser-shared/ai"]
 # Page rasterization (`PdfParser::render_page`): paints a page from the same content
 # interpretation text extraction reads, so the page rendered is the page extracted. Off by
 # default; pure Rust (tiny-skia rasterizer, zune-jpeg for DCT images), wasm untouched.
-raster = ["dep:tiny-skia", "dep:zune-jpeg", "dep:ttf-parser"]
+raster = ["dep:tiny-skia", "dep:zune-jpeg", "dep:skrifa"]
 
 [dependencies]
 # Serialization
@@ -84,7 +84,8 @@ tokio = { version = "1.42", features = ["rt", "fs"], optional = true }
 # Rasterizer and JPEG decoder for the `raster` feature.
 tiny-skia = { version = "0.12", default-features = false, features = ["std", "simd"], optional = true }
 zune-jpeg = { version = "0.5", optional = true }
-ttf-parser = { version = "0.25", optional = true }
+# TrueType/OpenType outlines, and bare CFF programs through its `raw` (read-fonts) reader.
+skrifa = { version = "0.48", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rayon = "1.10"
