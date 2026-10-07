@@ -10,6 +10,11 @@
   then `## Basis Fields`) or was lost. A section number alone on its line — `4`, `4.2`, `IV`,
   `A` — set at least as large as the heading just below it and close above it now opens that
   heading (`# 4 Basis Fields`).
+- **Columns with a narrow gutter are read one at a time.** A page set in several columns with
+  a gutter about a line high (magazines, small type) was read line by line across when one
+  line of a column reached a point or two into the gutter — a justified line's measured
+  width, or a width estimated from the font size. A column's right edge is now read a little
+  way in when looking for a gutter, a fifth of the narrowest gutter that counts.
 - **A line break is one space.** Text joined across lines kept the space a line ended or
   started with as well as the one standing for the break, doubling it (`III.  Regulatory`).
 

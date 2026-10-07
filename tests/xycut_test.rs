@@ -112,6 +112,29 @@ fn a_narrow_gutter_between_two_text_columns_splits() {
     assert!(groups[0].iter().all(|b| b.x < 100.0), "left column first");
 }
 
+/// A gutter barely wider than the minimum, where one line of the left column runs two
+/// points into it — as a justified line's measured or estimated width does. The columns
+/// still split: a block's right edge is read a little way in.
+#[test]
+fn a_line_reaching_slightly_into_a_narrow_gutter_does_not_close_it() {
+    const BODY_7PT: XyCutConfig = XyCutConfig {
+        min_x_gap: 60.0,
+        min_y_gap: 36.0,
+        min_gutter: 8.0,
+    };
+    let mut blocks = Vec::new();
+    for i in 0..6 {
+        let y = 700.0 - i as f32 * 8.0;
+        // The left column ends at 290, the right one starts at 299: a 9-point gutter.
+        let left_width = if i == 3 { 202.2 } else { 200.0 };
+        blocks.push(make_block(90.0, y, left_width, 7.0));
+        blocks.push(make_block(299.0, y, 200.0, 7.0));
+    }
+    let groups = xycut_segment(&blocks, &BODY_7PT);
+    assert_eq!(groups.len(), 2, "{groups:?}");
+    assert!(groups[0].iter().all(|b| b.x < 100.0), "left column first");
+}
+
 /// The channel between a numbered list's markers and its items is as narrow as a
 /// gutter, but one side is a sliver: it must not split the list into a column of
 /// numbers followed by a column of items.

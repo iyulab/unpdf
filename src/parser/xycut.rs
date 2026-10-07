@@ -40,6 +40,11 @@ pub const GUTTER_MIN_SIDE_SHARE: f32 = 0.3;
 /// Minimum number of blocks on each side of a column gutter.
 pub const GUTTER_MIN_SIDE_BLOCKS: usize = 3;
 
+/// How far into a block its right edge is read when looking for a vertical channel, as a
+/// share of [`XyCutConfig::min_gutter`] — the error a glyph-width estimate or a trailing side
+/// bearing puts there.
+pub const GUTTER_EDGE_SLACK: f32 = 0.2;
+
 /// Minimum share of a region's width a line must span to count as a line of running text
 /// beside a gutter: a column's lines fill most of it, while the fragments a table of
 /// contents (entries | page numbers), a chart's labels or a list's markers leave beside a
@@ -543,9 +548,14 @@ fn find_best_vertical_gap(
     let num_bins = ((range / resolution) as usize).max(1);
     let mut profile = vec![0u32; num_bins];
 
+    // A block's right edge is where its text position ended, from glyph widths that are
+    // often estimated: a column's line can reach a point or two past where its ink stops and
+    // close a gutter only a line height wide. Its edge is read this much further in.
+    let edge_slack = config.min_gutter * GUTTER_EDGE_SLACK;
     for block in blocks {
         let start = ((block.x - min_x) / resolution) as usize;
-        let end = ((block.right() - min_x) / resolution) as usize;
+        let right = (block.right() - edge_slack).max(block.x);
+        let end = ((right - min_x) / resolution) as usize;
         for slot in profile.iter_mut().take(end.min(num_bins)).skip(start) {
             *slot += 1;
         }
