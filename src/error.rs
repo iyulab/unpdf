@@ -190,7 +190,7 @@ mod tests {
     }
 
     // These values cross the C-ABI boundary and are duplicated by hand in
-    // `bindings/unpdf.h` (`UnpdfErrorKind`). Pinning every one of them here — via the
+    // `include/unpdf.h` (`UnpdfErrorKind`). Pinning every one of them here — via the
     // same macro the sibling crates use — is what makes that duplication safe:
     // renumbering shows up as a failure instead of as silently misclassified errors in
     // a consumer. Adding a reason means adding a line with the next free number —

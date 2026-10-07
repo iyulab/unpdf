@@ -937,17 +937,25 @@ Install-Package Unpdf
 
 Alternatively, download from [GitHub Releases](https://github.com/iyulab/unpdf/releases):
 
-| Platform | Library File |
-|----------|-------------|
-| Windows x64 | `unpdf.dll` |
-| Linux x64 | `libunpdf.so` |
-| macOS | `libunpdf.dylib` |
+| Platform | Archive | Library |
+|----------|---------|---------|
+| Windows x64 | `libunpdf-windows-x86_64-v<version>.zip` | `unpdf.dll` |
+| Linux x64 (glibc) | `libunpdf-linux-x86_64-v<version>.tar.gz` | `libunpdf.so` |
+| Linux x64 (musl) | `libunpdf-linux-x86_64-musl-v<version>.tar.gz` | `libunpdf.so` |
+| macOS x64 | `libunpdf-macos-x86_64-v<version>.tar.gz` | `libunpdf.dylib` |
+| macOS arm64 | `libunpdf-macos-aarch64-v<version>.tar.gz` | `libunpdf.dylib` |
+
+Each archive holds the library and its C header, `unpdf.h`.
 
 Or build from source:
 
 ```bash
 cargo build --release --features ffi
 ```
+
+The C API is declared in [include/unpdf.h](include/unpdf.h). Failures return `NULL` (or
+`-1`); call `unpdf_last_error()` for the message and `unpdf_last_error_kind()` for the
+`UnpdfErrorKind` classification.
 
 ### C# Wrapper Usage
 

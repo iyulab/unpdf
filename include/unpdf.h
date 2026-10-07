@@ -35,6 +35,7 @@ typedef struct UnpdfDocument UnpdfDocument;
 /* Bit 4 is retired: it named a paragraph-spacing option that never reached the
    renderer. Retired bits are not reused; passing it yields the default rendering. */
 #define UNPDF_FLAG_PAGE_MARKERS      8u
+#define UNPDF_FLAG_REFINE           16u  /* Apply the shape-refinement pass */
 
 /* Format selector for unpdf_to_json. */
 #define UNPDF_JSON_PRETTY  0
@@ -118,6 +119,40 @@ UnpdfDocument* unpdf_parse_file(const char* path);
  */
 UnpdfDocument* unpdf_parse_bytes(const uint8_t* data, size_t len);
 
+/**
+ * Parse a document from a file path, with options.
+ *
+ * `options_json` is NULL (the defaults) or a JSON object whose fields are all optional;
+ * an absent field keeps its default:
+ *
+ *   { "error_mode": "strict" | "lenient", "extract_text": bool,
+ *     "extract_resources": bool, "min_image_dimension": number, "parallel": bool,
+ *     "pages": "all" | { "range": { "from": n, "to": n } } | { "pages": [n, ...] },
+ *     "password": string, "suppress_low_confidence_ocr": bool,
+ *     "ai_base_url": string, "ai_api_key": string, "ai_model": string,
+ *     "ai_image_scope": "all" | "low_confidence_pages_only" }
+ *
+ * The three ai_* credential fields go together.
+ *
+ * @param path UTF-8, null-terminated path.
+ * @param options_json UTF-8, null-terminated JSON, or NULL.
+ * @return Document handle, or NULL on error -- malformed options_json included
+ *         (UNPDF_ERROR_INVALID_ARGUMENT). Must be freed with unpdf_free_document.
+ */
+UnpdfDocument* unpdf_parse_file_with_options(const char* path, const char* options_json);
+
+/**
+ * Parse a document from a byte buffer, with options.
+ * Same `options_json` contract as unpdf_parse_file_with_options().
+ * @param data Pointer to at least `len` bytes.
+ * @param len  Buffer length in bytes.
+ * @param options_json UTF-8, null-terminated JSON, or NULL.
+ * @return Document handle, or NULL on error. Must be freed with
+ *         unpdf_free_document.
+ */
+UnpdfDocument* unpdf_parse_bytes_with_options(const uint8_t* data, size_t len,
+                                              const char* options_json);
+
 /** Free a document handle. Safe to call with NULL. */
 void unpdf_free_document(UnpdfDocument* doc);
 
@@ -127,6 +162,28 @@ void unpdf_free_document(UnpdfDocument* doc);
  * @return Markdown string (must be freed with unpdf_free_string), or NULL.
  */
 char* unpdf_to_markdown(const UnpdfDocument* doc, uint32_t flags);
+
+/**
+ * Convert the document to Markdown, with options.
+ *
+ * Reaches every rendering setting, where the flag bitmask reaches four, and is the only
+ * way to pass the AI refine pass its credentials. `options_json` is NULL (the defaults)
+ * or a JSON object whose fields are all optional:
+ *
+ *   { "image_path_prefix": string, "table_fallback": "markdown" | "html" | "ascii",
+ *     "max_heading_level": number, "include_frontmatter": bool,
+ *     "preserve_line_breaks": bool, "escape_special_chars": bool,
+ *     "cleanup_preset": "minimal" | "standard" | "aggressive", "refine": bool,
+ *     "line_width": number, "page_markers": "none" | "comment",
+ *     "pages": "all" | { "range": { "from": n, "to": n } } | { "pages": [n, ...] },
+ *     "ai_refine": { "base_url": string, "api_key": string, "model": string,
+ *                    "instructions": string } }
+ *
+ * @param options_json UTF-8, null-terminated JSON, or NULL.
+ * @return Markdown string (must be freed with unpdf_free_string), or NULL on error --
+ *         malformed options_json included.
+ */
+char* unpdf_to_markdown_with_options(const UnpdfDocument* doc, const char* options_json);
 
 /** Convert the document to plain text. Free with unpdf_free_string. */
 char* unpdf_to_text(const UnpdfDocument* doc);
