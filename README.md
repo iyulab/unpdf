@@ -16,7 +16,12 @@ A high-performance Rust library for extracting content from PDF documents to str
 - **Encrypted PDF support**: RC4 and AES-128 decryption (auto-tries empty password)
 - **Multiple output formats**: Markdown, Plain Text, JSON (with full metadata)
 - **Structure preservation**: Headings, paragraphs, lists, tables, inline formatting
-- **CJK text support**: Smart spacing for Korean, Chinese, Japanese with Adobe CMap resources
+- **CJK text support**: Adobe CMap resources; a paragraph's lines join without a space inside a
+  word — always between Chinese or Japanese characters, and between Hangul syllables where the
+  page shows the break falls inside a word (a space written only at word breaks, or how full a
+  justified column's line is)
+- **Page numbers left out**: bare page numbers in the header, the footer or a side margin are not
+  read into the text
 - **RTL text support**: Arabic and Hebrew with Unicode BiDi reordering
 - **Form field extraction**: AcroForm fields (text, checkbox, radio, dropdown) with values
 - **Multi-column layout**: Recursive XY-Cut algorithm for N-column detection

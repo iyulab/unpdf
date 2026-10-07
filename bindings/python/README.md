@@ -256,6 +256,13 @@ keep working. `ErrorKind` values are part of the native ABI: new reasons take ne
 numbers and existing ones are never renumbered, so treat an unrecognised value as a
 generic failure.
 
+## Native library
+
+The package ships the native library for your platform. To load another build of it — one
+you compiled from the Rust crate, say — set `UNPDF_LIB_PATH` to that file. A path that names no file
+is an error: importing raises `OSError` naming the path, rather than quietly loading the
+packaged library instead.
+
 ## License
 
 MIT License
