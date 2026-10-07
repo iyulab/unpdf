@@ -2,10 +2,10 @@
 
 use crate::error::Result;
 use crate::model::{
-    Block, Document, InlineContent, ListInfo, ListStyle, Page, Paragraph, Table, TextRun, TextStyle,
+    Block, Document, InlineContent, ListInfo, ListStyle, Page, Paragraph, Table, TextRun,
 };
 
-use super::syntax::{escape_markdown, format_link_destination, render_table};
+use super::syntax::{escape_markdown, format_link_destination, leading_char, render_table};
 use super::{CleanupPipeline, ExtractionStats, PageMarkerStyle, RenderOptions, RenderResult};
 
 /// Convert a document to Markdown.
@@ -249,10 +249,10 @@ impl MarkdownRenderer {
     }
 
     fn render_inline_content(&self, output: &mut String, content: &[InlineContent]) {
-        for item in content {
+        for (i, item) in content.iter().enumerate() {
             match item {
                 InlineContent::Text(run) => {
-                    self.render_text_run(output, run);
+                    self.render_text_run(output, run, content.get(i + 1).and_then(leading_char));
                 }
                 InlineContent::LineBreak => {
                     if self.options.preserve_line_breaks {
@@ -281,19 +281,18 @@ impl MarkdownRenderer {
         }
     }
 
-    fn render_text_run(&self, output: &mut String, run: &TextRun) {
+    /// Append `run`, styled for where it lands: after what `output` already holds, before
+    /// `after`.
+    fn render_text_run(&self, output: &mut String, run: &TextRun, after: Option<char>) {
         let text = if self.options.escape_special_chars {
             escape_markdown(&run.text)
         } else {
             run.text.clone()
         };
 
-        let styled = self.apply_text_style(&text, &run.style);
+        let styled =
+            super::syntax::apply_text_style(&text, &run.style, output.chars().next_back(), after);
         output.push_str(&styled);
-    }
-
-    fn apply_text_style(&self, text: &str, style: &TextStyle) -> String {
-        super::syntax::apply_text_style(text, style)
     }
 
     fn render_table(&self, output: &mut String, table: &Table) {

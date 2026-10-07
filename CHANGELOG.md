@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A font that declares itself italic is italic.** Italic was read from the font's name alone
+  (`Italic`, `Oblique`), so `NimbusRomNo9L-ReguItal`, `GaramondPremrPro-It` or TeX's `CMTI10`
+  and `CMMI10` came out upright. A font is now italic when its descriptor's `/ItalicAngle`
+  leans by a degree or more or its `/Flags` set Italic (ISO 32000-1 §9.8.1); the name still
+  counts.
+- **Emphasis next to punctuation is emphasis.** A bold, italic or struck-through run that began
+  or ended in punctuation and touched a letter or digit was written with its asterisks against
+  the punctuation (`32*, s*`), which CommonMark does not read as emphasis — the asterisks showed
+  as text. Such punctuation is now written outside the markers (`32, *s*`), and a run that is
+  only punctuation there is written plain. Both `to_markdown` and the streaming renderer.
+
 ## 0.31.0 — 2026-10-07
 
 ### Fixed

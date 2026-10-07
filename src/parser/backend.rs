@@ -106,6 +106,9 @@ pub struct BackendFontInfo {
     /// Whether the font declares itself bold — by its descriptor's `/FontWeight` or
     /// `/Flags` ForceBold, or its embedded program's own weight — whatever its name says.
     pub bold: bool,
+    /// Whether the font declares itself italic — by its descriptor's `/ItalicAngle` or
+    /// `/Flags` Italic — whatever its name says.
+    pub italic: bool,
 }
 
 /// A value from a PDF content stream operand.
@@ -1692,11 +1695,18 @@ impl RawBackend {
 // RawFontResolver — font resolution for RawBackend
 // ---------------------------------------------------------------------------
 
+/// The weight and slant a font declares of itself — see `RawFontResolver::declared_style`.
+#[derive(Debug, Clone, Copy, Default)]
+struct DeclaredStyle {
+    bold: bool,
+    italic: bool,
+}
+
 struct RawFontResolver {
     cmap_cache: RwLock<HashMap<PageId, Option<ToUnicodeMap>>>,
     encoding_cache: RwLock<HashMap<PageId, Option<HashMap<u8, char>>>>,
     program_encoding_cache: RwLock<HashMap<PageId, Option<HashMap<u8, char>>>>,
-    bold_cache: RwLock<HashMap<PageId, bool>>,
+    style_cache: RwLock<HashMap<PageId, DeclaredStyle>>,
     cid_system_info_cache: RwLock<HashMap<PageId, Option<(String, String)>>>,
     metrics_cache: RwLock<HashMap<PageId, Option<FontMetrics>>>,
 }
@@ -1707,7 +1717,7 @@ impl RawFontResolver {
             cmap_cache: RwLock::new(HashMap::new()),
             encoding_cache: RwLock::new(HashMap::new()),
             program_encoding_cache: RwLock::new(HashMap::new()),
-            bold_cache: RwLock::new(HashMap::new()),
+            style_cache: RwLock::new(HashMap::new()),
             cid_system_info_cache: RwLock::new(HashMap::new()),
             metrics_cache: RwLock::new(HashMap::new()),
         }
@@ -2408,16 +2418,20 @@ impl RawFontResolver {
         result
     }
 
-    /// Whether the font declares itself bold (§9.8.1): its descriptor's `/FontWeight` is 600
-    /// or more or its `/Flags` sets ForceBold, or its embedded program names a bold weight —
-    /// a Type 1 program's `FontInfo /Weight`, a CFF one's `Weight`, a TrueType or OpenType
-    /// one's OS/2 weight class. A composite font answers through its descendant. Names alone
-    /// miss the weights a family calls something else (URW's `-Medi` is its bold).
-    fn declares_bold(&self, doc: &RawDocument, font_obj_id: PageId) -> bool {
-        if let Some(&cached) = self.bold_cache.read().unwrap().get(&font_obj_id) {
+    /// The weight and slant the font declares (§9.8.1), whatever its name says.
+    ///
+    /// Bold: the descriptor's `/FontWeight` is 600 or more or its `/Flags` sets ForceBold,
+    /// or the embedded program names a bold weight — a Type 1 program's `FontInfo /Weight`,
+    /// a CFF one's `Weight`, a TrueType or OpenType one's OS/2 weight class. Italic: the
+    /// descriptor's `/ItalicAngle` leans (a degree or more — the entry is required, and
+    /// upright fonts write 0) or its `/Flags` sets Italic. A composite font answers through
+    /// its descendant. Names alone miss the styles a family calls something else (URW's
+    /// `-Medi` is its bold, `-ReguItal` its italic; TeX's `CMTI10` names neither).
+    fn declared_style(&self, doc: &RawDocument, font_obj_id: PageId) -> DeclaredStyle {
+        if let Some(&cached) = self.style_cache.read().unwrap().get(&font_obj_id) {
             return cached;
         }
-        let bold = (|| -> Option<bool> {
+        let style = (|| -> Option<DeclaredStyle> {
             let mut dict = doc.get_dict(font_obj_id).ok()?;
             if self.is_composite_font(doc, font_obj_id) {
                 let descendants = doc
@@ -2431,28 +2445,28 @@ impl RawFontResolver {
                     .map(|v| doc.resolve(v))
                     .and_then(|v| v.as_f32())
             };
+            const ITALIC: i64 = 1 << 6;
             const FORCE_BOLD: i64 = 1 << 18;
-            if number(b"FontWeight").is_some_and(|w| w >= 600.0)
-                || number(b"Flags").is_some_and(|f| (f as i64) & FORCE_BOLD != 0)
-            {
-                return Some(true);
-            }
-            let (format, data) = embedded_font_program(doc, dict)?;
-            Some(match format {
-                FontFormat::Type1 => {
-                    super::type1::declared_weight(&data).is_some_and(|w| weight_name_is_bold(&w))
-                }
-                FontFormat::Cff => {
-                    super::cff::declared_weight(&data).is_some_and(|w| weight_name_is_bold(&w))
-                }
-                FontFormat::TrueType | FontFormat::OpenType => {
-                    os2_weight_class(&data).is_some_and(|w| w >= 600)
-                }
-            })
+            let flags = number(b"Flags").map_or(0, |f| f as i64);
+            let italic = flags & ITALIC != 0
+                || number(b"ItalicAngle").is_some_and(|angle| angle.abs() >= 1.0);
+            let bold = number(b"FontWeight").is_some_and(|w| w >= 600.0)
+                || flags & FORCE_BOLD != 0
+                || embedded_font_program(doc, dict).is_some_and(|(format, data)| match format {
+                    FontFormat::Type1 => super::type1::declared_weight(&data)
+                        .is_some_and(|w| weight_name_is_bold(&w)),
+                    FontFormat::Cff => {
+                        super::cff::declared_weight(&data).is_some_and(|w| weight_name_is_bold(&w))
+                    }
+                    FontFormat::TrueType | FontFormat::OpenType => {
+                        os2_weight_class(&data).is_some_and(|w| w >= 600)
+                    }
+                });
+            Some(DeclaredStyle { bold, italic })
         })()
-        .unwrap_or(false);
-        self.bold_cache.write().unwrap().insert(font_obj_id, bold);
-        bold
+        .unwrap_or_default();
+        self.style_cache.write().unwrap().insert(font_obj_id, style);
+        style
     }
 
     /// The fonts the names in `scope` can refer to -- an inner name hides an outer one.
@@ -2474,13 +2488,15 @@ impl RawFontResolver {
                     .and_then(|o| o.as_name())
                     .map(|n| String::from_utf8_lossy(n).to_string())
                     .unwrap_or_else(|| "Unknown".to_string());
-                let bold = val
+                let style = val
                     .as_reference()
-                    .is_some_and(|id| self.declares_bold(doc, id));
+                    .map(|id| self.declared_style(doc, id))
+                    .unwrap_or_default();
                 result.push(BackendFontInfo {
                     name: name.clone(),
                     base_font,
-                    bold,
+                    bold: style.bold,
+                    italic: style.italic,
                 });
             }
         }

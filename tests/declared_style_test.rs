@@ -1,8 +1,9 @@
-//! A font that declares itself bold is bold, whatever its name says.
+//! A font that declares itself bold or italic is, whatever its name says.
 //!
-//! Many families name their bold weight something other than "Bold" — URW's `-Medi`, a
-//! TeX font's `CMBX12`. The PDF says so instead: the font descriptor's `/FontWeight` or
-//! ForceBold flag (ISO 32000-1 §9.8.1), or the embedded program's own weight.
+//! Many families name their styles something other than "Bold" and "Italic" — URW's `-Medi`
+//! and `-ReguItal`, TeX's `CMBX12` and `CMTI10`. The PDF says so instead: the font
+//! descriptor's `/FontWeight`, `/ItalicAngle` and `/Flags` (ISO 32000-1 §9.8.1), or the
+//! embedded program's own weight.
 
 mod common;
 
@@ -10,8 +11,14 @@ use unpdf::render::{to_markdown, RenderOptions};
 use unpdf::PdfParser;
 
 /// One page: plain body lines around a title line set in `/F2`, whose descriptor carries
-/// `descriptor` entries. `/F1` is Helvetica.
+/// `descriptor` entries (an upright `/ItalicAngle 0` unless they give one). `/F1` is
+/// Helvetica.
 fn page(descriptor: &str) -> Vec<u8> {
+    let angle = if descriptor.contains("/ItalicAngle") {
+        ""
+    } else {
+        "/ItalicAngle 0"
+    };
     let content = b"BT /F1 11 Tf 72 700 Td (Body text before the title line.) Tj ET \
         BT /F2 11 Tf 72 680 Td (Steps for Using the Microscope) Tj ET \
         BT /F1 11 Tf 72 660 Td (Body text after the title line.) Tj ET\n";
@@ -31,7 +38,7 @@ fn page(descriptor: &str) -> Vec<u8> {
         .into_bytes(),
         format!(
             "<</Type/FontDescriptor/FontName/UnpdfSerif-Medi/FontBBox[0 0 1000 800]\
-              /ItalicAngle 0/Ascent 800/Descent -200/CapHeight 800/StemV 140{descriptor}>>"
+              {angle}/Ascent 800/Descent -200/CapHeight 800/StemV 140{descriptor}>>"
         )
         .into_bytes(),
     ])
@@ -58,4 +65,23 @@ fn a_heavy_font_weight_makes_the_font_bold() {
 fn a_font_that_declares_nothing_is_read_by_its_name() {
     let md = markdown(&page("/Flags 32"));
     assert!(!md.contains("# Steps for Using the Microscope"), "{md}");
+    assert!(!md.contains("*Steps"), "{md}");
+}
+
+#[test]
+fn a_leaning_italic_angle_makes_the_font_italic() {
+    let md = markdown(&page("/Flags 32/ItalicAngle -14.04"));
+    assert!(md.contains("*Steps for Using the Microscope*"), "{md}");
+}
+
+#[test]
+fn the_italic_flag_makes_the_font_italic() {
+    let md = markdown(&page("/Flags 96"));
+    assert!(md.contains("*Steps for Using the Microscope*"), "{md}");
+}
+
+#[test]
+fn a_fraction_of_a_degree_is_not_a_lean() {
+    let md = markdown(&page("/Flags 32/ItalicAngle -0.5"));
+    assert!(!md.contains("*Steps"), "{md}");
 }

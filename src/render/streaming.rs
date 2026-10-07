@@ -32,7 +32,7 @@
 
 use crate::model::{Block, Document, Metadata};
 
-use super::syntax::{escape_markdown, format_link_destination, render_table};
+use super::syntax::{escape_markdown, format_link_destination, leading_char, render_table};
 use super::{PageMarkerStyle, RenderOptions};
 
 /// Events emitted during streaming rendering.
@@ -243,10 +243,10 @@ impl<'a> StreamingRenderer<'a> {
     }
 
     fn render_inline_content(&self, output: &mut String, content: &[crate::model::InlineContent]) {
-        for item in content {
+        for (i, item) in content.iter().enumerate() {
             match item {
                 crate::model::InlineContent::Text(run) => {
-                    self.render_text_run(output, run);
+                    self.render_text_run(output, run, content.get(i + 1).and_then(leading_char));
                 }
                 crate::model::InlineContent::LineBreak => {
                     if self.options.preserve_line_breaks {
@@ -275,19 +275,23 @@ impl<'a> StreamingRenderer<'a> {
         }
     }
 
-    fn render_text_run(&self, output: &mut String, run: &crate::model::TextRun) {
+    /// Append `run`, styled for where it lands: after what `output` already holds, before
+    /// `after`.
+    fn render_text_run(
+        &self,
+        output: &mut String,
+        run: &crate::model::TextRun,
+        after: Option<char>,
+    ) {
         let text = if self.options.escape_special_chars {
             escape_markdown(&run.text)
         } else {
             run.text.clone()
         };
 
-        let styled = self.apply_text_style(&text, &run.style);
+        let styled =
+            super::syntax::apply_text_style(&text, &run.style, output.chars().next_back(), after);
         output.push_str(&styled);
-    }
-
-    fn apply_text_style(&self, text: &str, style: &crate::model::TextStyle) -> String {
-        super::syntax::apply_text_style(text, style)
     }
 
     fn render_list_item(

@@ -16,7 +16,7 @@
 //! Table block is already fully materialized by the time either renderer sees it.
 
 use super::{RenderOptions, TableFallback};
-use crate::model::{Alignment, Block, Table, TableRow, TextStyle};
+use crate::model::{Alignment, Block, InlineContent, Table, TableRow, TextStyle};
 
 /// Whether `block` is a list item.
 fn is_list_item(block: &Block) -> bool {
@@ -38,16 +38,40 @@ pub(super) fn ends_a_list(previous: Option<&Block>, block: &Block) -> bool {
 /// produce the ambiguous `***` sequence — CommonMark reads that as a single
 /// bold+italic opener, corrupting both runs. Kept here so the batch and
 /// streaming renderers can't drift on the rule.
-pub(super) fn apply_text_style(text: &str, style: &TextStyle) -> String {
+///
+/// `before` and `after` are the characters the run lands between (`None` at either end of
+/// the inline content). A delimiter that touches punctuation on its inside and a letter on
+/// its outside is not a delimiter at all in CommonMark (§6.2 flanking rules): an italic
+/// `", s"` after `32` written as `32*, s*` prints its asterisks. Such punctuation, and the
+/// space behind it, moves outside the markers (`32, *s*`); a run that is nothing but
+/// punctuation there is written plain.
+pub(super) fn apply_text_style(
+    text: &str,
+    style: &TextStyle,
+    before: Option<char>,
+    after: Option<char>,
+) -> String {
     if !style.has_styling() {
         return text.to_string();
     }
 
-    let leading_len = text.len() - text.trim_start().len();
-    let core_end = text.len() - (text.len() - text.trim_end().len());
+    let mut leading_len = text.len() - text.trim_start().len();
+    let mut core_end = text.len() - (text.len() - text.trim_end().len());
     if leading_len >= core_end {
         // All whitespace — nothing to emphasise.
         return text.to_string();
+    }
+    if style.bold || style.italic || style.strikethrough {
+        let touches_a_word = |c: Option<char>| c.is_some_and(|c| !is_flanking_neutral(c));
+        if leading_len == 0 && touches_a_word(before) {
+            leading_len = core_start_past_punctuation(text, leading_len, core_end);
+        }
+        if core_end == text.len() && touches_a_word(after) {
+            core_end = core_end_before_punctuation(text, leading_len, core_end);
+        }
+        if leading_len >= core_end {
+            return text.to_string();
+        }
     }
     let leading = &text[..leading_len];
     let core = &text[leading_len..core_end];
@@ -75,6 +99,65 @@ pub(super) fn apply_text_style(text: &str, style: &TextStyle) -> String {
     }
 
     format!("{leading}{styled}{trailing}")
+}
+
+/// The first character `item` writes — what a styled run just before it lands against.
+pub(super) fn leading_char(item: &InlineContent) -> Option<char> {
+    match item {
+        InlineContent::Text(run) => run.text.chars().next(),
+        InlineContent::LineBreak => Some('\n'),
+        InlineContent::Link { .. } => Some('['),
+        InlineContent::Image { .. } => Some('!'),
+    }
+}
+
+/// Whitespace or punctuation — what CommonMark lets an emphasis delimiter touch on its
+/// outside when its inside is punctuation. Punctuation is the Unicode P and S categories; a
+/// character that is neither alphanumeric nor whitespace nor a control is one of them, save
+/// for combining marks, which do not stand at a run's edge.
+fn is_flanking_neutral(c: char) -> bool {
+    c.is_whitespace() || !(c.is_alphanumeric() || c.is_control())
+}
+
+/// The characters of `text[start..end]` as units, a backslash escape (`\*`) being one unit
+/// — so the escape and its character never split across an emphasis delimiter.
+fn escape_units(text: &str, start: usize, end: usize) -> Vec<(usize, usize)> {
+    let mut units = Vec::new();
+    let mut chars = text[start..end].char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        let mut j = i + c.len_utf8();
+        if c == '\\' {
+            if let Some(&(k, escaped)) = chars.peek() {
+                j = k + escaped.len_utf8();
+                chars.next();
+            }
+        }
+        units.push((start + i, start + j));
+    }
+    units
+}
+
+/// Where the emphasised core starts once leading punctuation and spaces are left out.
+fn core_start_past_punctuation(text: &str, start: usize, end: usize) -> usize {
+    escape_units(text, start, end)
+        .into_iter()
+        .find(|&(i, j)| {
+            let c = text[i..j].chars().last().unwrap_or(' ');
+            !is_flanking_neutral(c)
+        })
+        .map_or(end, |(i, _)| i)
+}
+
+/// Where the emphasised core ends once trailing punctuation and spaces are left out.
+fn core_end_before_punctuation(text: &str, start: usize, end: usize) -> usize {
+    escape_units(text, start, end)
+        .into_iter()
+        .rev()
+        .find(|&(i, j)| {
+            let c = text[i..j].chars().last().unwrap_or(' ');
+            !is_flanking_neutral(c)
+        })
+        .map_or(start, |(_, j)| j)
 }
 
 /// Render a table to Markdown, honoring [`RenderOptions::table_fallback`] for a table
@@ -215,6 +298,63 @@ pub(super) fn escape_markdown(text: &str) -> String {
 mod tests {
     use super::*;
     use crate::model::{TableCell, TableRow};
+
+    fn italic() -> TextStyle {
+        TextStyle {
+            italic: true,
+            ..TextStyle::default()
+        }
+    }
+
+    #[test]
+    fn test_apply_text_style_moves_leading_punctuation_off_a_word() {
+        assert_eq!(
+            apply_text_style(", s", &italic(), Some('2'), Some(' ')),
+            ", *s*"
+        );
+    }
+
+    #[test]
+    fn test_apply_text_style_moves_trailing_punctuation_off_a_word() {
+        assert_eq!(
+            apply_text_style("word.", &italic(), Some(' '), Some('x')),
+            "*word*."
+        );
+    }
+
+    #[test]
+    fn test_apply_text_style_writes_lone_punctuation_between_words_plain() {
+        assert_eq!(apply_text_style(",", &italic(), Some('8'), Some('a')), ",");
+    }
+
+    #[test]
+    fn test_apply_text_style_leaves_punctuation_that_touches_space_or_the_edge_inside() {
+        assert_eq!(
+            apply_text_style("i.e.,", &italic(), Some(' '), Some(' ')),
+            "*i.e.,*"
+        );
+        assert_eq!(apply_text_style("(h)", &italic(), None, None), "*(h)*");
+    }
+
+    #[test]
+    fn test_apply_text_style_never_splits_a_backslash_escape() {
+        assert_eq!(
+            apply_text_style(r"\*x\_", &italic(), Some('a'), Some('b')),
+            r"\**x*\_"
+        );
+    }
+
+    #[test]
+    fn test_apply_text_style_leaves_html_styles_alone() {
+        let sup = TextStyle {
+            superscript: true,
+            ..TextStyle::default()
+        };
+        assert_eq!(
+            apply_text_style(",1", &sup, Some('a'), Some('b')),
+            "<sup>,1</sup>"
+        );
+    }
 
     #[test]
     fn test_format_link_destination_leaves_a_clean_destination_alone() {

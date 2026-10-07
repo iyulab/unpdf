@@ -745,6 +745,7 @@ impl<'a> LayoutAnalyzer<'a> {
                     FontInfo {
                         name: fi.base_font,
                         bold: fi.bold,
+                        italic: fi.italic,
                     },
                 )
             })
@@ -982,6 +983,7 @@ impl<'a> LayoutAnalyzer<'a> {
                             None => String::from_utf8_lossy(font_name.as_slice()).to_string(),
                         };
                         text_state.font_bold = info.is_some_and(|info| info.bold);
+                        text_state.font_italic = info.is_some_and(|info| info.italic);
                     }
                     text_state.font_size = operand(1).unwrap_or(12.0);
                 }
@@ -1134,6 +1136,7 @@ impl<'a> LayoutAnalyzer<'a> {
                         let mut span =
                             TextSpan::new(text, x, y, effective_size, text_state.font.clone());
                         span.is_bold |= text_state.font_bold;
+                        span.is_italic |= text_state.font_italic;
                         if let Some(width) = measured_width {
                             span.width = width;
                         }
@@ -1683,6 +1686,8 @@ struct FontInfo {
     name: String,
     /// The font declares itself bold, whatever its name says.
     bold: bool,
+    /// The font declares itself italic, whatever its name says.
+    italic: bool,
 }
 
 /// The text-related parameters of the graphics state (ISO 32000-1 §9.3).
@@ -1694,6 +1699,8 @@ struct TextState {
     font: String,
     /// The font declares itself bold (descriptor or program), whatever its name says.
     font_bold: bool,
+    /// The font declares itself italic (descriptor), whatever its name says.
+    font_italic: bool,
     /// `Tfs`, in unscaled text space units.
     font_size: f32,
     /// `Tc`, in unscaled text space units.
@@ -1712,6 +1719,7 @@ impl Default for TextState {
             font_resource: Vec::new(),
             font: String::new(),
             font_bold: false,
+            font_italic: false,
             font_size: 12.0,
             char_spacing: 0.0,
             word_spacing: 0.0,
