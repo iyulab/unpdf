@@ -481,12 +481,32 @@ fn styled_paragraph(block: &super::layout::TextBlock) -> Paragraph {
 
     let mut runs: Vec<TextRun> = Vec::new();
     for (line_idx, line) in block.lines.iter().enumerate() {
-        if line_idx > 0 {
+        // At a join the line break is the one space, as in `TextBlock::text`: whitespace on
+        // either side of it is dropped.
+        let mut at_line_start = line_idx > 0;
+        if at_line_start {
+            while let Some(last) = runs.last_mut() {
+                let kept = last.text.trim_end().len();
+                last.text.truncate(kept);
+                if !last.text.is_empty() {
+                    break;
+                }
+                runs.pop();
+            }
             push_run(&mut runs, " ", false, false);
         }
         for (piece, span_idx) in line.styled_segments() {
             let span = &line.spans[span_idx];
-            push_run(&mut runs, &piece, span.is_bold, span.is_italic);
+            let piece = if at_line_start {
+                piece.trim_start()
+            } else {
+                piece.as_str()
+            };
+            if piece.is_empty() {
+                continue;
+            }
+            at_line_start = false;
+            push_run(&mut runs, piece, span.is_bold, span.is_italic);
         }
     }
 
@@ -979,6 +999,35 @@ mod tests {
     // Assembled in the test rather than read from disk -- see that module's docs.
     use crate::parser::test_pdf::{pdf, stream};
     use chrono::Datelike;
+
+    /// Two lines, the first ending in a space, the second starting with one.
+    fn two_line_block() -> super::super::layout::TextBlock {
+        use super::super::layout::{BlockType, TextBlock, TextLine, TextSpan};
+        let line = |text: &str, y: f32| {
+            TextLine::from_spans(vec![TextSpan::new(
+                text.to_string(),
+                72.0,
+                y,
+                12.0,
+                "Helvetica-Bold".to_string(),
+            )])
+        };
+        TextBlock::new(
+            vec![line("III. ", 700.0), line(" Regulatory cholesterol", 686.0)],
+            BlockType::Paragraph,
+        )
+    }
+
+    #[test]
+    fn a_line_break_is_one_space_in_plain_text() {
+        assert_eq!(two_line_block().text(), "III. Regulatory cholesterol");
+    }
+
+    #[test]
+    fn a_line_break_is_one_space_in_styled_runs() {
+        let para = styled_paragraph(&two_line_block());
+        assert_eq!(para.plain_text(), "III. Regulatory cholesterol");
+    }
 
     #[test]
     fn test_parse_pdf_date() {

@@ -325,10 +325,19 @@ impl TextBlock {
     }
 
     /// Get the combined text of all lines.
+    /// The block's lines joined by one space: whitespace a line ends or starts with at a
+    /// join is the line break's, not text, and does not double the space.
     pub fn text(&self) -> String {
+        let last = self.lines.len().saturating_sub(1);
         self.lines
             .iter()
-            .map(|l| l.text())
+            .enumerate()
+            .map(|(i, l)| {
+                let text = l.text();
+                let text = if i > 0 { text.trim_start() } else { &text };
+                let text = if i < last { text.trim_end() } else { text };
+                text.to_string()
+            })
             .collect::<Vec<_>>()
             .join(" ")
     }
@@ -449,6 +458,42 @@ impl PageTextLayerSignals {
 ///
 /// Each numeric component has at most three digits, which keeps a year ("2024 Annual
 /// Report") from passing for a section number.
+/// Whether `text` is a section or chapter number and nothing else: `4`, `4.2`, `IV`, `A.`.
+fn is_bare_section_number(text: &str) -> bool {
+    let text = text.trim();
+    let number = text.strip_suffix('.').unwrap_or(text);
+    let arabic = !number.is_empty()
+        && number.split('.').count() <= 4
+        && number
+            .split('.')
+            .all(|p| !p.is_empty() && p.len() <= 3 && p.bytes().all(|b| b.is_ascii_digit()));
+    let roman = !number.is_empty()
+        && number.len() <= 6
+        && number
+            .chars()
+            .all(|c| matches!(c, 'I' | 'V' | 'X' | 'L' | 'C'));
+    let letter = number.len() == 1 && number.bytes().all(|b| b.is_ascii_uppercase());
+    arabic || roman || letter
+}
+
+/// Whether `number` sits just above `title`: its baseline higher by no more than two and a
+/// half of the number's own font size, and starting near the title's left edge or centred
+/// over it.
+fn number_sits_over(number: &TextLine, title: &TextLine) -> bool {
+    let gap = number.y - title.y;
+    let centre = |line: &TextLine| {
+        let right = line
+            .spans
+            .iter()
+            .map(|s| s.x + s.width)
+            .fold(line.x, f32::max);
+        (line.x + right) / 2.0
+    };
+    let aligned = (number.x - title.x).abs() <= number.font_size * 2.0
+        || (centre(number) - centre(title)).abs() <= number.font_size * 2.0;
+    gap > 0.0 && gap <= number.font_size * 2.5 && aligned
+}
+
 fn section_number_depth(text: &str) -> Option<usize> {
     let text = text.trim();
     let (number, rest) = text.split_once(char::is_whitespace)?;
@@ -1386,6 +1431,28 @@ impl<'a> LayoutAnalyzer<'a> {
             line.is_heading = true;
             line.heading_level = level;
         }
+
+        // A chapter or section number set on a line of its own above its title ("4" over
+        // "Basis Fields", as book classes lay out a chapter opening) is part of that title —
+        // too short to be a heading by itself, so it joins the one below it. It must be set
+        // at least as large as the title: a page number above a heading is smaller.
+        for i in 0..lines.len().saturating_sub(1) {
+            let (head, rest) = lines.split_at_mut(i + 1);
+            let (number, title) = (&mut head[i], &rest[0]);
+            if !number.is_heading
+                && title.is_heading
+                && is_bare_section_number(&number.text())
+                && number.font_size >= title.font_size - 0.5
+                && number_sits_over(number, title)
+            {
+                let own = font_stats.get_heading_level(number.font_size, number.is_bold());
+                number.is_heading = true;
+                number.heading_level = match own {
+                    0 => title.heading_level,
+                    own => own.min(title.heading_level),
+                };
+            }
+        }
         lines
     }
 
@@ -1538,6 +1605,14 @@ impl<'a> LayoutAnalyzer<'a> {
             // tolerated — decorative stacked titles often vary font size
             // per word. The block picks up the minimum (most prominent)
             // level via existing `block.heading_level = ...min()` logic.
+            // A section number on its own line opens the title below it, whatever the
+            // difference in size (see `detect_headings`).
+            if prev_line.is_heading
+                && is_bare_section_number(&prev_line.text())
+                && number_sits_over(prev_line, curr_line)
+            {
+                return false;
+            }
             if prev_line.is_heading && (prev_line.font_size - curr_line.font_size).abs() <= 2.0 {
                 let gap = (prev_line.y - curr_line.y).abs();
                 let bigger = prev_line.font_size.max(curr_line.font_size);
@@ -2562,6 +2637,70 @@ mod tests {
         let first = span_line(&[("first line", 72.0, 700.0, 12.0)]);
         let second = span_line(&[("tail", 200.0, 696.0, 12.0)]);
         assert_eq!(attach_script_lines(vec![first, second]).len(), 2);
+    }
+
+    #[test]
+    fn test_detect_headings_joins_a_chapter_number_to_the_title_below_it() {
+        let stats = body_12pt_stats(&[17.0, 25.0]);
+        let lines = vec![
+            line_at("4", 730.0, 25.0, "Helvetica-Bold"),
+            line_at("Basis Fields", 705.0, 17.0, "Helvetica-Bold"),
+            line_at(
+                "A vector field may be written as a combination.",
+                675.0,
+                12.0,
+                "Helvetica",
+            ),
+        ];
+        let result = LayoutAnalyzer::detect_headings(&stats, lines);
+        assert!(result[1].is_heading);
+        assert!(result[0].is_heading, "the number opens the title");
+        assert!(result[0].heading_level <= result[1].heading_level);
+    }
+
+    #[test]
+    fn test_detect_headings_leaves_a_number_smaller_than_the_title_alone() {
+        // A page number above a heading is set smaller than it.
+        let stats = body_12pt_stats(&[17.0]);
+        let lines = vec![
+            line_at("12", 730.0, 10.0, "Helvetica"),
+            line_at("Basis Fields", 715.0, 17.0, "Helvetica-Bold"),
+            line_at(
+                "A vector field may be written as a combination.",
+                690.0,
+                12.0,
+                "Helvetica",
+            ),
+        ];
+        let result = LayoutAnalyzer::detect_headings(&stats, lines);
+        assert!(!result[0].is_heading);
+    }
+
+    #[test]
+    fn test_detect_headings_leaves_a_number_far_above_the_title_alone() {
+        let stats = body_12pt_stats(&[17.0, 25.0]);
+        let lines = vec![
+            line_at("4", 800.0, 25.0, "Helvetica-Bold"),
+            line_at("Basis Fields", 705.0, 17.0, "Helvetica-Bold"),
+            line_at(
+                "A vector field may be written as a combination.",
+                675.0,
+                12.0,
+                "Helvetica",
+            ),
+        ];
+        let result = LayoutAnalyzer::detect_headings(&stats, lines);
+        assert!(!result[0].is_heading);
+    }
+
+    #[test]
+    fn test_is_bare_section_number() {
+        for yes in ["4", "4.", "4.2", "1.2.3", "IV", "XII.", "A", "B."] {
+            assert!(is_bare_section_number(yes), "{yes}");
+        }
+        for no in ["4 Basis", "1999", "page 4", "4.2a", "", "ab", "§4"] {
+            assert!(!is_bare_section_number(no), "{no}");
+        }
     }
 
     #[test]

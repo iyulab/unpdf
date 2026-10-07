@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A chapter number set on its own line above the title is part of the heading.** Book
+  layouts open a chapter with its number in a large face and the title on the line below; the
+  number, too short to be a heading by itself, came out as a separate bold paragraph (`**4**`
+  then `## Basis Fields`) or was lost. A section number alone on its line — `4`, `4.2`, `IV`,
+  `A` — set at least as large as the heading just below it and close above it now opens that
+  heading (`# 4 Basis Fields`).
+- **A line break is one space.** Text joined across lines kept the space a line ended or
+  started with as well as the one standing for the break, doubling it (`III.  Regulatory`).
+
 ## 0.33.0 — 2026-10-07
 
 ### Added
