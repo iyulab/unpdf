@@ -15,6 +15,12 @@
   line of a column reached a point or two into the gutter — a justified line's measured
   width, or a width estimated from the font size. A column's right edge is now read a little
   way in when looking for a gutter, a fifth of the narrowest gutter that counts.
+- **An outer column of a page in three or more columns is read on its own.** The gutter
+  beside it leaves it well under the share of the region a column needs on each side of a
+  gutter, so when a box or heading set across the other columns closed their gutters, the
+  whole region was read line by line across. A gutter now also divides a column of text from
+  a side that holds gutters of its own: the column at least six gutters wide, its lines
+  filling it.
 - **A line break is one space.** Text joined across lines kept the space a line ended or
   started with as well as the one standing for the break, doubling it (`III.  Regulatory`).
 

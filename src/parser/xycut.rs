@@ -40,6 +40,13 @@ pub const GUTTER_MIN_SIDE_SHARE: f32 = 0.3;
 /// Minimum number of blocks on each side of a column gutter.
 pub const GUTTER_MIN_SIDE_BLOCKS: usize = 3;
 
+/// The narrowest a column beside a gutter can be when it is under [`GUTTER_MIN_SIDE_SHARE`]
+/// of the region, in multiples of [`XyCutConfig::min_gutter`] — about six words of running
+/// text; a list's markers or a column of figures is narrower.
+pub const NARROW_COLUMN_MIN_GUTTERS: f32 = 6.0;
+/// How much of such a column its lines of running text fill.
+pub const NARROW_COLUMN_LINE_FILL: f32 = 0.6;
+
 /// How far into a block its right edge is read when looking for a vertical channel, as a
 /// share of [`XyCutConfig::min_gutter`] — the error a glyph-width estimate or a trailing side
 /// bearing puts there.
@@ -519,6 +526,20 @@ fn vertical_channels(blocks: &[Block], min_width: f32) -> Vec<f32> {
     channels.into_iter().map(|(centre, _)| centre).collect()
 }
 
+/// Whether lines of these widths fill a column `width` wide as running text does: at least
+/// [`GUTTER_MIN_SIDE_BLOCKS`] of them span [`NARROW_COLUMN_LINE_FILL`] of it, and those carry
+/// most of the text. A column of figures, a table's column of short cells or a list's markers
+/// leave most of their width empty.
+fn fills_its_column(widths: &[f32], width: f32) -> bool {
+    let long: Vec<f32> = widths
+        .iter()
+        .copied()
+        .filter(|&w| w >= width * NARROW_COLUMN_LINE_FILL)
+        .collect();
+    let all: f32 = widths.iter().sum();
+    long.len() >= GUTTER_MIN_SIDE_BLOCKS && long.iter().sum::<f32>() * 2.0 >= all
+}
+
 /// Whether lines of these widths make a column of running text in a region `range` wide:
 /// at least [`GUTTER_MIN_SIDE_BLOCKS`] of them span [`COLUMN_LINE_MIN_SHARE`] of it, and
 /// those carry most of the text.
@@ -577,11 +598,41 @@ fn find_best_vertical_gap(
             .filter(|b| b.x + b.width / 2.0 < center)
             .count();
         let right_blocks = blocks.len() - left_blocks;
+        if left_blocks < GUTTER_MIN_SIDE_BLOCKS || right_blocks < GUTTER_MIN_SIDE_BLOCKS {
+            return false;
+        }
         let min_side = range * GUTTER_MIN_SIDE_SHARE;
-        gap_left - min_x >= min_side
-            && max_x - gap_right >= min_side
-            && left_blocks >= GUTTER_MIN_SIDE_BLOCKS
-            && right_blocks >= GUTTER_MIN_SIDE_BLOCKS
+        let (left_width, right_width) = (gap_left - min_x, max_x - gap_right);
+        if left_width >= min_side && right_width >= min_side {
+            return true;
+        }
+        // In a region of three or more columns the gutter beside an outer column leaves it
+        // well under the share — a quarter of four columns. It still divides text columns when
+        // the other side holds a gutter of its own and this side is a column of text: wide
+        // enough for one, its lines filling it. Two columns of unequal width stay declined.
+        let narrow_is_left = left_width < right_width;
+        let narrow_width = left_width.min(right_width);
+        if right_width.max(left_width) < min_side
+            || narrow_width < config.min_gutter * NARROW_COLUMN_MIN_GUTTERS
+        {
+            return false;
+        }
+        // A box or a heading set across the other side's columns closes its gutters on its
+        // own lines; the gutter is looked for among the blocks no wider than half that side.
+        let wide_width = left_width.max(right_width);
+        let wide_columns: Vec<Block> = blocks
+            .iter()
+            .filter(|b| (b.x + b.width / 2.0 < center) != narrow_is_left)
+            .filter(|b| b.width <= wide_width / 2.0)
+            .copied()
+            .collect();
+        if vertical_channels(&wide_columns, config.min_gutter).is_empty() {
+            return false;
+        }
+        let side = blocks
+            .iter()
+            .filter(|b| (b.x + b.width / 2.0 < center) == narrow_is_left);
+        fills_its_column(&line_widths(side, config.min_gutter), narrow_width)
     };
 
     widest_qualifying_gap(&profile, resolution, min_x, qualifies)

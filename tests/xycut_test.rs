@@ -135,6 +135,59 @@ fn a_line_reaching_slightly_into_a_narrow_gutter_does_not_close_it() {
     assert!(groups[0].iter().all(|b| b.x < 100.0), "left column first");
 }
 
+/// Four columns of 7pt text, with a box set across the last three below them: the
+/// middle gutters are closed by the box, and the gutter beside the first column leaves it a
+/// quarter of the region. It is a column of text all the same, and is read on its own.
+#[test]
+fn an_outer_column_of_a_four_column_region_splits_off() {
+    const BODY_7PT: XyCutConfig = XyCutConfig {
+        min_x_gap: 60.0,
+        min_y_gap: 36.0,
+        min_gutter: 8.0,
+    };
+    let mut blocks = Vec::new();
+    for column in 0..4 {
+        let x = 297.0 + column as f32 * 79.0;
+        // The first column runs the whole height, the others stop above the box.
+        let lines = if column == 0 { 30 } else { 20 };
+        for i in 0..lines {
+            blocks.push(make_block(x, 500.0 - i as f32 * 8.0, 70.0, 7.0));
+        }
+    }
+    // The box across columns 2-4, below their text and beside column 1's.
+    blocks.push(make_block(376.0, 300.0, 227.0, 20.0));
+    let groups = xycut_segment(&blocks, &BODY_7PT);
+    assert!(
+        groups[0].len() == 30 && groups[0].iter().all(|b| b.x < 300.0),
+        "the first column is read first and on its own: {groups:?}"
+    );
+}
+
+/// A table's narrow column of short figures beside its other columns: under the side share,
+/// and its cells leave most of it empty, so it is not split off as a column of text.
+#[test]
+fn a_narrow_column_of_short_cells_is_not_split_off() {
+    const BODY_7PT: XyCutConfig = XyCutConfig {
+        min_x_gap: 60.0,
+        min_y_gap: 36.0,
+        min_gutter: 8.0,
+    };
+    let mut blocks = Vec::new();
+    for i in 0..10 {
+        let y = 500.0 - i as f32 * 8.0;
+        // A 55-wide column of figures 14 wide under a heading cell that fills it, then text
+        // across the rest of the row.
+        let cell = if i == 0 { 55.0 } else { 14.0 };
+        blocks.push(make_block(100.0, y, cell, 7.0));
+        blocks.push(make_block(170.0, y, 330.0, 7.0));
+    }
+    let groups = xycut_segment(&blocks, &BODY_7PT);
+    assert!(
+        groups.iter().all(|g| g.iter().any(|b| b.x > 160.0)),
+        "the figures stay with their rows: {groups:?}"
+    );
+}
+
 /// The channel between a numbered list's markers and its items is as narrow as a
 /// gutter, but one side is a sliver: it must not split the list into a column of
 /// numbers followed by a column of items.
