@@ -324,22 +324,41 @@ impl TextBlock {
         }
     }
 
-    /// Get the combined text of all lines.
-    /// The block's lines joined by one space: whitespace a line ends or starts with at a
-    /// join is the line break's, not text, and does not double the space.
+    /// The block's lines joined as [`line_join`] says: by one space where the break is a
+    /// word boundary, by nothing inside a word of a script that breaks lines anywhere.
+    /// Whitespace a line ends or starts with at a join is the line break's, not text, and
+    /// does not double the space.
     pub fn text(&self) -> String {
-        let last = self.lines.len().saturating_sub(1);
-        self.lines
-            .iter()
-            .enumerate()
-            .map(|(i, l)| {
-                let text = l.text();
-                let text = if i > 0 { text.trim_start() } else { &text };
-                let text = if i < last { text.trim_end() } else { text };
-                text.to_string()
-            })
-            .collect::<Vec<_>>()
-            .join(" ")
+        let marks = self.marks_word_boundaries();
+        let texts: Vec<String> = self.lines.iter().map(TextLine::text).collect();
+        let last = texts.len().saturating_sub(1);
+        let mut out = String::new();
+        for (i, text) in texts.iter().enumerate() {
+            let piece = if i > 0 {
+                text.trim_start()
+            } else {
+                text.as_str()
+            };
+            let piece = if i < last { piece.trim_end() } else { piece };
+            if i > 0 {
+                out.push_str(line_join(&texts[i - 1], text, marks));
+            }
+            out.push_str(piece);
+        }
+        out
+    }
+
+    /// Whether the producer writes a space at the line breaks that fall between words: some
+    /// line of the block ends with one, or the next starts with one. Then a break with none
+    /// is inside a word — what [`line_join`] needs to join Korean, which uses spaces between
+    /// words but breaks lines at any syllable.
+    pub(crate) fn marks_word_boundaries(&self) -> bool {
+        self.lines.windows(2).any(|pair| {
+            let (a, b) = (pair[0].text(), pair[1].text());
+            !a.trim().is_empty()
+                && !b.trim().is_empty()
+                && (a.ends_with(char::is_whitespace) || b.starts_with(char::is_whitespace))
+        })
     }
 
     /// The list item's visible text with its marker (bullet or `N.`/`N)`) and
@@ -2084,6 +2103,34 @@ fn ctm_y_scale(ctm: &[f32; 6]) -> f32 {
 }
 
 /// Check if a character is a Hangul (Korean) syllable or jamo.
+/// What joins line `prev` to the next line `next` of one block: a space, unless the break
+/// falls inside a word.
+///
+/// A space the producer wrote at the break says it is a word boundary. Without one, two
+/// characters of a script with no spaces between words (CJK ideographs, kana) join directly,
+/// and so do two Hangul syllables when the block shows the producer marking its word
+/// boundaries (`marks_word_boundaries`) — Korean breaks a line at any syllable, so a
+/// break with no space there is inside a word. Anything else keeps the space: a Latin
+/// line's producer rarely writes one, and its words never break without a hyphen.
+pub(crate) fn line_join(prev: &str, next: &str, marks_word_boundaries: bool) -> &'static str {
+    if prev.ends_with(char::is_whitespace) || next.starts_with(char::is_whitespace) {
+        return " ";
+    }
+    let (Some(a), Some(b)) = (
+        prev.trim_end().chars().last(),
+        next.trim_start().chars().next(),
+    ) else {
+        return " ";
+    };
+    let spaceless = is_spaceless_script_char(a) && is_spaceless_script_char(b);
+    let hangul_word = marks_word_boundaries && is_hangul_char(a) && is_hangul_char(b);
+    if spaceless || hangul_word {
+        ""
+    } else {
+        " "
+    }
+}
+
 fn is_hangul_char(c: char) -> bool {
     let code = c as u32;
     // Hangul Syllables

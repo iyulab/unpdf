@@ -480,9 +480,10 @@ fn styled_paragraph(block: &super::layout::TextBlock) -> Paragraph {
     }
 
     let mut runs: Vec<TextRun> = Vec::new();
+    let marks = block.marks_word_boundaries();
     for (line_idx, line) in block.lines.iter().enumerate() {
-        // At a join the line break is the one space, as in `TextBlock::text`: whitespace on
-        // either side of it is dropped.
+        // At a join the line break is what `line_join` says, as in `TextBlock::text`:
+        // whitespace on either side of it is dropped.
         let mut at_line_start = line_idx > 0;
         if at_line_start {
             while let Some(last) = runs.last_mut() {
@@ -493,7 +494,11 @@ fn styled_paragraph(block: &super::layout::TextBlock) -> Paragraph {
                 }
                 runs.pop();
             }
-            push_run(&mut runs, " ", false, false);
+            let join =
+                super::layout::line_join(&block.lines[line_idx - 1].text(), &line.text(), marks);
+            if !join.is_empty() {
+                push_run(&mut runs, join, false, false);
+            }
         }
         for (piece, span_idx) in line.styled_segments() {
             let span = &line.spans[span_idx];
@@ -1016,6 +1021,68 @@ mod tests {
             vec![line("III. ", 700.0), line(" Regulatory cholesterol", 686.0)],
             BlockType::Paragraph,
         )
+    }
+
+    /// A block of `lines`, as the layout pass leaves it.
+    fn block_of(lines: &[&str]) -> super::super::layout::TextBlock {
+        use super::super::layout::{BlockType, TextBlock, TextLine, TextSpan};
+        TextBlock::new(
+            lines
+                .iter()
+                .enumerate()
+                .map(|(i, text)| {
+                    TextLine::from_spans(vec![TextSpan::new(
+                        text.to_string(),
+                        72.0,
+                        700.0 - i as f32 * 14.0,
+                        10.0,
+                        "Batang".to_string(),
+                    )])
+                })
+                .collect(),
+            BlockType::Paragraph,
+        )
+    }
+
+    /// Both joins — the plain text and the styled runs — give the same text.
+    fn joined(lines: &[&str]) -> String {
+        let block = block_of(lines);
+        let plain = block.text();
+        assert_eq!(styled_paragraph(&block).plain_text(), plain);
+        plain
+    }
+
+    #[test]
+    fn a_korean_word_broken_across_lines_is_joined_whole() {
+        // The producer writes a space at the breaks between words ("연 "), none inside one.
+        assert_eq!(
+            joined(&[
+                "기준금리를 연 ",
+                "3.50%에서 유",
+                "지하였다. 물가가 둔",
+                "화되었다."
+            ]),
+            "기준금리를 연 3.50%에서 유지하였다. 물가가 둔화되었다."
+        );
+    }
+
+    #[test]
+    fn korean_breaks_keep_their_space_when_nothing_shows_the_producer_marks_words() {
+        assert_eq!(joined(&["기조적인 둔", "화 흐름"]), "기조적인 둔 화 흐름");
+    }
+
+    #[test]
+    fn chinese_and_japanese_lines_join_without_a_space() {
+        assert_eq!(joined(&["这是一个", "测试。"]), "这是一个测试。");
+        assert_eq!(joined(&["これはテス", "トです。"]), "これはテストです。");
+    }
+
+    #[test]
+    fn latin_lines_still_join_with_a_space() {
+        assert_eq!(
+            joined(&["the first line ", "and the", "second"]),
+            "the first line and the second"
+        );
     }
 
     #[test]

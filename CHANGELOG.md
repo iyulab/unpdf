@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Lines of Chinese, Japanese and Korean join without a space inside a word.** Every line
+  break in a paragraph became a space, so a Korean word broken across lines at a syllable came
+  out split (`둔 화`, `기준금리 를`). A break is now a space only where the source marks a word
+  boundary — whitespace at the break; between two CJK ideographs or kana it is nothing, and
+  between two Hangul syllables it is nothing when the paragraph shows its producer writing a
+  space at the breaks that fall between words. Latin text is joined as before.
+
 ## 0.33.1 — 2026-10-07
 
 ### Fixed
