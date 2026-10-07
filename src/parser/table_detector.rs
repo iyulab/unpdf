@@ -1259,7 +1259,10 @@ pub(crate) fn group_into_rows(spans: &[TextSpan], y_tolerance_factor: f32) -> Ve
         }
     });
 
-    fn finish(indices: Vec<usize>, spans: &[TextSpan]) -> TableRowData {
+    // A row is one line: its spans read left to right, whatever fraction of a point their
+    // baselines differ by — an OCR layer lifts each word by its own text rise.
+    fn finish(mut indices: Vec<usize>, spans: &[TextSpan]) -> TableRowData {
+        indices.sort_by(|&a, &b| spans[a].x.total_cmp(&spans[b].x));
         let row_spans: Vec<TextSpan> = indices.iter().map(|&i| spans[i].clone()).collect();
         let avg_y = row_spans.iter().map(|s| s.y).sum::<f32>() / row_spans.len() as f32;
         TableRowData {
@@ -1584,6 +1587,23 @@ mod tests {
             texts,
             vec![vec!["IM", "0.31*", "0.77**"], vec!["IBE", "0.302"],]
         );
+    }
+
+    /// Words whose baselines differ by a fraction of a point — an OCR layer lifts each by
+    /// its own text rise — read left to right in their row.
+    #[test]
+    fn test_group_into_rows_reads_a_row_left_to_right() {
+        let detector = TableDetector::new();
+        let spans = vec![
+            make_span("Fifth", 10.0, 400.0),
+            make_span("day", 50.0, 400.0),
+            make_span("a", 80.0, 400.4),
+            make_span("syndrome", 95.0, 400.0),
+        ];
+        let rows = detector.group_into_rows(&spans);
+        assert_eq!(rows.len(), 1);
+        let words: Vec<&str> = rows[0].spans.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(words, ["Fifth", "day", "a", "syndrome"]);
     }
 
     /// Smaller text in the next column, on a baseline a little above, is running
