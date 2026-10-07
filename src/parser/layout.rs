@@ -1876,6 +1876,87 @@ fn filter_header_footer_spans(spans: &mut Vec<TextSpan>, page_box: super::backen
 
         !is_page_num
     });
+    remove_side_margin_numbers(spans, page_box);
+}
+
+/// How far, as a share of the page width, the side margins reach in from the page edges.
+const SIDE_MARGIN_SHARE: f32 = 0.15;
+
+/// Remove page numbers set in a side margin — beside the text rather than above or below
+/// it, as books and reports with a thumb tab or an outer-edge folio do.
+///
+/// Such a number often shares a baseline with a body line, which then reads it as a word:
+/// `국내 46 경제는`. A run is taken for one when it is a bare page number lying in a side
+/// margin entirely outside the horizontal extent of the page's other text, at least an em
+/// clear of it, and set no larger than that text. Two things that look alike are kept: a
+/// section number hanging in the margin beside its heading (its baseline holds bold or larger
+/// text), and line numbers (more than two numbers down one margin).
+fn remove_side_margin_numbers(spans: &mut Vec<TextSpan>, page_box: super::backend::PageBox) {
+    let width = page_box.urx - page_box.llx;
+    if spans.len() < 2 || width <= 0.0 {
+        return;
+    }
+    let extent = |s: &TextSpan| {
+        let w = if s.width > 0.0 {
+            s.width
+        } else {
+            estimate_text_width(s.text.trim(), s.font_size)
+        };
+        (s.x, s.x + w)
+    };
+    let is_number = |s: &TextSpan| {
+        let text = s.text.trim();
+        !text.is_empty()
+            && ((text.len() <= 4 && text.chars().all(|c| c.is_ascii_digit()))
+                || is_page_number_pattern(text))
+    };
+    let text: Vec<&TextSpan> = spans.iter().filter(|s| !is_number(s)).collect();
+    if text.is_empty() {
+        return;
+    }
+    let left = text.iter().map(|s| extent(s).0).fold(f32::MAX, f32::min);
+    let right = text.iter().map(|s| extent(s).1).fold(f32::MIN, f32::max);
+    let mut sizes: Vec<f32> = text.iter().map(|s| s.font_size).collect();
+    sizes.sort_by(f32::total_cmp);
+    let body = sizes[sizes.len() / 2];
+
+    // -1 for the left margin, 1 for the right, 0 for neither.
+    let side = |s: &TextSpan| -> i8 {
+        if !is_number(s) || s.font_size > body * 1.05 {
+            return 0;
+        }
+        let (x0, x1) = extent(s);
+        let em = s.font_size;
+        if x1 <= page_box.llx + width * SIDE_MARGIN_SHARE && x1 + em <= left {
+            -1
+        } else if x0 >= page_box.urx - width * SIDE_MARGIN_SHARE && x0 >= right + em {
+            1
+        } else {
+            0
+        }
+    };
+    let beside_a_heading = |s: &TextSpan| {
+        text.iter().any(|t| {
+            (t.y - s.y).abs() <= t.font_size.max(s.font_size) * 0.3
+                && (t.is_bold || t.font_size > body * 1.1)
+        })
+    };
+    let sides: Vec<i8> = spans
+        .iter()
+        .map(|s| match side(s) {
+            0 => 0,
+            _ if beside_a_heading(s) => 0,
+            d => d,
+        })
+        .collect();
+    let down = |d: i8| sides.iter().filter(|&&x| x == d).count();
+    let (left_count, right_count) = (down(-1), down(1));
+    let mut i = 0;
+    spans.retain(|_| {
+        let d = sides[i];
+        i += 1;
+        !(d == -1 && left_count <= 2 || d == 1 && right_count <= 2)
+    });
 }
 
 /// Return `true` if `text` matches a common page-number decoration pattern.
@@ -3578,5 +3659,92 @@ mod tests {
 
         assert_eq!(line.text(), "");
         assert!(line.spans.is_empty());
+    }
+
+    /// A page set like a report with an outer-edge folio: a body column from x 68 to 255 in
+    /// 9.3pt type, and `extra` runs beside it.
+    fn margin_page(extra: Vec<TextSpan>) -> Vec<TextSpan> {
+        let run = |text: &str, x: f32, y: f32, width: f32| TextSpan {
+            width,
+            width_measured: true,
+            ..TextSpan::new(text.to_string(), x, y, 9.3, "Body".to_string())
+        };
+        let mut spans = vec![
+            run("국내", 68.0, 560.0, 18.6),
+            run("경제는 소비 회복세가 더디고", 92.0, 546.0, 163.0),
+            run("건설투자가 부진하겠지만", 68.0, 532.0, 120.0),
+        ];
+        spans.extend(extra);
+        spans
+    }
+
+    const REPORT_PAGE: super::super::backend::PageBox = super::super::backend::PageBox {
+        llx: 0.0,
+        lly: 0.0,
+        urx: 533.0,
+        ury: 728.0,
+    };
+
+    fn number(text: &str, x: f32, y: f32, size: f32) -> TextSpan {
+        TextSpan {
+            width: estimate_text_width(text, size),
+            width_measured: true,
+            ..TextSpan::new(text.to_string(), x, y, size, "Body".to_string())
+        }
+    }
+
+    fn texts(spans: &[TextSpan]) -> Vec<&str> {
+        spans.iter().map(|s| s.text.trim()).collect()
+    }
+
+    /// The folio on the outer edge shares a body line's baseline; it goes, as a folio at the
+    /// foot of the page does.
+    #[test]
+    fn a_page_number_in_the_side_margin_is_removed() {
+        let mut spans = margin_page(vec![
+            number("46", 30.0, 546.0, 8.6),
+            number("47", 495.0, 546.0, 8.6),
+        ]);
+        filter_header_footer_spans(&mut spans, REPORT_PAGE);
+        assert_eq!(
+            texts(&spans),
+            [
+                "국내",
+                "경제는 소비 회복세가 더디고",
+                "건설투자가 부진하겠지만"
+            ]
+        );
+    }
+
+    /// A section number hanging in the margin beside its bold heading stays with it.
+    #[test]
+    fn a_section_number_hanging_beside_its_heading_is_kept() {
+        let mut heading =
+            TextSpan::new("Results".to_string(), 68.0, 600.0, 9.3, "Body-Bold".into());
+        heading.width = 40.0;
+        heading.width_measured = true;
+        let mut spans = margin_page(vec![heading, number("3", 50.0, 600.0, 9.3)]);
+        filter_header_footer_spans(&mut spans, REPORT_PAGE);
+        assert!(texts(&spans).contains(&"3"));
+    }
+
+    /// Numbers down a margin beside many lines are line numbers, not a folio.
+    #[test]
+    fn line_numbers_down_the_margin_are_kept() {
+        let mut spans = margin_page(
+            (0..3)
+                .map(|i| number(&(i + 1).to_string(), 40.0, 560.0 - i as f32 * 14.0, 8.6))
+                .collect(),
+        );
+        filter_header_footer_spans(&mut spans, REPORT_PAGE);
+        assert_eq!(texts(&spans).iter().filter(|t| t.len() == 1).count(), 3);
+    }
+
+    /// A number inside the text's extent — a table's cell, a figure's label — is text.
+    #[test]
+    fn a_number_within_the_text_is_kept() {
+        let mut spans = margin_page(vec![number("46", 200.0, 518.0, 9.3)]);
+        filter_header_footer_spans(&mut spans, REPORT_PAGE);
+        assert!(texts(&spans).contains(&"46"));
     }
 }

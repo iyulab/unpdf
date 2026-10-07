@@ -19,6 +19,13 @@
   reports about four in five of the breaks it joins are inside a word; a break between words
   with as little room is joined too, which no producer-independent evidence can tell apart.
 
+- **Page numbers in a side margin are no longer read into the text.** A folio set on the
+  outer edge of the page beside the text — not above or below it — shares a baseline with a
+  body line and was read as part of it (`… 국내 46 경제는 …`), or stood as a paragraph of its
+  own. A bare page number in a side margin, clear of all other text on the page and set no
+  larger than it, is now dropped like one in the header or footer. A section number hanging
+  beside its bold or larger heading stays, and so do line numbers down a margin.
+
 ### Changed
 
 - **`TextSpan` has a `width_measured` field** — whether `width` is the run's advance from the
