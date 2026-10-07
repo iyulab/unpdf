@@ -27,52 +27,39 @@ struct PlatformInfo {
 
 /// Get platform info for the current system
 fn get_platform_info() -> PlatformInfo {
-    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-    return PlatformInfo {
-        os_name: "windows",
-        arch_name: "x86_64",
-        target_triple: "x86_64-pc-windows-msvc",
-        archive_ext: "zip",
-    };
+    platform_for(
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        cfg!(target_env = "musl"),
+    )
+}
 
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    return PlatformInfo {
-        os_name: "linux",
-        arch_name: "x86_64",
-        target_triple: "x86_64-unknown-linux-gnu",
-        archive_ext: "tar.gz",
+/// The release archive naming for a platform.
+///
+/// A musl build is its own platform: it is what runs where the glibc build cannot (Alpine,
+/// distroless images), so it must update to the musl archive and never to the glibc one,
+/// which would install a binary that does not start. Kept apart from the `cfg!` probe so that
+/// every platform's answer is testable on any host.
+fn platform_for(os: &'static str, arch: &'static str, musl: bool) -> PlatformInfo {
+    let (os_name, arch_name, target_triple, archive_ext) = match (os, arch, musl) {
+        ("windows", "x86_64", _) => ("windows", "x86_64", "x86_64-pc-windows-msvc", "zip"),
+        ("linux", "x86_64", false) => ("linux", "x86_64", "x86_64-unknown-linux-gnu", "tar.gz"),
+        ("linux", "x86_64", true) => (
+            "linux",
+            "x86_64-musl",
+            "x86_64-unknown-linux-musl",
+            "tar.gz",
+        ),
+        ("macos", "x86_64", _) => ("macos", "x86_64", "x86_64-apple-darwin", "tar.gz"),
+        ("macos", "aarch64", _) => ("macos", "aarch64", "aarch64-apple-darwin", "tar.gz"),
+        // No release archive is built for anything else; "unknown" matches no asset.
+        (os, arch, _) => (os, arch, "unknown", "tar.gz"),
     };
-
-    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-    return PlatformInfo {
-        os_name: "macos",
-        arch_name: "x86_64",
-        target_triple: "x86_64-apple-darwin",
-        archive_ext: "tar.gz",
-    };
-
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    return PlatformInfo {
-        os_name: "macos",
-        arch_name: "aarch64",
-        target_triple: "aarch64-apple-darwin",
-        archive_ext: "tar.gz",
-    };
-
-    #[cfg(not(any(
-        all(target_os = "windows", target_arch = "x86_64"),
-        all(target_os = "linux", target_arch = "x86_64"),
-        all(target_os = "macos", target_arch = "x86_64"),
-        all(target_os = "macos", target_arch = "aarch64"),
-    )))]
-    {
-        // Fallback for unsupported platforms
-        PlatformInfo {
-            os_name: std::env::consts::OS,
-            arch_name: std::env::consts::ARCH,
-            target_triple: "unknown",
-            archive_ext: "tar.gz",
-        }
+    PlatformInfo {
+        os_name,
+        arch_name,
+        target_triple,
+        archive_ext,
     }
 }
 
@@ -352,12 +339,7 @@ mod tests {
     use super::*;
 
     fn windows_x86_64() -> PlatformInfo {
-        PlatformInfo {
-            os_name: "windows",
-            arch_name: "x86_64",
-            target_triple: "x86_64-pc-windows-msvc",
-            archive_ext: "zip",
-        }
+        platform_for("windows", "x86_64", false)
     }
 
     /// A release carries two archives whose names differ only by a `lib` prefix: the CLI
@@ -378,6 +360,71 @@ mod tests {
             find_matching_asset(&release, &patterns).as_deref(),
             Some("unpdf-windows-x86_64-v0.9.0.zip")
         );
+    }
+
+    /// A release carries a glibc and a musl CLI archive for Linux x86_64, and their names
+    /// differ only by the `-musl` suffix. Each build must pick its own: a musl build that
+    /// updated to the glibc archive would replace itself with a binary that does not start
+    /// on the systems it was built for.
+    #[test]
+    fn a_musl_build_updates_to_the_musl_archive() {
+        let release = vec![
+            "unpdf-linux-x86_64-v0.9.0.tar.gz".to_string(),
+            "unpdf-linux-x86_64-musl-v0.9.0.tar.gz".to_string(),
+            "libunpdf-linux-x86_64-musl-v0.9.0.tar.gz".to_string(),
+        ];
+
+        let musl = get_asset_patterns(&platform_for("linux", "x86_64", true), "0.9.0");
+        assert_eq!(
+            find_matching_asset(&release, &musl).as_deref(),
+            Some("unpdf-linux-x86_64-musl-v0.9.0.tar.gz")
+        );
+
+        let gnu = get_asset_patterns(&platform_for("linux", "x86_64", false), "0.9.0");
+        assert_eq!(
+            find_matching_asset(&release, &gnu).as_deref(),
+            Some("unpdf-linux-x86_64-v0.9.0.tar.gz")
+        );
+    }
+
+    /// A release without a musl CLI archive has nothing a musl build can install — the glibc
+    /// archive is not a fallback for it.
+    #[test]
+    fn a_musl_build_never_falls_back_to_the_glibc_archive() {
+        let release = vec!["unpdf-linux-x86_64-v0.9.0.tar.gz".to_string()];
+        let musl = get_asset_patterns(&platform_for("linux", "x86_64", true), "0.9.0");
+
+        assert_eq!(find_matching_asset(&release, &musl), None);
+    }
+
+    /// Every platform a release archive is built for resolves to that archive's name.
+    #[test]
+    fn each_released_platform_names_its_own_archive() {
+        for (os, arch, musl, expected) in [
+            (
+                "windows",
+                "x86_64",
+                false,
+                "unpdf-windows-x86_64-v0.9.0.zip",
+            ),
+            ("linux", "x86_64", false, "unpdf-linux-x86_64-v0.9.0.tar.gz"),
+            (
+                "linux",
+                "x86_64",
+                true,
+                "unpdf-linux-x86_64-musl-v0.9.0.tar.gz",
+            ),
+            ("macos", "x86_64", false, "unpdf-macos-x86_64-v0.9.0.tar.gz"),
+            (
+                "macos",
+                "aarch64",
+                false,
+                "unpdf-macos-aarch64-v0.9.0.tar.gz",
+            ),
+        ] {
+            let patterns = get_asset_patterns(&platform_for(os, arch, musl), "0.9.0");
+            assert_eq!(patterns[0], expected, "{os} {arch} musl={musl}");
+        }
     }
 
     /// A release that ships only the library has nothing this updater can install. Answering

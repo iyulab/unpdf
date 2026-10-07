@@ -41,6 +41,12 @@
   packaged library without a word when the variable pointed at a path that does not exist,
   so a mistyped path ran other code than the one asked for. Importing now raises `OSError`
   naming the path.
+- **A musl-linked CLI updates itself to the musl build.** `update` chose its archive by OS
+  and architecture alone, so a CLI built for musl (the one that runs on Alpine and other
+  systems without glibc) replaced itself with the glibc build, which does not start there.
+  It now asks for the `-musl` archive, and finds nothing rather than the glibc one when a
+  release lacks it. A musl CLI of an earlier
+  version still updates to the glibc build once; install this version over it by hand.
 - **The C header declares the whole C ABI.** `unpdf_parse_file_with_options`,
   `unpdf_parse_bytes_with_options`, `unpdf_to_markdown_with_options` and `UNPDF_FLAG_REFINE`
   were exported but missing from the header, so a C caller could not reach them without
