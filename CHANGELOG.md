@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Added
+
+- **Text in a font that is not embedded is rendered** (feature `standard-fonts`, on in the C
+  ABI, .NET and Python packages). The standard 14 fonts, and system fonts a PDF names without
+  embedding them (Arial, Times New Roman, Courier New, ...), are painted in a stand-in face of
+  the same class — sans, serif or fixed-pitch, bold and italic as the font's name, `/Flags`
+  and declared style say — fitted to the font's own widths. The faces are the 14 PDFium ships
+  (BSD-3-Clause, notice in `assets/standard-fonts/LICENSE`); they add about 265 KB. Before,
+  such text was left out and counted in `gaps.text_runs`.
+- `RasteredPage::substituted_text_runs` — and `substituted_text_runs` in the C ABI's render
+  report, `RenderedPage.substituted_text_runs` (Python) and `RenderedPage.SubstitutedTextRuns`
+  (.NET): text runs painted in a stand-in face. Not a gap: the text is there, in a face that
+  is not the page's own. A symbolic font of unknown design, or a composite font, that is not
+  embedded still has no stand-in and is still a gap.
+
 ### Changed
 
 - **The `raster` feature reads TrueType, OpenType and bare CFF programs with `skrifa`** (and its

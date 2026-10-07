@@ -538,16 +538,21 @@ class RenderedPage:
     """A rendered page: a PNG, its size in pixels, and what it could not show.
 
     ``gaps`` counts, by reason, what the renderer left out — ``text_runs``
-    (text in fonts that are not embedded or are Type 3), ``images``
-    (codecs it does not decode), ``inline_images``, ``shadings`` and
+    (text in fonts that are not embedded and have no stand-in, or are Type 3),
+    ``images`` (codecs it does not decode), ``inline_images``, ``shadings`` and
     ``undecodable_content_streams``. All zero means everything was painted;
     otherwise the rest of the page still was.
+
+    ``substituted_text_runs`` counts text painted in a standard face standing in
+    for a font the PDF does not embed — readable, but not the page's own typeface.
+    It is not a gap.
     """
 
     png: bytes
     width: int
     height: int
     gaps: "dict[str, int]"
+    substituted_text_runs: int = 0
 
 
 def _render(lib: ctypes.CDLL, handle: Any, page_number: int, dpi: float, region: str) -> RenderedPage:
@@ -569,6 +574,7 @@ def _render(lib: ctypes.CDLL, handle: Any, page_number: int, dpi: float, region:
         width=int(report.get("width", 0)),
         height=int(report.get("height", 0)),
         gaps=dict(report.get("gaps", {})),
+        substituted_text_runs=int(report.get("substituted_text_runs", 0)),
     )
 
 

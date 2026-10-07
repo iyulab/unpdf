@@ -23,7 +23,7 @@ crate-type = ["lib", "cdylib"]
 
 [features]
 default = ["fast-parse", "refine", "ai"]
-ffi = ["raster"]  # the C ABI includes page rasterization (`unpdf_render_page`)
+ffi = ["raster", "standard-fonts"]  # the C ABI includes page rasterization (`unpdf_render_page`), stand-in faces included
 async = ["tokio"]
 fast-parse = []  # Enable nom_parser for faster PDF parsing
 # Shape-refinement pass (RenderOptions.refine). Enables unparser-shared's
@@ -39,6 +39,9 @@ ai = ["unparser-shared/ai"]
 # interpretation text extraction reads, so the page rendered is the page extracted. Off by
 # default; pure Rust (tiny-skia rasterizer, zune-jpeg for DCT images), wasm untouched.
 raster = ["dep:tiny-skia", "dep:zune-jpeg", "dep:skrifa"]
+# Stand-in faces for fonts a PDF names but does not embed (the standard 14, Arial, Times New
+# Roman, ...): PDFium's 14 standard faces (bare CFF), BSD-3-Clause, about 265 KB in the binary.
+standard-fonts = ["raster"]
 
 [dependencies]
 # Serialization

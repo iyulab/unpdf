@@ -177,15 +177,78 @@ fn a_stencil_mask_paints_the_fill_color_where_it_marks() {
 
 #[test]
 fn text_is_reported_as_not_painted_except_invisible_text() {
+    // A symbolic font of unknown design, not embedded: nothing can stand in for it.
     let page = render(
-        &page_pdf(
-            "",
-            A4,
+        &font_page(
+            "<</Type/Font/Subtype/TrueType/BaseFont/UnpdfPictographs/FontDescriptor 6 0 R>>",
+            vec![b"<</Type/FontDescriptor/FontName/UnpdfPictographs/Flags 4/FontBBox[0 0 1000 800]\
+                   /ItalicAngle 0/Ascent 800/Descent -200/CapHeight 800/StemV 80>>"
+                .to_vec()],
             b"BT /F1 12 Tf 72 700 Td (Shown text) Tj ET BT 3 Tr /F1 12 Tf 72 680 Td (OCR layer) Tj ET",
         ),
         &PT,
     );
     assert_eq!(page.gaps.text_runs, 1);
+    assert_eq!(page.substituted_text_runs, 0);
+}
+
+/// Whether any pixel of the box `x0..x1` × `y0..y1` (from the top-left) is dark.
+fn inked(page: &RasteredPage, x0: u32, x1: u32, y0: u32, y1: u32) -> bool {
+    (y0..y1).any(|y| (x0..x1).any(|x| px(page, x, y).iter().all(|&c| c < 128)))
+}
+
+/// `Hello` in Helvetica at 40 pt, its baseline at y 700: ink between x 72 and about 170.
+const HELLO_HELVETICA: &[u8] = b"BT /F1 40 Tf 72 700 Td (Hello) Tj ET";
+
+#[cfg(feature = "standard-fonts")]
+#[test]
+fn a_standard_font_that_is_not_embedded_is_drawn_in_a_stand_in_face() {
+    let page = render(&page_pdf("", A4, HELLO_HELVETICA), &PT);
+    assert!(
+        inked(&page, 72, 175, 842 - 732, 842 - 700),
+        "the word is painted"
+    );
+    assert!(
+        !inked(&page, 180, 300, 842 - 732, 842 - 700),
+        "and ends where its widths do"
+    );
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+    assert_eq!(page.substituted_text_runs, 1);
+}
+
+#[cfg(feature = "standard-fonts")]
+#[test]
+fn a_stand_in_glyph_is_fitted_to_the_width_the_font_gives_it() {
+    // `/Widths` makes every glyph 2000 units, nearly three times Helvetica's 722-unit `H`;
+    // the fit is capped at twice the face's own width.
+    let widths = vec!["2000"; 224].join(" ");
+    let pdf = font_page(
+        &format!(
+            "<</Type/Font/Subtype/TrueType/BaseFont/Arial/FirstChar 32/LastChar 255\
+              /Widths[{widths}]/Encoding/WinAnsiEncoding/FontDescriptor 6 0 R>>"
+        ),
+        vec![
+            b"<</Type/FontDescriptor/FontName/Arial/Flags 32/FontBBox[0 0 1000 800]\
+               /ItalicAngle 0/Ascent 800/Descent -200/CapHeight 700/StemV 80>>"
+                .to_vec(),
+        ],
+        b"BT /F1 40 Tf 72 700 Td (H) Tj ET",
+    );
+    let page = render(&pdf, &PT);
+    // Drawn at its own width the `H` would stop near x 98; stretched, its ink reaches on.
+    assert!(
+        inked(&page, 120, 150, 842 - 730, 842 - 700),
+        "the glyph is stretched"
+    );
+    assert_eq!(page.substituted_text_runs, 1);
+}
+
+#[cfg(not(feature = "standard-fonts"))]
+#[test]
+fn without_stand_in_faces_a_font_that_is_not_embedded_is_a_gap() {
+    let page = render(&page_pdf("", A4, HELLO_HELVETICA), &PT);
+    assert_eq!(page.gaps.text_runs, 1);
+    assert_eq!(page.substituted_text_runs, 0);
 }
 
 #[test]

@@ -50,7 +50,7 @@ fn a_page_renders_to_a_png_with_its_report() {
 }
 
 #[test]
-fn text_in_a_font_that_is_not_embedded_is_reported() {
+fn text_in_a_standard_font_that_is_not_embedded_is_drawn_in_a_stand_in_face() {
     let bytes = text_pdf();
     unsafe {
         let doc = unpdf_parse_bytes(bytes.as_ptr(), bytes.len());
@@ -60,7 +60,12 @@ fn text_in_a_font_that_is_not_embedded_is_reported() {
         assert!(!png.is_null(), "null options are the defaults");
         unpdf_free_bytes(png, len);
         let info: serde_json::Value = serde_json::from_str(&take_string(info)).unwrap();
-        assert!(info["gaps"]["text_runs"].as_u64().unwrap() >= 1, "{info}");
+        // The C ABI carries the stand-in faces: the text is painted, and reported as such.
+        assert_eq!(info["gaps"]["text_runs"], 0, "{info}");
+        assert!(
+            info["substituted_text_runs"].as_u64().unwrap() >= 1,
+            "{info}"
+        );
         // 150 dpi by default.
         assert_eq!(info["width"], 1240);
         unpdf_free_document(doc);

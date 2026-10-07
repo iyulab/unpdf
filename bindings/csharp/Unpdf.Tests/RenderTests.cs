@@ -26,13 +26,13 @@ public class RenderTests
     }
 
     [Fact]
-    public void RenderPage_TextInAFontThatIsNotEmbedded_IsReportedAsAGap()
+    public void RenderPage_AStandardFontThatIsNotEmbedded_IsDrawnInAStandInFace()
     {
         using var doc = UnpdfDocument.ParseBytes(PdfFixtures.TextPdf());
         var page = doc.RenderPage(1);
         Assert.Equal(1240, page.Width); // 150 dpi by default
-        Assert.True(page.Gaps.TextRuns >= 1);
-        Assert.False(page.Gaps.IsEmpty);
+        Assert.Equal(0u, page.Gaps.TextRuns);
+        Assert.True(page.SubstitutedTextRuns >= 1);
     }
 
     [Fact]

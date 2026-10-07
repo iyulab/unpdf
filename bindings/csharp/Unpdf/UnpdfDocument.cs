@@ -630,6 +630,7 @@ public class UnpdfDocument : IDisposable
                 Width = report.Width,
                 Height = report.Height,
                 Gaps = report.Gaps,
+                SubstitutedTextRuns = report.SubstitutedTextRuns,
             };
         }
         finally

@@ -8,7 +8,7 @@ version = "0.32.0"
 description = "Python bindings for unpdf - High-performance PDF content extraction"
 readme = "README.md"
 license = "MIT"
-license-files = ["LICENSE"]
+license-files = ["LICENSE", "THIRD-PARTY-NOTICES"]
 authors = [
     {name = "iyulab"}
 ]

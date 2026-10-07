@@ -722,12 +722,13 @@ class TestRenderPage:
             second = doc.render_page(1, dpi=36, region="media")
         assert first.png == second.png  # no crop box: the crop box is the media box
 
-    def test_text_in_a_font_that_is_not_embedded_is_a_gap(self, tmp_path):
+    def test_a_standard_font_that_is_not_embedded_is_drawn_in_a_stand_in_face(self, tmp_path):
         pdf_file = tmp_path / "text.pdf"
         pdf_file.write_bytes(_text_pdf())
         page = unpdf.render_page(str(pdf_file), 1)
         assert page.width == 1240  # 150 dpi by default
-        assert page.gaps["text_runs"] >= 1
+        assert page.gaps["text_runs"] == 0
+        assert page.substituted_text_runs >= 1
 
     def test_errors_carry_their_kind(self):
         with unpdf.Document(_image_only_pdf()) as doc:

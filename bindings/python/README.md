@@ -163,6 +163,7 @@ with unpdf.Document("report.pdf") as doc:
         page = doc.render_page(3, dpi=150)          # region="crop" (default) or "media"
         open("page3.png", "wb").write(page.png)
         print(page.width, page.height, page.gaps)   # gaps: what could not be painted
+        print(page.substituted_text_runs)           # text in a stand-in for a font not embedded
 ```
 
 `unpdf.render_page(source, page_number, dpi=150, region="crop")` renders one page in one call

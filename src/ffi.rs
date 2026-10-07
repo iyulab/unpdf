@@ -1009,8 +1009,10 @@ struct FfiRasterOptions {
 /// per inch (default 150) and the box painted (default the crop box, what a viewer shows).
 ///
 /// `out_info`, when not null, receives `{"width":N,"height":N,"gaps":{"text_runs":N,
-/// "images":N,"inline_images":N,"shadings":N,"undecodable_content_streams":N}}` — free it
-/// with `unpdf_free_string`.
+/// "images":N,"inline_images":N,"shadings":N,"undecodable_content_streams":N},
+/// "substituted_text_runs":N}` — free it with `unpdf_free_string`. `substituted_text_runs`
+/// counts text painted in a standard face standing in for a font the PDF does not embed:
+/// readable, not the page's own typeface, and not a gap.
 ///
 /// # Safety
 ///
@@ -1079,6 +1081,7 @@ pub unsafe extern "C" fn unpdf_render_page(
                 "shadings": g.shadings,
                 "undecodable_content_streams": g.undecodable_content_streams,
             },
+            "substituted_text_runs": page.substituted_text_runs,
         });
         Ok((page.to_png(), info.to_string()))
     });

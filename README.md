@@ -650,9 +650,17 @@ if !page.gaps.is_empty() {
 ```
 
 Painted: text in embedded Type 1, TrueType, OpenType and CFF fonts, paths, clipping, colors,
-and images (Flate-family and JPEG, with soft and stencil masks). Not yet: text in fonts that are
-not embedded or are Type 3, JPEG 2000/JBIG2/CCITT images, inline images and shadings —
-each is counted in `gaps`, and the rest of the page is still painted.
+and images (Flate-family and JPEG, with soft and stencil masks). Not yet: Type 3 fonts, JPEG
+2000/JBIG2/CCITT images, inline images and shadings — each is counted in `gaps`, and the rest
+of the page is still painted.
+
+Text in a font the PDF names but does not embed — the standard 14, or a system font such as
+Arial or Times New Roman — is painted in a stand-in face of the same class (sans, serif or
+fixed-pitch, its weight and slant) fitted to the font's own widths, with the `standard-fonts`
+feature (included in the C ABI, .NET and Python packages; about 265 KB, the faces PDFium ships,
+BSD-3-Clause). Such runs are counted in `substituted_text_runs`, not in `gaps`: the text is
+there, in a face that is not the page's own. A symbolic font of unknown design has no stand-in
+and stays a gap, as does a composite (CID) font that is not embedded.
 
 ### Detecting Incomplete Extraction
 

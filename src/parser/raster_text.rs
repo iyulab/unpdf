@@ -36,6 +36,8 @@ pub(super) struct LoadedFont {
     by_name: OnceCell<HashMap<String, u16>>,
     /// A Type 1 program, parsed once.
     type1: Option<Type1Font>,
+    /// The program is a standard face standing in for one the font does not embed.
+    pub(super) stand_in: bool,
     outlines: HashMap<u16, Option<Path>>,
 }
 
@@ -74,12 +76,14 @@ impl LoadedFont {
                 (scale, cff_cid_map(&cff), Some(by_char))
             }
         };
+        let stand_in = program.stand_in;
         Some(Self {
             program,
             glyph_to_text,
             cid_to_gid,
             cff_by_char,
             by_name: OnceCell::new(),
+            stand_in,
             type1,
             outlines: HashMap::new(),
         })

@@ -29,8 +29,8 @@ public sealed class RenderPageOptions
 public sealed class RenderGaps
 {
     /// <summary>
-    /// Text runs not painted, or painted in part: the font is not embedded, or is Type 3, or
-    /// a code selects no glyph in it.
+    /// Text runs not painted, or painted in part: the font is not embedded and no standard
+    /// face stands in for it, or is Type 3, or a code selects no glyph in it.
     /// </summary>
     [JsonPropertyName("text_runs")]
     public uint TextRuns { get; init; }
@@ -72,6 +72,12 @@ public sealed class RenderedPage
 
     /// <summary>What the renderer could not paint.</summary>
     public required RenderGaps Gaps { get; init; }
+
+    /// <summary>
+    /// Text runs painted in a standard face standing in for a font the PDF does not embed:
+    /// readable, but not the page's own typeface. Not a gap — the text is there.
+    /// </summary>
+    public uint SubstitutedTextRuns { get; init; }
 }
 
 /// <summary>Wire shape of the native render report.</summary>
@@ -85,6 +91,9 @@ internal sealed class RenderInfoPayload
 
     [JsonPropertyName("gaps")]
     public RenderGaps Gaps { get; init; } = new();
+
+    [JsonPropertyName("substituted_text_runs")]
+    public uint SubstitutedTextRuns { get; init; }
 }
 
 /// <summary>Wire shape of <see cref="RenderPageOptions"/>.</summary>

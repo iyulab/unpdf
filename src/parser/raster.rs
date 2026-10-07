@@ -52,8 +52,9 @@ pub enum PageRegion {
 /// content asks for was painted.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RasterGaps {
-    /// Text runs not painted, or painted only in part: the font's program is not embedded,
-    /// or is one this does not read (Type 3), or a code selects no glyph in it.
+    /// Text runs not painted, or painted only in part: the font's program is not embedded
+    /// and no standard face stands in for it, or is one this does not read (Type 3), or a
+    /// code selects no glyph in it.
     pub text_runs: u32,
     /// Images not painted: a codec this does not decode (JPEG 2000, JBIG2, CCITT), a color
     /// space it does not convert, or data that did not decode.
@@ -81,6 +82,10 @@ pub struct RasteredPage {
     pub height: u32,
     pub rgba: Vec<u8>,
     pub gaps: RasterGaps,
+    /// Text runs painted in a standard face standing in for a font the PDF does not embed
+    /// (feature `standard-fonts`): readable, but not the page's own typeface. Not a gap —
+    /// the text is there.
+    pub substituted_text_runs: u32,
 }
 
 impl RasteredPage {
@@ -174,12 +179,18 @@ pub(crate) fn render_page(
             undecodable_content_streams: painted.undecodable_streams as u32,
             ..RasterGaps::default()
         },
+        substituted_text_runs: 0,
     };
     for op in &painted.ops {
         painter.apply(op);
     }
 
-    let Painter { pixmap, gaps, .. } = painter;
+    let Painter {
+        pixmap,
+        gaps,
+        substituted_text_runs,
+        ..
+    } = painter;
     // The page was filled opaque white first, so every pixel is opaque and premultiplied
     // equals straight color.
     Ok(RasteredPage {
@@ -187,6 +198,7 @@ pub(crate) fn render_page(
         height: px_h,
         rgba: pixmap.take(),
         gaps,
+        substituted_text_runs,
     })
 }
 
@@ -349,6 +361,7 @@ struct Painter<'a> {
     /// Fonts loaded so far, by the resource that names them; `None` when unpaintable.
     fonts: HashMap<(Option<ObjectId>, Vec<u8>), Option<LoadedFont>>,
     gaps: RasterGaps,
+    substituted_text_runs: u32,
 }
 
 fn number(v: &PdfValue) -> Option<f32> {
@@ -630,6 +643,7 @@ impl Painter<'_> {
         // Mode 3 paints nothing (an OCR layer over a scan): nothing is missing.
         let invisible = matches!(text.render_mode, 3 | 7);
         let mut missing = false;
+        let mut substituted = false;
         // Taken out of the cache while its glyphs are painted, put back after.
         let mut loaded = self.fonts.remove(&key).flatten();
 
@@ -675,7 +689,19 @@ impl Painter<'_> {
                 };
                 match gid {
                     Some(gid) if !invisible => {
-                        let glyph_space = font.glyph_to_text;
+                        let mut glyph_space = font.glyph_to_text;
+                        if font.stand_in {
+                            // A stand-in face is drawn to the width the font gives the
+                            // glyph, so the line keeps the length the page set.
+                            let own = font.program_advance(gid).unwrap_or(0.0)
+                                * font.glyph_to_text.sx
+                                * 1000.0;
+                            if own > 0.0 && w0 > 0.0 {
+                                let fit = (w0 / own).clamp(0.5, 2.0);
+                                glyph_space = glyph_space.post_scale(fit, 1.0);
+                            }
+                            substituted = true;
+                        }
                         if let Some(outline) = font.outline(gid).cloned() {
                             let to_text = Transform::from_row(
                                 text.size * text.horizontal_scale,
@@ -704,6 +730,9 @@ impl Painter<'_> {
         self.fonts.insert(key, loaded);
         if missing {
             self.gaps.text_runs += 1;
+        }
+        if substituted {
+            self.substituted_text_runs += 1;
         }
     }
 

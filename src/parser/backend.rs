@@ -299,6 +299,9 @@ pub struct FontProgram {
     pub format: FontFormat,
     pub data: Vec<u8>,
     pub selection: GlyphSelection,
+    /// The font embeds no program and `data` is a standard face standing in for it
+    /// (feature `standard-fonts`): its glyphs are fitted to the font's own widths.
+    pub stand_in: bool,
 }
 
 /// What a page's rasterizer needs from an `/ExtGState` resource (ISO 32000-1 §8.4.5).
@@ -2221,16 +2224,20 @@ impl RawFontResolver {
                 format,
                 data,
                 selection: GlyphSelection::Cid { cid_to_gid },
+                stand_in: false,
             });
         }
 
-        let (format, data) = embedded_font_program(doc, font_dict)?;
-        let symbolic = raw_dict_get(font_dict, b"FontDescriptor")
+        let flags = raw_dict_get(font_dict, b"FontDescriptor")
             .and_then(|d| raw_resolve_dict(doc, d))
             .and_then(|d| raw_dict_get(d, b"Flags"))
             .map(|f| doc.resolve(f))
-            .and_then(|f| f.as_i64())
-            .is_some_and(|flags| flags & 4 != 0);
+            .and_then(|f| f.as_i64());
+        let (format, data, stand_in) = match embedded_font_program(doc, font_dict) {
+            Some((format, data)) => (format, data, false),
+            None => (FontFormat::Cff, self.stand_in(doc, fid, flags)?, true),
+        };
+        let symbolic = flags.is_some_and(|flags| flags & 4 != 0);
         let names = raw_dict_get(font_dict, b"Encoding")
             .and_then(|e| raw_resolve_dict(doc, e))
             .map(|enc| self.parse_differences(doc, enc).into_iter().collect())
@@ -2243,7 +2250,33 @@ impl RawFontResolver {
                 names,
                 symbolic,
             },
+            stand_in,
         })
+    }
+
+    /// A standard face to paint a simple font that embeds no program with: a Type 1, a
+    /// TrueType or a Multiple Master font a reader is expected to supply (§9.6.2.2), chosen
+    /// by its name, its descriptor's `/Flags` and the style it declares. A Type 3 font draws
+    /// its own glyphs and has none.
+    #[cfg(feature = "standard-fonts")]
+    fn stand_in(&self, doc: &RawDocument, fid: PageId, flags: Option<i64>) -> Option<Vec<u8>> {
+        let dict = doc.get_dict(fid).ok()?;
+        let subtype = raw_dict_get(dict, b"Subtype").and_then(|s| s.as_name())?;
+        if !matches!(subtype, b"Type1" | b"TrueType" | b"MMType1") {
+            return None;
+        }
+        let base_font = raw_dict_get(dict, b"BaseFont")
+            .and_then(|n| n.as_name())
+            .map(|n| String::from_utf8_lossy(n).into_owned())
+            .unwrap_or_default();
+        let style = self.declared_style(doc, fid);
+        super::standard_fonts::stand_in(&base_font, flags, style.bold, style.italic)
+            .map(<[u8]>::to_vec)
+    }
+
+    #[cfg(not(feature = "standard-fonts"))]
+    fn stand_in(&self, _doc: &RawDocument, _fid: PageId, _flags: Option<i64>) -> Option<Vec<u8>> {
+        None
     }
 
     /// Get or parse the encoding map for a font.
