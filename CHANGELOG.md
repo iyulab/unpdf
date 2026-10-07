@@ -26,6 +26,22 @@
   larger than it, is now dropped like one in the header or footer. A section number hanging
   beside its bold or larger heading stays, and so do line numbers down a margin.
 
+- **Text set with a rise sits where it is drawn.** Extraction ignored `Ts`, so a superscript
+  or subscript raised or lowered by the text rise was placed on its line's baseline; it is now
+  placed where page rendering paints it.
+- **Text in a horizontally scaled text matrix keeps its font size.** A matrix that narrows or
+  widens glyphs — how some typesetters justify lines (`1.02 0 0 1 Tm`) or set condensed type
+  — changed the size extraction read for the text by the horizontal factor; the size is now
+  the matrix's vertical scale, as the glyphs' height is.
+- **A bold title a point or so above the body size is a heading.** A line bold throughout
+  set between the body size and a point and a half above it fell between the heading rules
+  — too small to be a heading by size, too large for a bold title in the body face — and
+  came out as bold text run into the next paragraph (`**Acknowledgements** We would …`).
+- **Python: `UNPDF_LIB_PATH` naming no file is an error.** The binding fell back to its
+  packaged library without a word when the variable pointed at a path that does not exist,
+  so a mistyped path ran other code than the one asked for. Importing now raises `OSError`
+  naming the path.
+
 ### Changed
 
 - **`TextSpan` has a `width_measured` field** — whether `width` is the run's advance from the

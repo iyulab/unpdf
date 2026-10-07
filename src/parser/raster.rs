@@ -18,6 +18,7 @@ use super::backend::{
 };
 use super::png_encode::{self, PngColorType};
 use super::raster_text::LoadedFont;
+use super::text_state::{TextMatrix, TextParams};
 use crate::error::{Error, Result};
 
 /// How to rasterize a page.
@@ -172,8 +173,7 @@ pub(crate) fn render_page(
         stack: Vec::new(),
         path: PathBuilder::new(),
         pending_clip: None,
-        tm: Transform::identity(),
-        tlm: Transform::identity(),
+        text_matrix: TextMatrix::default(),
         fonts: HashMap::new(),
         gaps: RasterGaps {
             undecodable_content_streams: painted.undecodable_streams as u32,
@@ -292,34 +292,12 @@ struct GState {
     text: TextState,
 }
 
-/// Text state parameters and the font they select.
-#[derive(Clone)]
+/// The text state: the font `Tf` selects and the parameters around it.
+#[derive(Clone, Default)]
 struct TextState {
     /// The font resource `Tf` names, and the form whose resources it is looked up in.
     font: Option<(Option<ObjectId>, Vec<u8>)>,
-    size: f32,
-    char_spacing: f32,
-    word_spacing: f32,
-    /// `Tz / 100`.
-    horizontal_scale: f32,
-    leading: f32,
-    rise: f32,
-    render_mode: i64,
-}
-
-impl Default for TextState {
-    fn default() -> Self {
-        Self {
-            font: None,
-            size: 0.0,
-            char_spacing: 0.0,
-            word_spacing: 0.0,
-            horizontal_scale: 1.0,
-            leading: 0.0,
-            rise: 0.0,
-            render_mode: 0,
-        }
-    }
+    params: TextParams,
 }
 
 impl GState {
@@ -356,8 +334,7 @@ struct Painter<'a> {
     /// A clip set by `W`/`W*`, applied when the path is next painted or ended.
     pending_clip: Option<FillRule>,
     /// The text matrix and text line matrix, inside `BT … ET`.
-    tm: Transform,
-    tlm: Transform,
+    text_matrix: TextMatrix,
     /// Fonts loaded so far, by the resource that names them; `None` when unpaintable.
     fonts: HashMap<(Option<ObjectId>, Vec<u8>), Option<LoadedFont>>,
     gaps: RasterGaps,
@@ -376,6 +353,9 @@ impl Painter<'_> {
     fn apply(&mut self, op: &ContentOp) {
         let n = |i: usize| op.operands.get(i).and_then(number);
         let all = || op.operands.iter().filter_map(number).collect::<Vec<f32>>();
+        // The text state and the text position, read as text extraction reads them.
+        self.state.text.params.apply(op);
+        self.text_matrix.apply(op, &self.state.text.params);
         match op.operator.as_str() {
             // Graphics state.
             "q" => self.stack.push(self.state.clone()),
@@ -557,81 +537,31 @@ impl Painter<'_> {
             "BI" => self.gaps.inline_images += 1,
             "sh" => self.gaps.shadings += 1,
 
-            // Text objects and positioning.
-            "BT" => {
-                self.tm = Transform::identity();
-                self.tlm = Transform::identity();
-            }
+            // Text: the state and position were applied above; `'` and `"` have moved to
+            // the next line, and `"` set its spacing.
             "Tf" => {
                 if let Some(PdfValue::Name(name)) = op.operands.first() {
                     self.state.text.font = Some((op.form, name.clone()));
                 }
-                if let Some(size) = n(1) {
-                    self.state.text.size = size;
-                }
             }
-            "Tc" => self.state.text.char_spacing = n(0).unwrap_or(0.0),
-            "Tw" => self.state.text.word_spacing = n(0).unwrap_or(0.0),
-            "Tz" => self.state.text.horizontal_scale = n(0).unwrap_or(100.0) / 100.0,
-            "TL" => self.state.text.leading = n(0).unwrap_or(0.0),
-            "Ts" => self.state.text.rise = n(0).unwrap_or(0.0),
-            "Tr" => {
-                if let Some(mode) = n(0) {
-                    self.state.text.render_mode = mode as i64;
-                }
-            }
-            "Td" | "TD" => {
-                if let (Some(tx), Some(ty)) = (n(0), n(1)) {
-                    if op.operator == "TD" {
-                        self.state.text.leading = -ty;
-                    }
-                    self.next_line(tx, ty);
-                }
-            }
-            "Tm" => {
-                if let (Some(a), Some(b), Some(c), Some(d), Some(e), Some(f)) =
-                    (n(0), n(1), n(2), n(3), n(4), n(5))
-                {
-                    self.tlm = Transform::from_row(a, b, c, d, e, f);
-                    self.tm = self.tlm;
-                }
-            }
-            "T*" => self.next_line(0.0, -self.state.text.leading),
-            "Tj" => self.show(op, op.operands.get(..1).unwrap_or(&[])),
+            "Tj" | "'" => self.show(op, op.operands.get(..1).unwrap_or(&[])),
             "TJ" => {
                 if let Some(PdfValue::Array(items)) = op.operands.first() {
                     self.show(op, items);
                 }
             }
-            "'" => {
-                self.next_line(0.0, -self.state.text.leading);
-                self.show(op, op.operands.get(..1).unwrap_or(&[]));
-            }
-            "\"" => {
-                if let (Some(aw), Some(ac)) = (n(0), n(1)) {
-                    self.state.text.word_spacing = aw;
-                    self.state.text.char_spacing = ac;
-                }
-                self.next_line(0.0, -self.state.text.leading);
-                self.show(op, op.operands.get(2..3).unwrap_or(&[]));
-            }
+            "\"" => self.show(op, op.operands.get(2..3).unwrap_or(&[])),
             _ => {}
         }
-    }
-
-    /// Move to the start of the next line, offset `(tx, ty)` from the current one.
-    fn next_line(&mut self, tx: f32, ty: f32) {
-        self.tlm = self.tlm.pre_concat(Transform::from_translate(tx, ty));
-        self.tm = self.tlm;
     }
 
     /// Paint the strings and position adjustments of a text-showing operator, advancing the
     /// text matrix as text extraction does.
     fn show(&mut self, op: &ContentOp, items: &[PdfValue]) {
-        let text = self.state.text.clone();
-        let Some(key) = text.font.clone() else {
+        let Some(key) = self.state.text.font.clone() else {
             return;
         };
+        let text = self.state.text.params.clone();
         let scope = op.scope(self.page);
         if !self.fonts.contains_key(&key) {
             let loaded = self
@@ -651,9 +581,8 @@ impl Painter<'_> {
             let bytes = match item {
                 PdfValue::Str(bytes) => bytes,
                 PdfValue::Integer(_) | PdfValue::Real(_) => {
-                    let adjust = number(item).unwrap_or(0.0);
-                    let tx = -adjust / 1000.0 * text.size * text.horizontal_scale;
-                    self.tm = self.tm.pre_concat(Transform::from_translate(tx, 0.0));
+                    self.text_matrix
+                        .advance(text.adjustment(number(item).unwrap_or(0.0)));
                     continue;
                 }
                 _ => continue,
@@ -663,11 +592,7 @@ impl Painter<'_> {
                 missing |= !invisible;
                 // Still move past the run, so what follows lands where it should.
                 if let Some(advances) = &advances {
-                    let run: f32 = advances
-                        .iter()
-                        .map(|g| advance(&text, g.width, g.is_word_space))
-                        .sum();
-                    self.tm = self.tm.pre_concat(Transform::from_translate(run, 0.0));
+                    self.text_matrix.advance(text.advance_of(advances));
                 }
                 continue;
             };
@@ -711,10 +636,11 @@ impl Painter<'_> {
                                 0.0,
                                 text.rise,
                             );
+                            let [a, b, c, d, e, f] = self.text_matrix.tm;
                             let transform = self
                                 .state
                                 .ctm
-                                .pre_concat(self.tm)
+                                .pre_concat(Transform::from_row(a, b, c, d, e, f))
                                 .pre_concat(to_text)
                                 .pre_concat(glyph_space);
                             self.paint_glyph(&outline, transform, text.render_mode);
@@ -723,8 +649,7 @@ impl Painter<'_> {
                     Some(_) => {}
                     None => missing |= !invisible && code != 32,
                 }
-                let tx = advance(&text, w0, word);
-                self.tm = self.tm.pre_concat(Transform::from_translate(tx, 0.0));
+                self.text_matrix.advance(text.glyph_advance(w0, word));
             }
         }
         self.fonts.insert(key, loaded);
@@ -1058,13 +983,6 @@ fn decode_jpeg(data: &[u8], w: u32, h: u32) -> Option<(PngColorType, Vec<u8>)> {
         return None;
     }
     (pixels.len() == w as usize * h as usize * 3).then_some((PngColorType::Rgb, pixels))
-}
-
-/// How far one glyph moves the text position: its width `w0` (thousandths of text space),
-/// character spacing, and word spacing for a single-byte space (ISO 32000-1 §9.4.4).
-fn advance(text: &TextState, w0: f32, word_space: bool) -> f32 {
-    let word = if word_space { text.word_spacing } else { 0.0 };
-    (w0 / 1000.0 * text.size + text.char_spacing + word) * text.horizontal_scale
 }
 
 fn solid(color: Rgb, alpha: f32) -> Paint<'static> {

@@ -61,12 +61,15 @@ def _get_lib_path() -> Path:
     if not lib_name:
         raise OSError(f"Unsupported platform: {system}")
 
-    # Check UNPDF_LIB_PATH environment variable first
+    # UNPDF_LIB_PATH names the library to load. A path that names no file is a mistake to
+    # report, not a hint to ignore — falling back to the packaged library would run other
+    # code than the one asked for, silently.
     env_path = os.environ.get("UNPDF_LIB_PATH")
     if env_path:
         p = Path(env_path)
-        if p.exists():
-            return p
+        if not p.is_file():
+            raise OSError(f"UNPDF_LIB_PATH is set to {env_path!r}, which is not a file")
+        return p
 
     if system == "Linux":
         runtime_id = _get_linux_runtime_id(machine)

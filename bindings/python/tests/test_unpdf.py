@@ -3,6 +3,8 @@ Tests for unpdf Python bindings.
 """
 
 import os
+import sys
+from pathlib import Path
 import pytest
 
 import unpdf
@@ -744,3 +746,21 @@ class TestRenderPage:
         doc.close()
         with pytest.raises(ValueError):
             doc.render_page(1)
+
+
+def test_a_library_path_naming_no_file_is_an_error(tmp_path):
+    """UNPDF_LIB_PATH pointing at nothing fails the import instead of loading the packaged library."""
+    import subprocess
+
+    missing = tmp_path / "missing-library"
+    env = dict(os.environ, UNPDF_LIB_PATH=str(missing))
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src")
+    result = subprocess.run(
+        [sys.executable, "-c", "import unpdf; unpdf.version()"],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "UNPDF_LIB_PATH" in result.stderr and missing.name in result.stderr

@@ -36,6 +36,7 @@ pub mod stream;
 mod table_detector;
 #[cfg(test)]
 pub(crate) mod test_pdf;
+mod text_state;
 mod text_string;
 pub(crate) mod type1;
 mod vector_graphics;

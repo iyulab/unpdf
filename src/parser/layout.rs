@@ -709,13 +709,16 @@ fn section_number_depth(text: &str) -> Option<usize> {
 }
 
 /// Whether `line` could title what follows as a run-in title in the body face: bold
-/// throughout, the body's size, a dozen words at most, and not a sentence (it may end in a
+/// throughout, the body's size or a little above it, a dozen words at most, and not a sentence (it may end in a
 /// colon, not a full stop). A line that opens with a number is a section title only by its
 /// section number (`section_number_depth`), so it is left to that test.
 fn is_bold_run_in_title(line: &TextLine, text: &str, body_size: f32) -> bool {
     let text = text.trim_end();
+    // Up to the size at which a bold line is a heading by size alone
+    // (`FontStatistics::get_heading_level`): a title a point or so above the body — 12pt
+    // over 11pt — has nothing else to make it one.
     line.is_all_bold()
-        && (line.font_size - body_size).abs() <= 1.0
+        && line.font_size >= body_size - 1.0
         && !text.starts_with(|c: char| c.is_ascii_digit())
         && text.split_whitespace().count() <= 12
         && !text.ends_with(['.', '!', '?', ',', ';'])
@@ -1119,9 +1122,6 @@ impl<'a> LayoutAnalyzer<'a> {
         // Where each image paint shows on the page, in page space.
         let mut image_rects: Vec<Bounds> = Vec::new();
         let mut rotated_text_runs = 0u32;
-        // Text rendering mode (`Tr`): 3 paints nothing — the mode OCR layers use.
-        let mut render_mode: i64 = 0;
-        let mut render_mode_stack: Vec<i64> = Vec::new();
         let mut invisible_chars = 0usize;
         let mut total_chars = 0usize;
         let mut suppressed_runs = 0usize;
@@ -1132,7 +1132,7 @@ impl<'a> LayoutAnalyzer<'a> {
         // restore it along with the CTM, and it persists across `BT`/`ET`.
         let mut text_state = TextState::default();
         let mut text_state_stack: Vec<TextState> = Vec::new();
-        let mut text_matrix = TextMatrix::default();
+        let mut text_matrix = super::text_state::TextMatrix::default();
         let mut in_text_block = false;
         // Current Transformation Matrix (starts as identity [1,0,0,1,0,0])
         let mut ctm: [f32; 6] = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
@@ -1154,26 +1154,20 @@ impl<'a> LayoutAnalyzer<'a> {
                 _ => {}
             }
             let operand = |i: usize| op.operands.get(i).and_then(get_number_from_value);
+            // The text state and the text position, read as page rendering reads them.
+            text_state.params.apply(op);
+            text_matrix.apply(op, &text_state.params);
             match op.operator.as_str() {
                 "q" => {
                     ctm_stack.push(ctm);
-                    render_mode_stack.push(render_mode);
                     text_state_stack.push(text_state.clone());
                 }
                 "Q" => {
                     if let Some(saved) = ctm_stack.pop() {
                         ctm = saved;
                     }
-                    if let Some(saved) = render_mode_stack.pop() {
-                        render_mode = saved;
-                    }
                     if let Some(saved) = text_state_stack.pop() {
                         text_state = saved;
-                    }
-                }
-                "Tr" if !op.operands.is_empty() => {
-                    if let Some(mode) = operand(0) {
-                        render_mode = mode as i64;
                     }
                 }
                 "cm" if op.operands.len() >= 6 => {
@@ -1187,14 +1181,11 @@ impl<'a> LayoutAnalyzer<'a> {
                     ];
                     ctm = apply_cm(&ctm, &cm);
                 }
-                "BT" => {
-                    in_text_block = true;
-                    text_matrix = TextMatrix::default();
-                }
+                "BT" => in_text_block = true,
                 "ET" => {
                     in_text_block = false;
                 }
-                "Tf" if op.operands.len() >= 2 => {
+                "Tf" => {
                     if let PdfValue::Name(font_name) = &op.operands[0] {
                         text_state.font_resource = font_name.clone();
                         let fonts = fonts
@@ -1208,61 +1199,9 @@ impl<'a> LayoutAnalyzer<'a> {
                         text_state.font_bold = info.is_some_and(|info| info.bold);
                         text_state.font_italic = info.is_some_and(|info| info.italic);
                     }
-                    text_state.font_size = operand(1).unwrap_or(12.0);
                 }
-                "Tc" => {
-                    if let Some(v) = operand(0) {
-                        text_state.char_spacing = v;
-                    }
-                }
-                "Tw" => {
-                    if let Some(v) = operand(0) {
-                        text_state.word_spacing = v;
-                    }
-                }
-                "Tz" => {
-                    if let Some(v) = operand(0) {
-                        text_state.horizontal_scale = v / 100.0;
-                    }
-                }
-                "TL" => {
-                    if let Some(v) = operand(0) {
-                        text_state.leading = v;
-                    }
-                }
-                "Td" | "TD" if op.operands.len() >= 2 => {
-                    let tx = operand(0).unwrap_or(0.0);
-                    let ty = operand(1).unwrap_or(0.0);
-                    if op.operator == "TD" {
-                        text_state.leading = -ty;
-                    }
-                    text_matrix.translate(tx, ty);
-                }
-                "Tm" if op.operands.len() >= 6 => {
-                    text_matrix.set(
-                        operand(0).unwrap_or(1.0),
-                        operand(1).unwrap_or(0.0),
-                        operand(2).unwrap_or(0.0),
-                        operand(3).unwrap_or(1.0),
-                        operand(4).unwrap_or(0.0),
-                        operand(5).unwrap_or(0.0),
-                    );
-                }
-                "T*" => {
-                    text_matrix.next_line(text_state.leading);
-                }
+                // `'` and `"` have already moved to the next line, and `"` set its spacing.
                 "Tj" | "TJ" | "'" | "\"" => {
-                    // `'` and `"` move to the next line before showing; `"` also sets the
-                    // word and character spacing it is given.
-                    if op.operator == "\"" {
-                        if let (Some(aw), Some(ac)) = (operand(0), operand(1)) {
-                            text_state.word_spacing = aw;
-                            text_state.char_spacing = ac;
-                        }
-                    }
-                    if op.operator == "'" || op.operator == "\"" {
-                        text_matrix.next_line(text_state.leading);
-                    }
                     if !in_text_block {
                         continue;
                     }
@@ -1304,15 +1243,13 @@ impl<'a> LayoutAnalyzer<'a> {
                                             &text_state.font_resource,
                                             bytes,
                                         )
-                                        .map(|glyphs| sum + text_state.advance_of(&glyphs))
+                                        .map(|glyphs| sum + text_state.params.advance_of(&glyphs))
                                 });
                             }
                             // TJ adjustments: thousandths of text space, subtracted.
                             PdfValue::Integer(_) | PdfValue::Real(_) => {
                                 let n = get_number_from_value(item).unwrap_or(0.0);
-                                let shift = -n / 1000.0
-                                    * text_state.font_size
-                                    * text_state.horizontal_scale;
+                                let shift = text_state.params.adjustment(n);
                                 if !drawn {
                                     lead += shift;
                                 }
@@ -1325,14 +1262,16 @@ impl<'a> LayoutAnalyzer<'a> {
                         }
                     }
 
-                    let (tx, ty) = text_matrix.position_after(lead);
+                    // The run's baseline is lifted by the text rise, as a superscript's is.
+                    let rise = text_state.params.rise;
+                    let (tx, ty) = text_matrix.point(lead, rise);
                     let (x, y) = apply_ctm(&ctm, tx, ty);
                     let effective_size =
-                        text_state.font_size * text_matrix.get_scale() * ctm_y_scale(&ctm);
+                        text_state.params.size * text_matrix.vertical_scale() * ctm_y_scale(&ctm);
                     // The run's extent in device space, from its first glyph to where it
                     // left the text position.
                     let end = advance.map(|run| {
-                        let (ex, ey) = text_matrix.position_after(run);
+                        let (ex, ey) = text_matrix.point(run, rise);
                         apply_ctm(&ctm, ex, ey)
                     });
                     let measured_width = end.map(|(dx, dy)| (dx - x).hypot(dy - y));
@@ -1352,7 +1291,7 @@ impl<'a> LayoutAnalyzer<'a> {
                         }
                         count_render_mode(
                             &text,
-                            render_mode,
+                            text_state.params.render_mode,
                             &mut total_chars,
                             &mut invisible_chars,
                         );
@@ -2026,7 +1965,7 @@ struct FontInfo {
 }
 
 /// The text-related parameters of the graphics state (ISO 32000-1 §9.3).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct TextState {
     /// Font resource name as `Tf` names it (the key into the page's `/Font`).
     font_resource: Vec<u8>,
@@ -2036,55 +1975,10 @@ struct TextState {
     font_bold: bool,
     /// The font declares itself italic (descriptor), whatever its name says.
     font_italic: bool,
-    /// `Tfs`, in unscaled text space units.
-    font_size: f32,
-    /// `Tc`, in unscaled text space units.
-    char_spacing: f32,
-    /// `Tw`, in unscaled text space units.
-    word_spacing: f32,
-    /// `Th`: `Tz` / 100.
-    horizontal_scale: f32,
-    /// `TL`, in unscaled text space units.
-    leading: f32,
+    /// The rest of the text state.
+    params: super::text_state::TextParams,
 }
 
-impl Default for TextState {
-    fn default() -> Self {
-        Self {
-            font_resource: Vec::new(),
-            font: String::new(),
-            font_bold: false,
-            font_italic: false,
-            font_size: 12.0,
-            char_spacing: 0.0,
-            word_spacing: 0.0,
-            horizontal_scale: 1.0,
-            leading: 0.0,
-        }
-    }
-}
-
-impl TextState {
-    /// How far showing `glyphs` moves the text position, in text space (§9.4.4):
-    /// `tx = ((w0 / 1000) × Tfs + Tc + Tw) × Th`, with `Tw` only for a word space.
-    fn advance_of(&self, glyphs: &[super::backend::GlyphAdvance]) -> f32 {
-        glyphs
-            .iter()
-            .map(|g| {
-                let word = if g.is_word_space {
-                    self.word_spacing
-                } else {
-                    0.0
-                };
-                (g.width / 1000.0 * self.font_size + self.char_spacing + word)
-                    * self.horizontal_scale
-            })
-            .sum()
-    }
-}
-
-/// The bounding box, in page space, of the unit square mapped through `ctm` — where an
-/// image paint lands.
 /// Where a text run can paint, in page space: from its origin to where it left the text
 /// position (`end`, when its glyph widths are known), and from its descent below the baseline
 /// to a full font size above it. It decides only whether the run can be visible at all.
@@ -2098,6 +1992,8 @@ fn run_bounds(origin: (f32, f32), end: Option<(f32, f32)>, size: f32) -> Bounds 
     }
 }
 
+/// The bounding box, in page space, of the unit square mapped through `ctm` — where an
+/// image paint lands.
 fn unit_square_on_page(ctm: &[f32; 6]) -> Bounds {
     let corners =
         [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)].map(|(x, y)| apply_ctm(ctm, x, y));
@@ -2179,68 +2075,6 @@ fn reads_left_to_right(tm: &[f32; 6], ctm: &[f32; 6]) -> bool {
     let dx = tm[0] * ctm[0] + tm[1] * ctm[2];
     let dy = tm[0] * ctm[1] + tm[1] * ctm[3];
     dx > 0.0 && dy.abs() <= dx * 0.0875
-}
-
-/// The text matrix `Tm` and the text line matrix `Tlm` (ISO 32000-1 §9.4.2).
-///
-/// Showing text moves `Tm` along the line; `Td`, `TD`, `T*` and friends move to a new
-/// line relative to `Tlm`, the start of the current one. Keeping one matrix for both
-/// is right only while nothing advances `Tm` — which stops being true as soon as glyph
-/// widths are known.
-#[derive(Debug, Clone)]
-struct TextMatrix {
-    /// `[a, b, c, d, e, f]` of `Tm`.
-    tm: [f32; 6],
-    /// `[a, b, c, d, e, f]` of `Tlm`.
-    tlm: [f32; 6],
-}
-
-impl Default for TextMatrix {
-    fn default() -> Self {
-        const IDENTITY: [f32; 6] = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
-        Self {
-            tm: IDENTITY,
-            tlm: IDENTITY,
-        }
-    }
-}
-
-impl TextMatrix {
-    fn set(&mut self, a: f32, b: f32, c: f32, d: f32, e: f32, f: f32) {
-        self.tm = [a, b, c, d, e, f];
-        self.tlm = self.tm;
-    }
-
-    /// `Td`: start a new line offset from the start of the current one.
-    fn translate(&mut self, tx: f32, ty: f32) {
-        let [a, b, c, d, e, f] = self.tlm;
-        self.tlm = [a, b, c, d, e + tx * a + ty * c, f + tx * b + ty * d];
-        self.tm = self.tlm;
-    }
-
-    /// `T*`: start the next line, `leading` below the current one.
-    fn next_line(&mut self, leading: f32) {
-        self.translate(0.0, -leading);
-    }
-
-    /// Move the text position `tx` along the line, as showing text does.
-    fn advance(&mut self, tx: f32) {
-        let (e, f) = self.position_after(tx);
-        self.tm[4] = e;
-        self.tm[5] = f;
-    }
-
-    /// Where the text position would be after moving `tx` along the line.
-    fn position_after(&self, tx: f32) -> (f32, f32) {
-        let [a, b, _, _, e, f] = self.tm;
-        (e + tx * a, f + tx * b)
-    }
-
-    fn get_scale(&self) -> f32 {
-        // Return the vertical scale factor
-        let [a, _, c, ..] = self.tm;
-        (a * a + c * c).sqrt()
-    }
 }
 
 /// Insert a space into `text` if it doesn't already end with one and the
