@@ -4,11 +4,12 @@
 //! the concrete PDF parser from the layout analysis logic.
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 
 use crate::error::{Error, Result};
 use crate::model::{FieldType, FieldValue, FormField};
 
+use super::cmap::{CMap, CMapDef, Parent, MAX_USE_CMAP_DEPTH};
 use super::core14::StandardFont;
 use super::encoding::{
     build_encoding_map, decode_with_encoding_map, glyph_name_to_unicode, BaseEncoding,
@@ -1809,6 +1810,8 @@ struct RawFontResolver {
     program_encoding_cache: RwLock<HashMap<FontKey, Option<HashMap<u8, char>>>>,
     style_cache: RwLock<HashMap<FontKey, DeclaredStyle>>,
     cid_system_info_cache: RwLock<HashMap<FontKey, Option<(String, String)>>>,
+    /// A composite font's resolved `/Encoding`, shared by text decoding and widths.
+    code_map_cache: RwLock<HashMap<FontKey, Option<Arc<CMap>>>>,
     metrics_cache: RwLock<HashMap<FontKey, Option<FontMetrics>>>,
 }
 
@@ -1821,6 +1824,7 @@ impl RawFontResolver {
             program_encoding_cache: RwLock::new(HashMap::new()),
             style_cache: RwLock::new(HashMap::new()),
             cid_system_info_cache: RwLock::new(HashMap::new()),
+            code_map_cache: RwLock::new(HashMap::new()),
             metrics_cache: RwLock::new(HashMap::new()),
         }
     }
@@ -1853,24 +1857,23 @@ impl RawFontResolver {
     /// Only fonts whose codes resolve to glyphs without guessing are measured: simple
     /// fonts (one byte per code), and composite fonts in horizontal writing mode under
     /// `Identity-H` (two-byte code = CID) or a predefined CMap whose code → CID table
-    /// ships with the crate. Anything else — a vertical CMap, whose advances are `/W2`'s,
-    /// or an embedded CMap — returns `None` rather than a width tied to the wrong code.
+    /// ships with the crate, or an embedded CMap that resolves codes to CIDs. Anything
+    /// else — a vertical CMap, whose advances are `/W2`'s, or one that cannot be
+    /// resolved — returns `None` rather than a width tied to the wrong code.
     fn parse_font_metrics(&self, doc: &RawDocument, font: &FontRef<'_>) -> Option<FontMetrics> {
         let font_dict = font.dict;
         let number = |obj: &RawPdfObject| doc.resolve(obj).as_f32();
 
         if font.is_composite() {
-            let cmap = font.encoding_name(doc)?;
-            let coding = if cmap == b"Identity-H" {
+            let coding = if font.encoding_name(doc) == Some(b"Identity-H".as_slice()) {
                 CidCoding::Identity
             } else {
-                let cmap = String::from_utf8_lossy(cmap).into_owned();
-                let horizontal = cmap.ends_with("-H") || cmap == "H";
+                let cmap = self.code_map(doc, font)?;
                 let (_, ordering) = self.get_cid_system_info_cached(doc, font)?;
-                if !horizontal || !super::predefined_cmap::resolves_cids(&cmap, &ordering) {
+                if cmap.is_vertical() || !cmap.resolves(&ordering) {
                     return None;
                 }
-                CidCoding::Predefined { cmap, ordering }
+                CidCoding::Map { cmap, ordering }
             };
             let cid_font = self.cid_font_dict(doc, font)?;
             let default_width = raw_dict_get(cid_font, b"DW")
@@ -2020,21 +2023,18 @@ impl RawFontResolver {
             }
         }
 
-        // 4. Try a predefined CJK CMap (`/Encoding /KSC-EUC-H` and friends). A Unicode
-        //    CMap (`UniKS-UCS2-H`) carries the text itself and reads without the
-        //    CIDFont's `/CIDSystemInfo`; a legacy one needs it to resolve its CIDs.
+        // 4. Try the font's `/Encoding` CMap: a predefined CJK one (`/Encoding /KSC-EUC-H`)
+        //    or one embedded as a stream. A Unicode CMap (`UniKS-UCS2-H`) carries the
+        //    text itself and reads without the CIDFont's `/CIDSystemInfo`; a legacy or
+        //    embedded one needs it to resolve its CIDs.
         if is_composite && !is_identity_h {
             if let Some(font) = font {
-                if let Some(name) = self.get_encoding_name(doc, font) {
+                if let Some(cmap) = self.code_map(doc, font) {
                     let (registry, ordering) = self
                         .get_cid_system_info_cached(doc, font)
                         .unwrap_or_default();
-                    if let Some(decoded) =
-                        crate::parser::predefined_cmap::decode(&name, &registry, &ordering, bytes)
-                    {
-                        if !decoded.is_empty() {
-                            return DecodedText::text(decoded);
-                        }
+                    if let Some(decoded) = cmap.decode(&registry, &ordering, bytes) {
+                        return DecodedText::text(decoded);
                     }
                 }
             }
@@ -2140,11 +2140,68 @@ impl RawFontResolver {
         parse_to_unicode_cmap(&data)
     }
 
-    /// Get the font's `/Encoding` when it is a name (a predefined CMap), not a
-    /// dictionary or an embedded CMap stream.
-    fn get_encoding_name(&self, doc: &RawDocument, font: &FontRef<'_>) -> Option<String> {
-        let name = font.encoding_name(doc)?;
-        Some(String::from_utf8_lossy(name).into_owned())
+    /// A composite font's `/Encoding` as one resolved CMap — a predefined CMap named by
+    /// the font, or a CMap stream embedded in the file with its `/UseCMap` chain
+    /// followed. `None` for `Identity-H`/`-V` (two-byte codes that are their own CIDs,
+    /// handled directly), for a simple font, and for an encoding that cannot be read: a
+    /// stream that is not a CMap, a chain that loops or runs deeper than
+    /// [`MAX_USE_CMAP_DEPTH`].
+    fn code_map(&self, doc: &RawDocument, font: &FontRef<'_>) -> Option<Arc<CMap>> {
+        {
+            let cache = self.code_map_cache.read().unwrap();
+            if let Some(cached) = cache.get(&font.key) {
+                return cached.clone();
+            }
+        }
+        let result = self.parse_code_map(doc, font).map(Arc::new);
+        self.code_map_cache
+            .write()
+            .unwrap()
+            .insert(font.key.clone(), result.clone());
+        result
+    }
+
+    fn parse_code_map(&self, doc: &RawDocument, font: &FontRef<'_>) -> Option<CMap> {
+        match doc.resolve(raw_dict_get(font.dict, b"Encoding")?) {
+            RawPdfObject::Name(name) => {
+                let name = String::from_utf8_lossy(name);
+                match Parent::named(&name) {
+                    Parent::Identity => None,
+                    _ => Some(CMap::predefined(&name)),
+                }
+            }
+            RawPdfObject::Stream(stream) => self.parse_cmap_stream(doc, stream, 0),
+            _ => None,
+        }
+    }
+
+    /// Read an embedded CMap stream and, through `/UseCMap`, the CMap it builds on.
+    fn parse_cmap_stream(
+        &self,
+        doc: &RawDocument,
+        stream: &super::raw::tokenizer::PdfStream,
+        depth: usize,
+    ) -> Option<CMap> {
+        if depth >= MAX_USE_CMAP_DEPTH {
+            return None;
+        }
+        let data = raw_stream::decompress(stream).ok()?;
+        let mut own: CMapDef = super::cmap::parse(&data)?;
+        if own.wmode.is_none() {
+            own.wmode = raw_dict_get(&stream.dict, b"WMode")
+                .and_then(|mode| doc.resolve(mode).as_i64())
+                .map(|mode| u8::from(mode == 1));
+        }
+        // The dictionary's `/UseCMap` (a name or another stream) wins over the program's.
+        let parent = match raw_dict_get(&stream.dict, b"UseCMap").map(|p| doc.resolve(p)) {
+            Some(RawPdfObject::Name(name)) => Parent::named(&String::from_utf8_lossy(name)),
+            Some(RawPdfObject::Stream(parent)) => {
+                Parent::Stream(Box::new(self.parse_cmap_stream(doc, parent, depth + 1)?))
+            }
+            Some(_) => return None,
+            None => own.use_cmap.as_deref().map_or(Parent::None, Parent::named),
+        };
+        Some(CMap::new(own, parent))
     }
 
     /// The descendant CIDFont dictionary of a Type 0 font.

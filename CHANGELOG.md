@@ -17,6 +17,16 @@
 
 ### Fixed
 
+- **A composite font whose `/Encoding` is an embedded CMap stream is read.** A Type 0 font may
+  carry its CMap as a stream in the file instead of naming a predefined one. Only the name form
+  was understood, so such a font without `/ToUnicode` extracted to no text, whatever the stream
+  said. The stream is now parsed once into a single code-to-CID map that both text decoding and
+  glyph widths use: its code space (so one- and two-byte codes split correctly), `cidrange` and
+  `cidchar` entries, `/WMode`, and a `/UseCMap` chain (a predefined CMap such as `UniKS-UCS2-H`
+  or `KSC-EUC-H`, `Identity-H`, or another stream; the chain depth is bounded). Codes resolve to
+  text through the CIDFont's `/CIDSystemInfo` collection. A stream that is not a CMap, or a chain
+  that loops, leaves the font unreadable and is reported through `suppressed_text_runs` and
+  `unreadable_fonts` as before. A vertical embedded CMap reads, but its advances stay unmeasured.
 - **Text in a composite font whose CIDFont is written inline is no longer lost.** A Type 0
   font may give its descendant CIDFont as a dictionary inside `/DescendantFonts` instead of a
   reference to a separate object; both are valid, and ReportLab, for one, writes the inline

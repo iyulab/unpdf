@@ -18,50 +18,15 @@
 //! so no table is needed to read them. Writing mode does not affect the mapping, only
 //! glyph selection, so `-H` and `-V` share a table.
 //!
-//! [`decode`] turns codes into text; [`cids`] turns them into the CIDs a CIDFont's
-//! `/W` widths are keyed by.
+//! [`split`] cuts a string into the codes of one such CMap, each with its CID (or, for a
+//! Unicode CMap, its character). [`super::cmap::CMap`] builds text and widths on it.
 //!
-//! CMaps outside the shipped set decode to `None`, which the caller treats the
+//! CMaps outside the shipped set split to `None`, which the caller treats the
 //! same as any other unusable CMap — no text rather than mojibake.
 
-use super::cmap_table::{cid_of_char, lookup_cid, PredefinedCmap, PREDEFINED_CMAPS};
+use super::cmap_table::{cid_of_char, PredefinedCmap, PREDEFINED_CMAPS};
 
-/// Decode a string from a content stream using a predefined CMap.
-///
-/// `encoding_name` is the font's `/Encoding` name, `registry`/`ordering` come from
-/// the descendant CIDFont's `/CIDSystemInfo` — a Unicode CMap needs neither, so they may
-/// be empty. Returns `None` when the CMap is not supported or nothing in `bytes` could
-/// be mapped.
-pub fn decode(encoding_name: &str, registry: &str, ordering: &str, bytes: &[u8]) -> Option<String> {
-    if bytes.is_empty() {
-        return None;
-    }
-
-    let base = base_cmap_name(encoding_name);
-
-    if let Some(form) = unicode_form(base) {
-        let text: String = unicode_codes(form, bytes)
-            .into_iter()
-            .filter_map(|code| code.scalar)
-            .collect();
-        return (!text.is_empty()).then_some(text);
-    }
-
-    let cmap = find_table(ordering, base)?;
-    decode_with_table(bytes, cmap, registry, ordering)
-}
-
-/// One character code of a string shown with a predefined CMap, resolved to its CID.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct CidCode {
-    /// The CID the code selects; 0 (`.notdef`) when the CMap does not map it.
-    pub cid: u32,
-    /// Whether the code is the single-byte code 32, the only code word spacing applies
-    /// to in a composite font (ISO 32000-1 §9.3.3).
-    pub is_word_space: bool,
-}
-
-/// Whether [`cids`] can resolve codes under `encoding_name` for a CIDFont of `ordering`.
+/// Whether [`split`] can resolve CIDs under `encoding_name` for a CIDFont of `ordering`.
 pub(crate) fn resolves_cids(encoding_name: &str, ordering: &str) -> bool {
     let base = base_cmap_name(encoding_name);
     match unicode_form(base) {
@@ -70,26 +35,46 @@ pub(crate) fn resolves_cids(encoding_name: &str, ordering: &str) -> bool {
     }
 }
 
-/// The codes in `bytes` under a predefined CMap, each resolved to its CID.
-///
-/// Every code in the string yields one entry — an unmapped one too, as CID 0 — because
-/// every code shown advances the text position. `None` when the CMap or the collection
-/// is not supported (see [`resolves_cids`]).
-pub(crate) fn cids(encoding_name: &str, ordering: &str, bytes: &[u8]) -> Option<Vec<CidCode>> {
-    if !resolves_cids(encoding_name, ordering) {
-        return None;
-    }
+/// One character code of a string under a predefined CMap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PredefinedCode {
+    /// The code as a big-endian number.
+    pub value: u32,
+    /// Bytes the code occupies.
+    pub len: usize,
+    /// The CID the CMap gives the code; 0 (`.notdef`) when it does not map it.
+    pub cid: u32,
+    /// The character a Unicode CMap carries in the code itself.
+    pub scalar: Option<char>,
+}
+
+/// Split `bytes` into the codes of a predefined CMap, the way the CMap's own code space
+/// does. `None` when the CMap or the collection is not supported.
+pub(crate) fn split(
+    encoding_name: &str,
+    ordering: &str,
+    bytes: &[u8],
+) -> Option<Vec<PredefinedCode>> {
     let base = base_cmap_name(encoding_name);
     if let Some(form) = unicode_form(base) {
+        let mut at = 0;
         return Some(
             unicode_codes(form, bytes)
                 .into_iter()
-                .map(|code| CidCode {
-                    cid: code
-                        .scalar
-                        .and_then(|ch| cid_of_char(ordering, ch))
-                        .unwrap_or(0),
-                    is_word_space: code.len == 1 && code.scalar == Some(' '),
+                .map(|code| {
+                    let value = bytes[at..at + code.len]
+                        .iter()
+                        .fold(0u32, |acc, &b| acc << 8 | u32::from(b));
+                    at += code.len;
+                    PredefinedCode {
+                        value,
+                        len: code.len,
+                        cid: code
+                            .scalar
+                            .and_then(|ch| cid_of_char(ordering, ch))
+                            .unwrap_or(0),
+                        scalar: code.scalar,
+                    }
                 })
                 .collect(),
         );
@@ -105,9 +90,11 @@ pub(crate) fn cids(encoding_name: &str, ordering: &str, bytes: &[u8]) -> Option<
             .codes
             .binary_search_by_key(&code, |&(c, _)| c)
             .map_or(0, |idx| u32::from(cmap.codes[idx].1));
-        codes.push(CidCode {
+        codes.push(PredefinedCode {
+            value: u32::from(code),
+            len: width,
             cid,
-            is_word_space: width == 1 && code == 0x20,
+            scalar: None,
         });
     }
     Some(codes)
@@ -233,45 +220,6 @@ fn find_table(ordering: &str, base: &str) -> Option<&'static PredefinedCmap> {
         .find(|cmap| cmap.collection == collection && cmap.column == base)
 }
 
-/// Walk the code stream, resolving each code to a CID and then to a character.
-///
-/// Codes are one or two bytes; see [`code_width`] for how the boundary is found.
-/// Unmappable codes are skipped rather than emitted as replacement characters — a
-/// partially mapped string is still useful, but garbage is not.
-fn decode_with_table(
-    bytes: &[u8],
-    cmap: &PredefinedCmap,
-    registry: &str,
-    ordering: &str,
-) -> Option<String> {
-    let mut result = String::new();
-    let mut any_mapped = false;
-    let mut i = 0;
-
-    while i < bytes.len() {
-        let (code, width) = next_code(cmap, &bytes[i..]);
-        i += width;
-
-        let mapped = cmap
-            .codes
-            .binary_search_by_key(&code, |&(c, _)| c)
-            .ok()
-            .and_then(|idx| lookup_cid(registry, ordering, cmap.codes[idx].1 as u32))
-            .or_else(|| ascii_fallback(code, width));
-
-        if let Some(ch) = mapped {
-            result.push(ch);
-            any_mapped = true;
-        }
-    }
-
-    if any_mapped {
-        Some(result)
-    } else {
-        None
-    }
-}
-
 /// The next character code in `rest` and the number of bytes it occupies.
 fn next_code(cmap: &PredefinedCmap, rest: &[u8]) -> (u16, usize) {
     match code_width(cmap, rest) {
@@ -308,7 +256,7 @@ fn contains_code(cmap: &PredefinedCmap, code: u16) -> bool {
 /// The half-width Latin CIDs of the CJK collections (e.g. Adobe-Korea1 8094–8190)
 /// have no entry in the CID→Unicode tables because their code *is* the character:
 /// every encoding these CMaps describe keeps ASCII in the single-byte range.
-fn ascii_fallback(code: u16, width: usize) -> Option<char> {
+pub(crate) fn ascii_fallback(code: u16, width: usize) -> Option<char> {
     match (width, code) {
         (1, 0x20..=0x7E) => Some(code as u8 as char),
         _ => None,
@@ -318,6 +266,15 @@ fn ascii_fallback(code: u16, width: usize) -> Option<char> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parser::cmap::{CMap, Code};
+
+    fn decode(name: &str, registry: &str, ordering: &str, bytes: &[u8]) -> Option<String> {
+        CMap::predefined(name).decode(registry, ordering, bytes)
+    }
+
+    fn cids(name: &str, ordering: &str, bytes: &[u8]) -> Option<Vec<Code>> {
+        CMap::predefined(name).codes(ordering, bytes)
+    }
 
     #[test]
     fn base_name_strips_writing_mode() {

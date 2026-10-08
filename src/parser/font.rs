@@ -98,13 +98,13 @@ impl ToUnicodeMap {
 }
 
 /// Parse a hex string like "0048" into a u32 value.
-fn parse_hex(s: &str) -> Option<u32> {
+pub(crate) fn parse_hex(s: &str) -> Option<u32> {
     u32::from_str_radix(s, 16).ok()
 }
 
 /// Extract the content of the next `<...>` token from the start of `s`.
 /// Returns `(hex_str, remaining_after_>)` or `None` if no `<` is found.
-fn next_angle_token(s: &str) -> Option<(&str, &str)> {
+pub(crate) fn next_angle_token(s: &str) -> Option<(&str, &str)> {
     let start = s.find('<')? + 1;
     let end = s[start..].find('>')? + start;
     Some((s[start..end].trim(), &s[end + 1..]))

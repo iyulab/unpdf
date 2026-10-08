@@ -12,9 +12,10 @@
 //! [`FontMetrics`]; nothing here knows about PDF objects.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use super::backend::GlyphAdvance;
-use super::predefined_cmap;
+use super::cmap::CMap;
 
 /// The advance widths a font dictionary declares.
 #[derive(Debug, Clone, PartialEq)]
@@ -39,9 +40,9 @@ pub(crate) enum FontMetrics {
 pub(crate) enum CidCoding {
     /// `Identity-H`: every code is two bytes, and the code is the CID.
     Identity,
-    /// One of Adobe's predefined CMaps, by name (`UniKS-UCS2-H`, `KSC-EUC-H`), for a
+    /// A CMap — predefined (`UniKS-UCS2-H`, `KSC-EUC-H`) or embedded in the file — for a
     /// CIDFont of the given `/CIDSystemInfo` ordering.
-    Predefined { cmap: String, ordering: String },
+    Map { cmap: Arc<CMap>, ordering: String },
 }
 
 impl FontMetrics {
@@ -89,13 +90,12 @@ impl FontMetrics {
                         })
                         .collect(),
                     // The backend builds this variant only for a CMap that resolves.
-                    CidCoding::Predefined { cmap, ordering } => {
-                        predefined_cmap::cids(cmap, ordering, bytes)
-                            .unwrap_or_default()
-                            .into_iter()
-                            .map(|code| advance(code.cid, code.is_word_space))
-                            .collect()
-                    }
+                    CidCoding::Map { cmap, ordering } => cmap
+                        .codes(ordering, bytes)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|code| advance(code.cid, code.is_word_space))
+                        .collect(),
                 }
             }
         }
@@ -203,8 +203,8 @@ mod tests {
         let unicode = FontMetrics::Cid {
             widths: widths.clone(),
             default_width: 1000.0,
-            coding: CidCoding::Predefined {
-                cmap: "UniKS-UCS2-H".into(),
+            coding: CidCoding::Map {
+                cmap: Arc::new(CMap::predefined("UniKS-UCS2-H")),
                 ordering: "Korea1".into(),
             },
         };
@@ -215,8 +215,8 @@ mod tests {
         let legacy = FontMetrics::Cid {
             widths,
             default_width: 1000.0,
-            coding: CidCoding::Predefined {
-                cmap: "KSC-EUC-H".into(),
+            coding: CidCoding::Map {
+                cmap: Arc::new(CMap::predefined("KSC-EUC-H")),
                 ordering: "Korea1".into(),
             },
         };
