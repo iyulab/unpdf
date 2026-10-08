@@ -220,6 +220,13 @@ if (quality.PagesIncomplete)
 `SuppressedTextRuns`, `UndecodableContentStreams`. Text and images a page paints
 through Form XObjects count as the page's own; `FormOpCount` counts the form paints.
 
+`UnreadableFonts` says which fonts `SuppressedTextRuns` came from: a list of
+`UnreadableFont` (`Name`, `Reason`, `Runs`), one per font and reason in order of first
+loss (empty when nothing was discarded). `Name` is the font's `/BaseFont`, or its resource
+name when it has none. `Reason` is `"composite_unresolved"` (a Type0/CID font whose codes
+map to no text) or `"binary_density"` (a simple font whose decode was binary noise);
+treat any other value as a generic "unreadable". The `Runs` sum to `SuppressedTextRuns`.
+
 How well the page was read: `Rotation` (its `/Rotate`), `ImageCoverage` (share of the
 page painted by images, 0–1 — a full-page scan is near 1, a logo a few hundredths),
 `RotatedTextRuns`, `RuledGrids` / `RuledTables` (ruling-line grids drawn vs. tables built

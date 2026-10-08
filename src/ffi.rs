@@ -865,8 +865,8 @@ unparser_shared::export_string_getter!(
     /// Get per-page content-stream operator statistics as a JSON object.
     ///
     /// Returns `{"page":N,"rotation":N,"text_op_count":N,"image_op_count":N,"form_op_count":N,
-    /// "ocr_text_suppressed":bool,"suppressed_text_runs":N,"undecodable_content_streams":N,
-    /// "image_coverage":F,"rotated_text_runs":N,"ruled_grids":N,"ruled_tables":N,
+    /// "ocr_text_suppressed":bool,"suppressed_text_runs":N,"unreadable_fonts":[...],
+    /// "undecodable_content_streams":N,"image_coverage":F,"rotated_text_runs":N,"ruled_grids":N,"ruled_tables":N,
     /// "reading_regions":N,"column_count":N,"ambiguous_layout_regions":N}`.
     ///
     /// The counts say what the page holds; the rest say how well it was read. Thresholds
@@ -874,6 +874,14 @@ unparser_shared::export_string_getter!(
     ///
     /// - `suppressed_text_runs` / `undecodable_content_streams`: this page's share of the
     ///   document-level counts of the same name in `unpdf_get_extraction_quality`.
+    /// - `unreadable_fonts`: the fonts behind `suppressed_text_runs`, an array of
+    ///   `{"name":S,"reason":S,"runs":N}` -- one entry per font and reason, in the order each
+    ///   first lost a run; always present, `[]` when nothing was discarded. `name` is the
+    ///   font's `/BaseFont` (its resource name when it has none). `reason` is
+    ///   `"composite_unresolved"` (a Type0/CID font whose codes map to no text) or
+    ///   `"binary_density"` (a simple font whose decode was binary noise); more values may
+    ///   be added, so treat an unknown one as a generic "unreadable". The `runs` of all
+    ///   entries sum to `suppressed_text_runs`.
     /// - `text_op_count`: number of text-showing operators (`Tj`/`TJ`/`'`/`"`),
     ///   including those inside the Form XObjects the page paints.
     /// - `image_op_count`: number of image paints (`Do` of anything but a Form XObject,
@@ -931,6 +939,7 @@ unparser_shared::export_string_getter!(
             "form_op_count": page.form_op_count,
             "ocr_text_suppressed": page.ocr_text_suppressed,
             "suppressed_text_runs": page.suppressed_text_runs,
+            "unreadable_fonts": page.unreadable_fonts,
             "undecodable_content_streams": page.undecodable_content_streams,
             "image_coverage": page.image_coverage,
             "rotated_text_runs": page.rotated_text_runs,

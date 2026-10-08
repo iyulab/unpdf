@@ -113,6 +113,14 @@ Per-page content-stream operator counts (1-indexed): `page`, `text_op_count`,
 XObjects count as the page's own; `form_op_count` counts the form paints. The
 last two are this page's share of the document-level counts of the same name.
 
+`unreadable_fonts` says which fonts the `suppressed_text_runs` came from: a list
+of `{"name", "reason", "runs"}`, one per font and reason in order of first loss
+(`[]` when nothing was discarded). `name` is the font's `/BaseFont`, or its
+resource name when it has none. `reason` is `"composite_unresolved"` (a Type0/CID
+font whose codes map to no text) or `"binary_density"` (a simple font whose decode
+was binary noise); treat any other value as a generic "unreadable". The `runs`
+sum to `suppressed_text_runs`.
+
 How well the page was read: `rotation` (its `/Rotate`), `image_coverage` (share
 of the page painted by images, 0–1 — a full-page scan is near 1, a logo a few
 hundredths), `rotated_text_runs`, `ruled_grids` / `ruled_tables` (ruling-line

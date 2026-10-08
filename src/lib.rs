@@ -55,7 +55,7 @@ pub use error::{Error, ErrorKind, Result};
 pub use model::{
     Alignment, Block, Document, ExtractionQuality, FieldType, FieldValue, FormField, InlineContent,
     ListInfo, Metadata, Outline, Page, Paragraph, ParagraphStyle, QualityAccumulator, Resource,
-    ResourceType, Table, TableCell, TableRow, TextRun, TextStyle,
+    ResourceType, Table, TableCell, TableRow, TextRun, TextStyle, UnreadableFont,
 };
 pub use parser::{ErrorMode, PageStreamOptions, ParseEvent, ParseOptions, PdfParser};
 #[cfg(feature = "ai")]

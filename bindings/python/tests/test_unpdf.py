@@ -500,6 +500,25 @@ class TestGetPageStats:
         assert stats["suppressed_text_runs"] > 0
         assert stats["suppressed_text_runs"] == quality["suppressed_text_runs"]
 
+    def test_unresolvable_font_is_named_in_unreadable_fonts(self, tmp_path):
+        """Which font lost the runs and why is on the page that lost them; the
+        runs add up to the page's ``suppressed_text_runs``."""
+        pdf_file = tmp_path / "suppressed.pdf"
+        pdf_file.write_bytes(_suppressed_text_run_pdf())
+        stats = unpdf.get_page_stats(str(pdf_file), 1)
+        assert stats["unreadable_fonts"] == [
+            {"name": "NoMap", "reason": "composite_unresolved", "runs": 1}
+        ]
+        assert (
+            sum(f["runs"] for f in stats["unreadable_fonts"])
+            == stats["suppressed_text_runs"]
+        )
+
+    def test_readable_page_has_no_unreadable_fonts(self, tmp_path):
+        pdf_file = tmp_path / "plain.pdf"
+        pdf_file.write_bytes(_text_pdf())
+        assert unpdf.get_page_stats(str(pdf_file), 1)["unreadable_fonts"] == []
+
     def test_undecodable_content_stream_is_reported(self, tmp_path):
         """Lenient parsing keeps a page whose content stream cannot be decoded, as an
         empty page — without this count the loss reads exactly like a blank page.

@@ -706,6 +706,19 @@ and the output does not. The count is in *runs* (a `Tj` operand, or one element 
 array), not characters: text that was never decoded has no knowable length. Treat any
 non-zero value as "incomplete"; compare magnitudes between documents, not against a total.
 
+To say *which* font could not be read, use the page's `unreadable_fonts`
+(`Page::unreadable_fonts` in Rust, `unreadable_fonts` in `get_page_stats` / the
+`unpdf_page_stats` JSON, `PageStats.UnreadableFonts` in C#): one `{name, reason, runs}` entry
+per font and reason, in the order each first lost a run on the page. `name` is the font's
+`/BaseFont` (its resource name when it has none); `reason` is `composite_unresolved` (a Type0/CID font whose codes map to no text) or `binary_density` (a simple font whose decode was binary noise); and the
+`runs` of a page's entries sum to its `suppressed_text_runs`. Treat a `reason` you do not
+recognise as a generic "unreadable" — new values may be added.
+
+```python
+for font in get_page_stats("report.pdf", 3)["unreadable_fonts"]:
+    print(f"text in font {font['name']} could not be read ({font['reason']}, {font['runs']} run(s))")
+```
+
 Worth surfacing wherever extraction feeds an index or archive: a page that silently
 never arrived is indistinguishable from a page that never existed, so the omission
 shows up later as a search result that isn't there rather than as an error.

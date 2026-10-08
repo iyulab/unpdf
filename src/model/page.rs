@@ -1,7 +1,28 @@
 //! Page-level types.
 
 use super::{Paragraph, Resource, Table};
+use crate::parser::backend::TextSuppression;
 use serde::{Deserialize, Serialize};
+
+/// A font whose text runs were discarded on a page, and why.
+///
+/// Attributes [`Page::suppressed_text_runs`] to the fonts that caused it: the sum of
+/// `runs` over a page's [`Page::unreadable_fonts`] equals that page's
+/// `suppressed_text_runs`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnreadableFont {
+    /// The font's `/BaseFont`, as written (a subset prefix such as `ABCDEF+` is kept).
+    /// The font's resource name (the key in the page's `/Font`) when it has no `/BaseFont`.
+    pub name: String,
+
+    /// Why the font's runs were discarded. Serialized as a stable `snake_case` string
+    /// (`composite_unresolved`, `binary_density`); consumers must treat a value they do
+    /// not know as a generic "unreadable".
+    pub reason: TextSuppression,
+
+    /// Text runs of this font discarded for this reason on the page.
+    pub runs: usize,
+}
 
 /// A single page in the document.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,6 +59,12 @@ pub struct Page {
     /// `ocr_text_suppressed` this counts runs, not the page as a whole — a page can
     /// lose a few runs and still carry most of its text.
     pub suppressed_text_runs: usize,
+
+    /// The fonts behind [`Self::suppressed_text_runs`]: one entry per distinct font and
+    /// reason, in the order each first lost a run on the page. Empty when nothing was
+    /// discarded. Omitted from JSON when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unreadable_fonts: Vec<UnreadableFont>,
 
     /// Content streams of this page that could not be decoded.
     ///
@@ -132,6 +159,7 @@ impl Page {
             images: Vec::new(),
             ocr_text_suppressed: false,
             suppressed_text_runs: 0,
+            unreadable_fonts: Vec::new(),
             undecodable_content_streams: 0,
             text_op_count: 0,
             image_op_count: 0,

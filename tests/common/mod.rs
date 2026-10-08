@@ -763,6 +763,24 @@ pub fn undecodable_content_pdf() -> Vec<u8> {
     assemble(objects)
 }
 
+/// One page whose only font is an Identity-H composite font with no `ToUnicode` map and no
+/// embedded cmap: the decoder cannot turn its CIDs into text, so the run is discarded.
+pub fn suppressed_text_run_pdf() -> Vec<u8> {
+    let content = b"BT /F1 12 Tf 72 720 Td (BC) Tj ET\n";
+    let objects: Vec<Vec<u8>> = vec![
+        b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+        b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]          /Resources<</Font<</F1 5 0 R>>>>/Contents 4 0 R>>"
+            .to_vec(),
+        stream_object(&format!("<</Length {}>>", content.len()), content),
+        b"<</Type/Font/Subtype/Type0/BaseFont/NoMap/Encoding/Identity-H          /DescendantFonts[6 0 R]>>"
+            .to_vec(),
+        b"<</Type/Font/Subtype/CIDFontType2/BaseFont/NoMap          /CIDSystemInfo<</Registry(Adobe)/Ordering(Identity)/Supplement 0>>>>"
+            .to_vec(),
+    ];
+    assemble(objects)
+}
+
 /// One text page whose content is an array of two streams: the first draws "Hello World",
 /// the second cannot be decoded.
 pub fn partly_undecodable_content_pdf() -> Vec<u8> {

@@ -3,12 +3,13 @@
 //! This module provides text extraction with position and font information,
 //! enabling proper heading detection, paragraph separation, and structure analysis.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap};
 
 use super::backend::{get_number_from_value, ContentOp, PdfBackend, PdfValue, ResourceScope};
 use super::clip::{Bounds, ClipTracker};
 use crate::error::{Error, Result};
+use crate::model::UnreadableFont;
 
 /// A text span with position and style information.
 #[derive(Debug, Clone)]
@@ -594,6 +595,8 @@ pub struct LayoutAnalyzer<'a> {
     /// Reset on entry to `parse_operations`, like the operator counts above, so a
     /// re-analysed page reports the last pass rather than the sum of every pass.
     suppressed_text_runs: Cell<usize>,
+    /// The fonts those runs were discarded for, reset together with the count.
+    unreadable_fonts: RefCell<Vec<UnreadableFont>>,
     /// Content streams of the page last analysed that could not be decoded.
     ///
     /// Set each time the page's content is read, so it reports the last pass.
@@ -946,6 +949,7 @@ impl<'a> LayoutAnalyzer<'a> {
             image_op_count: Cell::new(0),
             form_op_count: Cell::new(0),
             suppressed_text_runs: Cell::new(0),
+            unreadable_fonts: RefCell::new(Vec::new()),
             undecodable_content_streams: Cell::new(0),
             page_facts: Cell::new(PageFacts::default()),
         }
@@ -968,6 +972,12 @@ impl<'a> LayoutAnalyzer<'a> {
     /// the decoder could not read those runs and dropped them rather than emit noise.
     pub fn suppressed_text_runs(&self) -> usize {
         self.suppressed_text_runs.get()
+    }
+
+    /// The fonts behind [`Self::suppressed_text_runs`] on the page last analysed: one
+    /// entry per font and reason, in order of first occurrence.
+    pub fn unreadable_fonts(&self) -> Vec<UnreadableFont> {
+        self.unreadable_fonts.borrow().clone()
     }
 
     /// Content streams of the page last analysed that could not be decoded.
@@ -1155,6 +1165,7 @@ impl<'a> LayoutAnalyzer<'a> {
         self.text_op_count.set(0);
         self.image_op_count.set(0);
         self.suppressed_text_runs.set(0);
+        self.unreadable_fonts.borrow_mut().clear();
         // What the page shows: marks outside its crop box or its clipping path are never
         // seen, so they are not page content.
         let visible = self.backend.crop_box(page_id);
@@ -1165,6 +1176,7 @@ impl<'a> LayoutAnalyzer<'a> {
         let mut invisible_chars = 0usize;
         let mut total_chars = 0usize;
         let mut suppressed_runs = 0usize;
+        let mut unreadable_fonts: Vec<UnreadableFont> = Vec::new();
         let mut signals = PageTextLayerSignals::default();
 
         let mut spans = Vec::new();
@@ -1274,7 +1286,12 @@ impl<'a> LayoutAnalyzer<'a> {
                                     &text_state.font_resource,
                                     bytes,
                                 );
-                                note_suppression(&decoded, &mut suppressed_runs);
+                                note_suppression(
+                                    &decoded,
+                                    &text_state,
+                                    &mut suppressed_runs,
+                                    &mut unreadable_fonts,
+                                );
                                 text.push_str(&decoded.text);
                                 advance = advance.and_then(|sum| {
                                     self.backend
@@ -1360,6 +1377,7 @@ impl<'a> LayoutAnalyzer<'a> {
             signals.invisible_char_ratio = invisible_chars as f32 / total_chars as f32;
         }
         self.suppressed_text_runs.set(suppressed_runs);
+        *self.unreadable_fonts.borrow_mut() = unreadable_fonts;
 
         let page_area = Bounds::from_page_box(visible).area();
         let clipped = image_rects;
@@ -2170,9 +2188,35 @@ fn concat_matrix(a: &[f32; 6], b: &[f32; 6]) -> [f32; 6] {
 ///
 /// Counted per run rather than per character: the discarded text was never decoded,
 /// so its length is unknown — the only honest unit is "how many runs went missing".
-fn note_suppression(decoded: &super::backend::DecodedText, suppressed_runs: &mut usize) {
+///
+/// The run is also attributed to the font it was set in, so a consumer can say which
+/// font could not be read.
+fn note_suppression(
+    decoded: &super::backend::DecodedText,
+    text_state: &TextState,
+    suppressed_runs: &mut usize,
+    unreadable_fonts: &mut Vec<UnreadableFont>,
+) {
     if let Some(reason) = decoded.suppressed {
         *suppressed_runs += 1;
+        // A font without `/BaseFont` is listed as "Unknown" by the font table; the
+        // resource name is the only identity it has.
+        let name = if text_state.font.is_empty() || text_state.font == "Unknown" {
+            String::from_utf8_lossy(&text_state.font_resource).into_owned()
+        } else {
+            text_state.font.clone()
+        };
+        match unreadable_fonts
+            .iter_mut()
+            .find(|f| f.reason == reason && f.name == name)
+        {
+            Some(entry) => entry.runs += 1,
+            None => unreadable_fonts.push(UnreadableFont {
+                name,
+                reason,
+                runs: 1,
+            }),
+        }
         log::debug!("dropped an unreadable text run: {:?}", reason);
     }
 }

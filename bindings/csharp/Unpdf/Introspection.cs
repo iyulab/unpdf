@@ -196,6 +196,14 @@ public sealed class PageStats
     public long SuppressedTextRuns { get; init; }
 
     /// <summary>
+    /// The fonts behind <see cref="SuppressedTextRuns"/>: one entry per font and reason, in
+    /// the order each first lost a run on this page. Empty when nothing was discarded. The
+    /// <see cref="UnreadableFont.Runs"/> of all entries sum to <see cref="SuppressedTextRuns"/>.
+    /// </summary>
+    [JsonPropertyName("unreadable_fonts")]
+    public IReadOnlyList<UnreadableFont> UnreadableFonts { get; init; } = System.Array.Empty<UnreadableFont>();
+
+    /// <summary>
     /// Content streams of this page that could not be decoded. This page's share of
     /// <see cref="ExtractionQuality.UndecodableContentStreams"/>.
     /// </summary>
@@ -245,4 +253,31 @@ public sealed class PageStats
     /// </summary>
     [JsonPropertyName("ambiguous_layout_regions")]
     public uint AmbiguousLayoutRegions { get; init; }
+}
+
+/// <summary>
+/// A font whose text runs were discarded on a page because its character codes could not
+/// be turned into text. Lets a consumer say which font could not be read and why.
+/// </summary>
+public sealed class UnreadableFont
+{
+    /// <summary>
+    /// The font's <c>/BaseFont</c> as written (a subset prefix such as <c>ABCDEF+</c> is
+    /// kept), or its resource name in the page's <c>/Font</c> when it has no <c>/BaseFont</c>.
+    /// </summary>
+    [JsonPropertyName("name")]
+    public string Name { get; init; } = "";
+
+    /// <summary>
+    /// Why the font's runs were discarded. Known values: <c>composite_unresolved</c> (a
+    /// Type0/CID font whose codes map to no text) and <c>binary_density</c> (a simple font
+    /// whose decode was binary noise). More values may be added: treat an unknown one as
+    /// a generic "unreadable".
+    /// </summary>
+    [JsonPropertyName("reason")]
+    public string Reason { get; init; } = "";
+
+    /// <summary>Text runs of this font discarded for this reason on the page.</summary>
+    [JsonPropertyName("runs")]
+    public long Runs { get; init; }
 }

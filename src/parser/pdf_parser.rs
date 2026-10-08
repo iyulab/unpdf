@@ -251,6 +251,7 @@ pub(crate) fn parse_single_page(
 
         page.ocr_text_suppressed = analyzer.ocr_text_suppressed();
         page.suppressed_text_runs = analyzer.suppressed_text_runs();
+        page.unreadable_fonts = analyzer.unreadable_fonts();
         let counts = analyzer.page_op_counts();
         page.text_op_count = counts.text;
         page.image_op_count = counts.image;

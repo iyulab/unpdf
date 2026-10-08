@@ -153,3 +153,113 @@ fn quality_serialises_the_new_field() {
         "the counter must reach the JSON surface, got {json}"
     );
 }
+
+/// A page that loses runs in three different fonts: a simple font that decodes to
+/// binary noise (first), an unresolvable composite font that loses two runs, and an
+/// unresolvable composite font with no `/BaseFont` at all.
+fn three_unreadable_fonts_pdf() -> Vec<u8> {
+    let content = "BT /F2 12 Tf 72 720 Td (\\001\\002\\003\\004\\005\\006) Tj \
+                   /F1 12 Tf (\\001\\102) Tj (\\001\\103) Tj \
+                   /F3 12 Tf (\\001\\104) Tj ET";
+    let cid_system = "/CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >>";
+    assemble(&[
+        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+         /Resources << /Font << /F1 5 0 R /F2 7 0 R /F3 8 0 R >> >> /Contents 4 0 R >>"
+            .to_string(),
+        format!(
+            "<< /Length {} >>\nstream\n{}\nendstream",
+            content.len(),
+            content
+        ),
+        "<< /Type /Font /Subtype /Type0 /BaseFont /NoMap /Encoding /Identity-H \
+         /DescendantFonts [6 0 R] >>"
+            .to_string(),
+        format!("<< /Type /Font /Subtype /CIDFontType2 /BaseFont /NoMap {cid_system} >>"),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
+        "<< /Type /Font /Subtype /Type0 /Encoding /Identity-H /DescendantFonts [9 0 R] >>"
+            .to_string(),
+        format!("<< /Type /Font /Subtype /CIDFontType2 {cid_system} >>"),
+    ])
+}
+
+/// The consumer-facing question: which font, and why. One entry per font and reason, in
+/// order of first loss, the resource name standing in for a missing `/BaseFont`.
+#[test]
+fn unreadable_fonts_name_the_font_and_the_reason() {
+    use unpdf::parser::backend::TextSuppression;
+
+    let doc = PdfParser::from_bytes(&three_unreadable_fonts_pdf())
+        .and_then(|p| p.parse())
+        .expect("fixture must parse");
+    let page = &doc.pages[0];
+
+    let seen: Vec<(&str, TextSuppression, usize)> = page
+        .unreadable_fonts
+        .iter()
+        .map(|f| (f.name.as_str(), f.reason, f.runs))
+        .collect();
+    assert_eq!(
+        seen,
+        vec![
+            ("Helvetica", TextSuppression::BinaryDensity, 1),
+            ("NoMap", TextSuppression::CompositeUnresolved, 2),
+            ("F3", TextSuppression::CompositeUnresolved, 1),
+        ]
+    );
+}
+
+/// The attribution must account for every discarded run, per page and for the document.
+#[test]
+fn unreadable_font_runs_sum_to_the_suppressed_run_count() {
+    for pdf in [unresolvable_composite_pdf(), three_unreadable_fonts_pdf()] {
+        let doc = PdfParser::from_bytes(&pdf)
+            .and_then(|p| p.parse())
+            .expect("fixture must parse");
+        let attributed: usize = doc
+            .pages
+            .iter()
+            .flat_map(|p| &p.unreadable_fonts)
+            .map(|f| f.runs)
+            .sum();
+        assert!(attributed > 0);
+        assert_eq!(attributed, doc.extraction_quality.suppressed_text_runs);
+        for page in &doc.pages {
+            let page_sum: usize = page.unreadable_fonts.iter().map(|f| f.runs).sum();
+            assert_eq!(page_sum, page.suppressed_text_runs);
+        }
+    }
+}
+
+#[test]
+fn readable_page_lists_no_unreadable_fonts() {
+    let doc = PdfParser::from_bytes(&readable_pdf())
+        .and_then(|p| p.parse())
+        .expect("fixture must parse");
+    assert!(doc.pages[0].unreadable_fonts.is_empty());
+}
+
+/// The reason is a public string contract: the same text on every surface.
+#[test]
+fn unreadable_font_serialises_with_a_stable_reason_string() {
+    let doc = PdfParser::from_bytes(&three_unreadable_fonts_pdf())
+        .and_then(|p| p.parse())
+        .expect("fixture must parse");
+    let json = serde_json::to_value(&doc.pages[0]).expect("page must serialise");
+    assert_eq!(
+        json["unreadable_fonts"][0],
+        serde_json::json!({"name": "Helvetica", "reason": "binary_density", "runs": 1})
+    );
+    assert_eq!(
+        json["unreadable_fonts"][1]["reason"],
+        "composite_unresolved"
+    );
+
+    // Omitted when empty, like the page's other optional diagnostics.
+    let clean = PdfParser::from_bytes(&readable_pdf())
+        .and_then(|p| p.parse())
+        .expect("fixture must parse");
+    let json = serde_json::to_value(&clean.pages[0]).expect("page must serialise");
+    assert!(json.get("unreadable_fonts").is_none());
+}

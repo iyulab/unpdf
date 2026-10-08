@@ -95,6 +95,29 @@ public class IntrospectionTests
         Assert.Equal(quality.SuppressedTextRuns, stats.SuppressedTextRuns);
     }
 
+    /// <summary>
+    /// Which font lost the runs, and why, is on the page that lost them; the runs add up
+    /// to the page's count.
+    /// </summary>
+    [Fact]
+    public void GetPageStats_UnresolvableFont_NamesTheUnreadableFont()
+    {
+        using var doc = UnpdfDocument.ParseBytes(PdfFixtures.SuppressedTextRunPdf());
+        var stats = doc.GetPageStats(1);
+
+        var font = Assert.Single(stats.UnreadableFonts);
+        Assert.Equal("NoMap", font.Name);
+        Assert.Equal("composite_unresolved", font.Reason);
+        Assert.Equal(stats.SuppressedTextRuns, font.Runs);
+    }
+
+    [Fact]
+    public void GetPageStats_ReadablePage_HasNoUnreadableFonts()
+    {
+        using var doc = UnpdfDocument.ParseBytes(PdfFixtures.TextPdf());
+        Assert.Empty(doc.GetPageStats(1).UnreadableFonts);
+    }
+
     [Fact]
     public void GetExtractionQuality_IntactPdf_ReportsComplete()
     {

@@ -385,7 +385,8 @@ impl DocumentIntegrity {
 /// Both reasons are deliberate policy: emitting mojibake would be worse than emitting
 /// nothing. But a discarded run is content the document had and the output does not,
 /// so the reason travels with the (empty) result — see [`DecodedText`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum TextSuppression {
     /// A composite (Type0/CID) font whose codes could not be resolved to characters.
     ///

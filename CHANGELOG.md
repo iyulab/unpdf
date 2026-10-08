@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Added
+
+- **A page now says which fonts it could not read, and why.** `suppressed_text_runs` reported
+  that text was dropped but not what dropped it. `Page::unreadable_fonts` lists, per page, one
+  `UnreadableFont { name, reason, runs }` for each font and reason, in the order each first lost
+  a run; `name` is the font's `/BaseFont` (its resource name when it has none), and the `runs`
+  of a page's entries sum to its `suppressed_text_runs`. `reason` serializes as the stable
+  string `composite_unresolved` (a Type0/CID font whose codes map to no text) or
+  `binary_density` (a simple font whose decode was binary noise); consumers should treat any
+  other value as a generic "unreadable". It is exposed as `unreadable_fonts` in the
+  `unpdf_page_stats` JSON (always present, `[]` when empty), `PageStats.UnreadableFonts` in C#
+  and `unreadable_fonts` in Python `get_page_stats`. `TextSuppression` now derives serde.
+
 ### Fixed
 
 - **Text in a composite font whose CIDFont is written inline is no longer lost.** A Type 0

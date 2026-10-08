@@ -14,7 +14,7 @@ mod table;
 
 pub use document::{Document, Metadata, Outline, OutlineItem};
 pub use form::{FieldType, FieldValue, FormField};
-pub use page::{Block, Page};
+pub use page::{Block, Page, UnreadableFont};
 pub use paragraph::{
     Alignment, InlineContent, ListInfo, ListStyle, NumberStyle, Paragraph, ParagraphStyle, TextRun,
     TextStyle,

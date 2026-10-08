@@ -392,12 +392,21 @@ def get_page_stats(
     Returns:
         Dictionary with ``page``, ``text_op_count``, ``image_op_count``,
         ``form_op_count``, ``ocr_text_suppressed``, ``suppressed_text_runs``,
-        ``undecodable_content_streams``. Text and images inside the Form XObjects
+        ``unreadable_fonts``, ``undecodable_content_streams``. Text and images inside the Form XObjects
         the page paints are counted in ``text_op_count`` / ``image_op_count``;
         ``form_op_count`` counts the form paints themselves. The last two are this page's share of the
         document-level totals of the same name reported by
         :func:`get_extraction_quality` — text runs the font decoder could not read
         and discarded, and content streams that could not be decoded.
+
+        ``unreadable_fonts`` is the list of fonts behind ``suppressed_text_runs``:
+        ``{"name", "reason", "runs"}`` per font and reason, in order of first
+        loss (``[]`` when nothing was discarded). ``name`` is the font's
+        ``/BaseFont`` (its resource name when it has none); ``reason`` is
+        ``"composite_unresolved"`` (a Type0/CID font whose codes map to no text)
+        or ``"binary_density"`` (a simple font whose decode was binary noise) —
+        treat any other value as a generic "unreadable". The ``runs`` sum to
+        ``suppressed_text_runs``.
 
         How the page was read: ``rotation`` (the page's ``/Rotate``, degrees
         clockwise), ``image_coverage`` (share of the page painted by images, 0 to
