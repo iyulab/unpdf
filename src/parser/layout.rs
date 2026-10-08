@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use super::backend::{get_number_from_value, ContentOp, PdfBackend, PdfValue, ResourceScope};
 use super::clip::{Bounds, ClipTracker};
+use super::text_state::Shift;
 use crate::error::{Error, Result};
 use crate::model::UnreadableFont;
 
@@ -1270,13 +1271,22 @@ impl<'a> LayoutAnalyzer<'a> {
                     // The run's text, and how far it moves the text position in text
                     // space — `None` as soon as one string's glyph widths are unknown.
                     let mut text = String::new();
-                    let mut advance: Option<f32> = Some(0.0);
+                    let mut advance: Option<Shift> = Some(Shift::default());
                     // Adjustments before the first string move where the run *starts*, not
                     // how long it is: a TJ that opens with a large offset draws its first
                     // glyph far to the right of the text origin (a right-aligned date, a
                     // tab stop). They depend on the font size only, never on glyph widths.
-                    let mut lead: f32 = 0.0;
+                    let mut lead = Shift::default();
                     let mut drawn = false;
+                    // A vertical font writes down the page, so its adjustments move y.
+                    let vertical = self
+                        .backend
+                        .is_vertical_font(op.scope(page_id), &text_state.font_resource);
+                    // Where the first glyph's origin lies from the text position, and how wide
+                    // the widest glyph is (the horizontal extent of a vertical run).
+                    let mut origin = Shift::default();
+                    let mut cell: f32 = 0.0;
+                    let mut first_glyph = true;
                     for item in items {
                         match item {
                             PdfValue::Str(bytes) => {
@@ -1293,20 +1303,32 @@ impl<'a> LayoutAnalyzer<'a> {
                                     &mut unreadable_fonts,
                                 );
                                 text.push_str(&decoded.text);
-                                advance = advance.and_then(|sum| {
-                                    self.backend
-                                        .glyph_advances(
-                                            op.scope(page_id),
-                                            &text_state.font_resource,
-                                            bytes,
-                                        )
-                                        .map(|glyphs| sum + text_state.params.advance_of(&glyphs))
+                                let glyphs = self.backend.glyph_advances(
+                                    op.scope(page_id),
+                                    &text_state.font_resource,
+                                    bytes,
+                                );
+                                if let Some(glyphs) = &glyphs {
+                                    if let (true, Some(first)) = (first_glyph, glyphs.first()) {
+                                        origin = text_state.params.origin_offset(first);
+                                        first_glyph = false;
+                                    }
+                                    for g in glyphs {
+                                        cell = cell.max(
+                                            g.width / 1000.0
+                                                * text_state.params.size
+                                                * text_state.params.horizontal_scale,
+                                        );
+                                    }
+                                }
+                                advance = advance.zip(glyphs).map(|(sum, glyphs)| {
+                                    sum + text_state.params.advance_of(&glyphs)
                                 });
                             }
                             // TJ adjustments: thousandths of text space, subtracted.
                             PdfValue::Integer(_) | PdfValue::Real(_) => {
                                 let n = get_number_from_value(item).unwrap_or(0.0);
-                                let shift = text_state.params.adjustment(n);
+                                let shift = text_state.params.adjustment(n, vertical);
                                 if !drawn {
                                     lead += shift;
                                 }
@@ -1321,17 +1343,29 @@ impl<'a> LayoutAnalyzer<'a> {
 
                     // The run's baseline is lifted by the text rise, as a superscript's is.
                     let rise = text_state.params.rise;
-                    let (tx, ty) = text_matrix.point(lead, rise);
+                    let start = lead + origin;
+                    let (tx, ty) = text_matrix.point(start.tx, rise + start.ty);
                     let (x, y) = apply_ctm(&ctm, tx, ty);
                     let effective_size =
                         text_state.params.size * text_matrix.vertical_scale() * ctm_y_scale(&ctm);
                     // The run's extent in device space, from its first glyph to where it
                     // left the text position.
                     let end = advance.map(|run| {
-                        let (ex, ey) = text_matrix.point(run, rise);
+                        let end = run + origin;
+                        let (ex, ey) = text_matrix.point(end.tx, rise + end.ty);
                         apply_ctm(&ctm, ex, ey)
                     });
-                    let measured_width = end.map(|(dx, dy)| (dx - x).hypot(dy - y));
+                    // A vertical run is as wide as its widest glyph; its length is down the
+                    // page, not along the line.
+                    let measured_width = if vertical {
+                        advance.map(|_| {
+                            let (ex, ey) = text_matrix.point(start.tx + cell, rise + start.ty);
+                            let (ex, ey) = apply_ctm(&ctm, ex, ey);
+                            (ex - x).hypot(ey - y)
+                        })
+                    } else {
+                        end.map(|(dx, dy)| (dx - x).hypot(dy - y))
+                    };
 
                     // A run the clip hides entirely shows nothing — the margin text of a
                     // larger page placed onto a smaller one, a form's content beyond its box.

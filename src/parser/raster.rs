@@ -14,7 +14,7 @@ use tiny_skia::{
 use std::collections::HashMap;
 
 use super::backend::{
-    ContentOp, ImageColorSpace, ObjectId, PageId, PdfBackend, PdfValue, RawXObject,
+    ContentOp, GlyphAdvance, ImageColorSpace, ObjectId, PageId, PdfBackend, PdfValue, RawXObject,
 };
 use super::png_encode::{self, PngColorType};
 use super::raster_text::LoadedFont;
@@ -570,6 +570,7 @@ impl Painter<'_> {
                 .and_then(LoadedFont::load);
             self.fonts.insert(key.clone(), loaded);
         }
+        let vertical = self.backend.is_vertical_font(scope, &key.1);
         // Mode 3 paints nothing (an OCR layer over a scan): nothing is missing.
         let invisible = matches!(text.render_mode, 3 | 7);
         let mut missing = false;
@@ -582,7 +583,7 @@ impl Painter<'_> {
                 PdfValue::Str(bytes) => bytes,
                 PdfValue::Integer(_) | PdfValue::Real(_) => {
                     self.text_matrix
-                        .advance(text.adjustment(number(item).unwrap_or(0.0)));
+                        .advance(text.adjustment(number(item).unwrap_or(0.0), vertical));
                     continue;
                 }
                 _ => continue,
@@ -602,16 +603,18 @@ impl Painter<'_> {
                 let gid = font.glyph(code);
                 // The width extraction measures with; the program's own when the font
                 // dictionary declares none.
-                let (w0, word) = match advances.as_ref().and_then(|a| a.get(i)) {
-                    Some(g) => (g.width, g.is_word_space),
+                let measured = match advances.as_ref().and_then(|a| a.get(i)) {
+                    Some(g) => *g,
                     None => {
                         let units = gid.and_then(|g| font.program_advance(g)).unwrap_or(0.0);
-                        (
-                            units * font.glyph_to_text.sx * 1000.0,
-                            width == 1 && code == 32,
-                        )
+                        GlyphAdvance {
+                            width: units * font.glyph_to_text.sx * 1000.0,
+                            vertical: None,
+                            is_word_space: width == 1 && code == 32,
+                        }
                     }
                 };
+                let w0 = measured.width;
                 match gid {
                     Some(gid) if !invisible => {
                         let mut glyph_space = font.glyph_to_text;
@@ -628,6 +631,9 @@ impl Painter<'_> {
                             substituted = true;
                         }
                         if let Some(outline) = font.outline(gid).cloned() {
+                            // A vertical glyph hangs from the text position by its position
+                            // vector.
+                            let origin = text.origin_offset(&measured);
                             let to_text = Transform::from_row(
                                 text.size * text.horizontal_scale,
                                 0.0,
@@ -641,6 +647,7 @@ impl Painter<'_> {
                                 .state
                                 .ctm
                                 .pre_concat(Transform::from_row(a, b, c, d, e, f))
+                                .pre_concat(Transform::from_translate(origin.tx, origin.ty))
                                 .pre_concat(to_text)
                                 .pre_concat(glyph_space);
                             self.paint_glyph(&outline, transform, text.render_mode);
@@ -649,7 +656,7 @@ impl Painter<'_> {
                     Some(_) => {}
                     None => missing |= !invisible && code != 32,
                 }
-                self.text_matrix.advance(text.glyph_advance(w0, word));
+                self.text_matrix.advance(text.glyph_advance(&measured));
             }
         }
         self.fonts.insert(key, loaded);

@@ -1,0 +1,48 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<</Type/Catalog/Pages 2 0 R>>
+endobj
+2 0 obj
+<</Type/Pages/Kids[3 0 R]/Count 1>>
+endobj
+3 0 obj
+<</Type/Page/Parent 2 0 R/MediaBox[0 0 400 200]/Resources<</Font<</F1 4 0 R>>>>/Contents 6 0 R>>
+endobj
+4 0 obj
+<</Type/Font/Subtype/Type0/BaseFont/HeiseiMin-W3/Encoding 7 0 R/DescendantFonts[5 0 R]>>
+endobj
+5 0 obj
+<</Type/Font/Subtype/CIDFontType0/BaseFont/HeiseiMin-W3/CIDSystemInfo<</Registry(Adobe)/Ordering(Japan1)/Supplement 2>>/FontDescriptor<</Type/FontDescriptor/FontName/HeiseiMin-W3/Flags 6/FontBBox[-123 -257 1001 910]/ItalicAngle 0/Ascent 880/Descent -120/CapHeight 700/StemV 50>>/DW 1000>>
+endobj
+6 0 obj
+<</Length 56>>
+stream
+BT /F1 20 Tf 300 180 Td <3042> Tj <3044> Tj <3046> Tj ET
+endstream
+endobj
+7 0 obj
+<</Type/CMap/CMapName/Embedded-V/WMode 1/CIDSystemInfo<</Registry(Adobe)/Ordering(Japan1)/Supplement 2>>/Length 235>>
+stream
+/CIDInit /ProcSet findresource begin 12 dict begin begincmap
+/WMode 1 def
+1 begincodespacerange <0000> <FFFF> endcodespacerange
+1 begincidrange <3040> <309F> 841 endcidrange
+endcmap CMapName currentdict /CMap defineresource pop end end
+endstream
+endobj
+xref
+0 8
+0000000000 65535 f 
+0000000015 00000 n 
+0000000060 00000 n 
+0000000111 00000 n 
+0000000223 00000 n 
+0000000327 00000 n 
+0000000631 00000 n 
+0000000735 00000 n 
+trailer
+<</Size 8/Root 1 0 R>>
+startxref
+1121
+%%EOF

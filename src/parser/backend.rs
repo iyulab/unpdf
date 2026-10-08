@@ -17,7 +17,9 @@ use super::encoding::{
 use super::font::{
     is_likely_binary, parse_to_unicode_cmap, parse_truetype_cmap_table, ToUnicodeMap,
 };
-use super::glyph_metrics::{expand_w_array, CidCoding, FontMetrics, WEntry};
+use super::glyph_metrics::{
+    expand_w2_array, expand_w_array, CidCoding, FontMetrics, VerticalFont, WEntry,
+};
 use super::sanitize::sanitize_extracted_text;
 use super::text_string::{decode_text_string, decode_text_string_lossy};
 
@@ -439,9 +441,23 @@ pub struct GlyphAdvance {
     /// Horizontal displacement in thousandths of text space (the `w0` of
     /// ISO 32000-1 §9.4.4).
     pub width: f32,
+    /// The glyph's vertical displacement, when the font writes vertically.
+    pub vertical: Option<VerticalAdvance>,
     /// Whether word spacing (`Tw`) applies: only a single-byte code 32 qualifies,
     /// never a multi-byte code, whatever it maps to.
     pub is_word_space: bool,
+}
+
+/// A glyph's displacement in vertical writing mode (ISO 32000-1 §9.7.4.3), in thousandths
+/// of text space.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VerticalAdvance {
+    /// The vertical displacement `w1y`: how far the text position moves along y after the
+    /// glyph, negative for the downward advance of the default direction.
+    pub advance: f32,
+    /// The position vector `(vx, vy)`: from the glyph's horizontal-mode origin to the
+    /// origin the text position names.
+    pub origin: (f32, f32),
 }
 
 /// Abstract interface for PDF document access.
@@ -504,6 +520,15 @@ pub trait PdfBackend: Send + Sync {
         _bytes: &[u8],
     ) -> Option<Vec<GlyphAdvance>> {
         None
+    }
+
+    /// Whether the font `font_name` names in `scope` writes vertically, so that a `TJ`
+    /// adjustment moves the text position along y rather than x.
+    ///
+    /// `false` for a font this backend cannot measure: with no advances there is no
+    /// position to move either way.
+    fn is_vertical_font(&self, _scope: ResourceScope, _font_name: &[u8]) -> bool {
+        false
     }
 
     /// Return raw metadata (version, info dict fields, encryption status).
@@ -802,6 +827,11 @@ impl PdfBackend for RawBackend {
     ) -> Option<Vec<GlyphAdvance>> {
         self.font_resolver
             .glyph_advances(&self.doc, scope, font_name, bytes)
+    }
+
+    fn is_vertical_font(&self, scope: ResourceScope, font_name: &[u8]) -> bool {
+        self.font_resolver
+            .is_vertical_font(&self.doc, scope, font_name)
     }
 
     fn metadata(&self) -> PdfMetadataRaw {
@@ -1836,67 +1866,101 @@ impl RawFontResolver {
         font_name: &[u8],
         bytes: &[u8],
     ) -> Option<Vec<GlyphAdvance>> {
+        self.with_metrics(doc, scope, font_name, |m| m.advances(bytes))
+    }
+
+    fn is_vertical_font(&self, doc: &RawDocument, scope: ResourceScope, font_name: &[u8]) -> bool {
+        self.with_metrics(doc, scope, font_name, FontMetrics::is_vertical)
+            .unwrap_or(false)
+    }
+
+    /// Apply `f` to the metrics of the font `font_name` names in `scope`, reading and
+    /// caching them on first use. `None` when the font is not measured.
+    fn with_metrics<R>(
+        &self,
+        doc: &RawDocument,
+        scope: ResourceScope,
+        font_name: &[u8],
+        f: impl FnOnce(&FontMetrics) -> R,
+    ) -> Option<R> {
         let font = &self.find_font(doc, scope, font_name)?;
         {
             let cache = self.metrics_cache.read().unwrap();
             if let Some(cached) = cache.get(&font.key) {
-                return cached.as_ref().map(|m| m.advances(bytes));
+                return cached.as_ref().map(f);
             }
         }
         let metrics = self.parse_font_metrics(doc, font);
-        let advances = metrics.as_ref().map(|m| m.advances(bytes));
+        let result = metrics.as_ref().map(f);
         self.metrics_cache
             .write()
             .unwrap()
             .insert(font.key.clone(), metrics);
-        advances
+        result
     }
 
     /// Read the advance widths a font dictionary declares (ISO 32000-1 §9.2.4, §9.7.4.3).
     ///
     /// Only fonts whose codes resolve to glyphs without guessing are measured: simple
-    /// fonts (one byte per code), and composite fonts in horizontal writing mode under
-    /// `Identity-H` (two-byte code = CID) or a predefined CMap whose code → CID table
-    /// ships with the crate, or an embedded CMap that resolves codes to CIDs. Anything
-    /// else — a vertical CMap, whose advances are `/W2`'s, or one that cannot be
+    /// fonts (one byte per code), and composite fonts under `Identity-H`/`Identity-V`
+    /// (two-byte code = CID), a predefined CMap whose code → CID table ships with the
+    /// crate, or an embedded CMap that resolves codes to CIDs. A vertical CMap adds the
+    /// displacements of `/W2` and `/DW2`. Anything else — a CMap that cannot be
     /// resolved — returns `None` rather than a width tied to the wrong code.
     fn parse_font_metrics(&self, doc: &RawDocument, font: &FontRef<'_>) -> Option<FontMetrics> {
         let font_dict = font.dict;
         let number = |obj: &RawPdfObject| doc.resolve(obj).as_f32();
 
         if font.is_composite() {
-            let coding = if font.encoding_name(doc) == Some(b"Identity-H".as_slice()) {
-                CidCoding::Identity
-            } else {
-                let cmap = self.code_map(doc, font)?;
-                let (_, ordering) = self.get_cid_system_info_cached(doc, font)?;
-                if cmap.is_vertical() || !cmap.resolves(&ordering) {
-                    return None;
+            let (coding, is_vertical) = match font.encoding_name(doc) {
+                Some(b"Identity-H") => (CidCoding::Identity, false),
+                Some(b"Identity-V") => (CidCoding::Identity, true),
+                _ => {
+                    let cmap = self.code_map(doc, font)?;
+                    let (_, ordering) = self.get_cid_system_info_cached(doc, font)?;
+                    if !cmap.resolves(&ordering) {
+                        return None;
+                    }
+                    let is_vertical = cmap.is_vertical();
+                    (CidCoding::Map { cmap, ordering }, is_vertical)
                 }
-                CidCoding::Map { cmap, ordering }
             };
             let cid_font = self.cid_font_dict(doc, font)?;
             let default_width = raw_dict_get(cid_font, b"DW")
                 .and_then(number)
                 .unwrap_or(1000.0);
-            let entries: Vec<WEntry> = raw_dict_get(cid_font, b"W")
-                .and_then(|w| doc.resolve(w).as_array())
-                .map(|items| {
-                    items
-                        .iter()
-                        .map_while(|item| match doc.resolve(item) {
-                            RawPdfObject::Array(list) => {
-                                Some(WEntry::Array(list.iter().filter_map(number).collect()))
-                            }
-                            other => other.as_f32().map(WEntry::Number),
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
+            let entries = |key: &[u8]| -> Vec<WEntry> {
+                raw_dict_get(cid_font, key)
+                    .and_then(|w| doc.resolve(w).as_array())
+                    .map(|items| {
+                        items
+                            .iter()
+                            .map_while(|item| match doc.resolve(item) {
+                                RawPdfObject::Array(list) => {
+                                    Some(WEntry::Array(list.iter().filter_map(number).collect()))
+                                }
+                                other => other.as_f32().map(WEntry::Number),
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            };
+            // `/DW2` is `[vy w1y]`; anything else leaves the default.
+            let vertical = is_vertical.then(|| VerticalFont {
+                default: raw_dict_get(cid_font, b"DW2")
+                    .and_then(|d| doc.resolve(d).as_array())
+                    .and_then(|d| match d {
+                        [vy, w1y] => Some((number(vy)?, number(w1y)?)),
+                        _ => None,
+                    })
+                    .unwrap_or(VerticalFont::DEFAULT_DW2),
+                widths: expand_w2_array(&entries(b"W2")),
+            });
             return Some(FontMetrics::Cid {
-                widths: expand_w_array(&entries),
+                widths: expand_w_array(&entries(b"W")),
                 default_width,
                 coding,
+                vertical,
             });
         }
 

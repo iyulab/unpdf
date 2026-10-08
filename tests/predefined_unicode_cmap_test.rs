@@ -328,15 +328,30 @@ fn a_run_under_a_legacy_cmap_advances_by_its_declared_widths() {
     }
 }
 
-/// A vertical CMap's advances are `/W2`'s, which are not read: the run is left
-/// unmeasured rather than given a horizontal width.
+/// Under a vertical CMap a run advances down the page (§9.7.4.3): with no `/W2` each glyph
+/// moves the text position by `/DW2`'s default `-1000`, and the run's horizontal extent is its
+/// widest glyph, not the length of the column.
 #[test]
-fn a_run_under_a_vertical_cmap_is_not_measured_horizontally() {
-    let content = format!("BT /F1 10 Tf 20 50 Td <{}> Tj ET", hex(&utf16be("AB")));
+fn a_run_under_a_vertical_cmap_advances_down_by_the_default_displacement() {
+    let content = format!(
+        "BT /F1 10 Tf 20 50 Td <{}> Tj <{}> Tj ET",
+        hex(&utf16be("AB")),
+        hex(&utf16be("한")),
+    );
     for (inline, spans) in spans_of("UniKS-UCS2-V", "34[700 300]", content.as_bytes()) {
+        let column = span(&spans, "AB", inline);
+        assert!(column.width_measured, "inline={inline}");
         assert!(
-            !span(&spans, "AB", inline).width_measured,
-            "inline={inline}"
+            (column.width - 7.0).abs() < 0.01,
+            "inline={inline}: the widest glyph is 0.7 em, got {}",
+            column.width
         );
+        let next = span(&spans, "한", inline);
+        assert!(
+            (column.y - next.y - 20.0).abs() < 0.01,
+            "inline={inline}: two glyphs of 10 pt move 20 pt down, got {column:?} then {next:?}"
+        );
+        // Each glyph hangs from the column axis by half its own width (the default `vx`).
+        assert!((column.x - 16.5).abs() < 0.01 && (next.x - 15.0).abs() < 0.01);
     }
 }

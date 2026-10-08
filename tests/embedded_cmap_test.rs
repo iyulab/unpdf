@@ -74,9 +74,16 @@ fn widths_are_keyed_by_the_cids_the_embedded_cmap_resolves() {
 }
 
 #[test]
-fn a_vertical_embedded_cmap_reads_but_is_not_measured_horizontally() {
+fn a_vertical_embedded_cmap_reads_and_advances_down_the_page() {
     assert_reads(VERTICAL, "한글 문서A");
-    assert_eq!(widths(VERTICAL, &[0x80, 0x01]), None);
+    // The horizontal width still comes from `/DW`; the advance is the default `/DW2` one.
+    assert_eq!(widths(VERTICAL, &[0x80, 0x01]), Some(vec![1000.0]));
+    let backend = RawBackend::load_bytes(VERTICAL).expect("fixture parses");
+    let scope = ResourceScope::page(backend.pages()[&1]);
+    let advances = backend
+        .glyph_advances(scope, b"F1", &[0x80, 0x01])
+        .expect("measured");
+    assert_eq!(advances[0].vertical.map(|v| v.advance), Some(-1000.0));
 }
 
 #[test]

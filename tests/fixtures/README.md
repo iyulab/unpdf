@@ -24,3 +24,6 @@ library only) and fall under this repository's MIT licence.
 
 The `embedded-cmap-*.pdf` files are written byte by byte by `make_embedded_cmap_fixtures.py` (standard
 library only) and fall under this repository's MIT licence.
+
+The `vertical-*.pdf` files are written byte by byte by `make_vertical_fixtures.py` (standard
+library only) and fall under this repository's MIT licence.

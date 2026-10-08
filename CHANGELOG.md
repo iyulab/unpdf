@@ -17,6 +17,20 @@
 
 ### Fixed
 
+- **Composite fonts in vertical writing mode advance down the page.** Under a vertical CMap
+  (a `-V` predefined name such as `UniJIS-UCS2-V`, `Identity-V`, or an embedded CMap with
+  `/WMode 1`) text decoded but its advance was left unmeasured, so several strings shown in
+  one text object overlapped at a single position and a column came out scrambled. The
+  CIDFont's `/W2` (both the `c [w1y vx vy ...]` and `c_first c_last w1y vx vy` forms) and
+  `/DW2` (default `[880 -1000]`) are now read, and showing a glyph moves the text position
+  down by `w1y` (`ty = w1y x Tfs + Tc + Tw`; `Tz` does not apply) and places the glyph by
+  its position vector (default `(w0 / 2, vy)`). `TJ` adjustments move the position along y
+  in such a font. `GlyphAdvance` gains a `vertical` field with the displacement and
+  position vector, and `PdfBackend::is_vertical_font` reports the writing mode. The page
+  rasterizer follows the same advances and origins. A malformed `/W2` or `/DW2` keeps what
+  was read before the fault and falls back to the defaults; horizontal fonts measure exactly
+  as before. A vertical run's span is as wide as its widest glyph, and each string stays its
+  own span at its own height; columns are not otherwise reordered.
 - **A composite font whose `/Encoding` is an embedded CMap stream is read.** A Type 0 font may
   carry its CMap as a stream in the file instead of naming a predefined one. Only the name form
   was understood, so such a font without `/ToUnicode` extracted to no text, whatever the stream
@@ -26,7 +40,7 @@
   or `KSC-EUC-H`, `Identity-H`, or another stream; the chain depth is bounded). Codes resolve to
   text through the CIDFont's `/CIDSystemInfo` collection. A stream that is not a CMap, or a chain
   that loops, leaves the font unreadable and is reported through `suppressed_text_runs` and
-  `unreadable_fonts` as before. A vertical embedded CMap reads, but its advances stay unmeasured.
+  `unreadable_fonts` as before. A vertical embedded CMap reads; its advances are the vertical metrics below.
 - **Text in a composite font whose CIDFont is written inline is no longer lost.** A Type 0
   font may give its descendant CIDFont as a dictionary inside `/DescendantFonts` instead of a
   reference to a separate object; both are valid, and ReportLab, for one, writes the inline

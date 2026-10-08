@@ -3,7 +3,34 @@
 //! Text extraction and page rendering interpret the same text operators. Both read them
 //! here, so the text one places and the glyphs the other paints stand on the same spot.
 
+use std::ops::{Add, AddAssign};
+
 use super::backend::{get_number_from_value, ContentOp, GlyphAdvance};
+
+/// How far showing text moves the text position, in text space: along x in horizontal
+/// writing mode, along y in vertical (§9.4.4).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) struct Shift {
+    pub tx: f32,
+    pub ty: f32,
+}
+
+impl Add for Shift {
+    type Output = Shift;
+
+    fn add(self, other: Shift) -> Shift {
+        Shift {
+            tx: self.tx + other.tx,
+            ty: self.ty + other.ty,
+        }
+    }
+}
+
+impl AddAssign for Shift {
+    fn add_assign(&mut self, other: Shift) {
+        *self = *self + other;
+    }
+}
 
 /// The text state parameters (§9.3), less the font — part of the graphics state, saved and
 /// restored by `q`/`Q` and kept across `BT`/`ET`.
@@ -70,25 +97,63 @@ impl TextParams {
         }
     }
 
-    /// How far one glyph moves the text position, in text space (§9.4.4):
-    /// `tx = ((w0 / 1000) × Tfs + Tc + Tw) × Th`, with `Tw` only for a word space.
-    pub fn glyph_advance(&self, w0: f32, word_space: bool) -> f32 {
-        let word = if word_space { self.word_spacing } else { 0.0 };
-        (w0 / 1000.0 * self.size + self.char_spacing + word) * self.horizontal_scale
+    /// How far one glyph moves the text position, in text space (§9.4.4). Horizontally
+    /// `tx = ((w0 / 1000) × Tfs + Tc + Tw) × Th`, vertically
+    /// `ty = (w1 / 1000) × Tfs + Tc + Tw` — `Th` scales only x. `Tw` applies to a word
+    /// space only.
+    pub fn glyph_advance(&self, glyph: &GlyphAdvance) -> Shift {
+        let word = if glyph.is_word_space {
+            self.word_spacing
+        } else {
+            0.0
+        };
+        match glyph.vertical {
+            None => Shift {
+                tx: (glyph.width / 1000.0 * self.size + self.char_spacing + word)
+                    * self.horizontal_scale,
+                ty: 0.0,
+            },
+            Some(v) => Shift {
+                tx: 0.0,
+                ty: v.advance / 1000.0 * self.size + self.char_spacing + word,
+            },
+        }
     }
 
     /// How far showing `glyphs` moves the text position, in text space.
-    pub fn advance_of(&self, glyphs: &[GlyphAdvance]) -> f32 {
+    pub fn advance_of(&self, glyphs: &[GlyphAdvance]) -> Shift {
         glyphs
             .iter()
-            .map(|g| self.glyph_advance(g.width, g.is_word_space))
-            .sum()
+            .fold(Shift::default(), |sum, g| sum + self.glyph_advance(g))
     }
 
     /// How far a number in a `TJ` array moves the text position: thousandths of text space,
-    /// subtracted.
-    pub fn adjustment(&self, n: f32) -> f32 {
-        -n / 1000.0 * self.size * self.horizontal_scale
+    /// subtracted from the coordinate the font writes along.
+    pub fn adjustment(&self, n: f32, vertical: bool) -> Shift {
+        if vertical {
+            Shift {
+                tx: 0.0,
+                ty: -n / 1000.0 * self.size,
+            }
+        } else {
+            Shift {
+                tx: -n / 1000.0 * self.size * self.horizontal_scale,
+                ty: 0.0,
+            }
+        }
+    }
+
+    /// Where `glyph`'s horizontal-mode origin lies relative to the text position, in text
+    /// space: a vertical glyph is placed by its position vector (§9.7.4.3), so its origin
+    /// is `(vx, vy)` before the text position. Zero for a horizontal glyph.
+    pub fn origin_offset(&self, glyph: &GlyphAdvance) -> Shift {
+        match glyph.vertical {
+            None => Shift::default(),
+            Some(v) => Shift {
+                tx: -v.origin.0 / 1000.0 * self.size * self.horizontal_scale,
+                ty: -v.origin.1 / 1000.0 * self.size,
+            },
+        }
     }
 }
 
@@ -153,9 +218,9 @@ impl TextMatrix {
         self.tm = self.tlm;
     }
 
-    /// Move the text position `tx` along the line, as showing text does.
-    pub fn advance(&mut self, tx: f32) {
-        let (e, f) = self.point(tx, 0.0);
+    /// Move the text position by `by`, as showing text does.
+    pub fn advance(&mut self, by: Shift) {
+        let (e, f) = self.point(by.tx, by.ty);
         self.tm[4] = e;
         self.tm[5] = f;
     }
@@ -176,7 +241,7 @@ impl TextMatrix {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::backend::PdfValue;
+    use crate::parser::backend::{PdfValue, VerticalAdvance};
 
     fn op(operator: &str, operands: &[f32]) -> ContentOp {
         ContentOp::new(
@@ -242,9 +307,52 @@ mod tests {
         ] {
             params.apply(&o);
         }
+        let glyph = |word| GlyphAdvance {
+            width: 500.0,
+            vertical: None,
+            is_word_space: word,
+        };
         // (500/1000 × 10 + 1 + 2) × 0.5
-        assert_eq!(params.glyph_advance(500.0, true), 4.0);
-        assert_eq!(params.glyph_advance(500.0, false), 3.0);
-        assert_eq!(params.adjustment(-200.0), 1.0);
+        assert_eq!(params.glyph_advance(&glyph(true)).tx, 4.0);
+        assert_eq!(params.glyph_advance(&glyph(false)).tx, 3.0);
+        assert_eq!(params.adjustment(-200.0, false).tx, 1.0);
+    }
+
+    /// Vertical writing moves along y by `w1`, unscaled by `Tz`, with `Tc` and `Tw` added
+    /// as they are; a `TJ` number moves the same way.
+    #[test]
+    fn a_vertical_glyph_advances_down_by_its_displacement() {
+        let mut params = TextParams::default();
+        for o in [
+            op("Tf", &[0.0, 10.0]),
+            op("Tc", &[1.0]),
+            op("Tw", &[2.0]),
+            op("Tz", &[50.0]),
+        ] {
+            params.apply(&o);
+        }
+        let glyph = |word| GlyphAdvance {
+            width: 1000.0,
+            vertical: Some(VerticalAdvance {
+                advance: -1000.0,
+                origin: (500.0, 880.0),
+            }),
+            is_word_space: word,
+        };
+        // -1000/1000 × 10 + 1 (+ 2 for a word space), and no horizontal scale.
+        assert_eq!(
+            params.glyph_advance(&glyph(false)),
+            Shift { tx: 0.0, ty: -9.0 }
+        );
+        assert_eq!(
+            params.glyph_advance(&glyph(true)),
+            Shift { tx: 0.0, ty: -7.0 }
+        );
+        assert_eq!(params.adjustment(200.0, true), Shift { tx: 0.0, ty: -2.0 });
+        // The origin is (vx, vy) before the text position; Th scales x only.
+        assert_eq!(
+            params.origin_offset(&glyph(false)),
+            Shift { tx: -2.5, ty: -8.8 }
+        );
     }
 }
