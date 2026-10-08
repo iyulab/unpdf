@@ -1228,6 +1228,12 @@ cargo add unpdf --features ffi,async
 
 ---
 
+## Benchmarks
+
+<!-- benchmarks:start -->
+On [opendataloader-bench](https://github.com/opendataloader-project/opendataloader-bench) (200 PDFs, official evaluator), unpdf 0.34.0 scores **0.851** overall (NID 0.907 · TEDS 0.614 · MHS 0.764), rank 8 of 18 engine runs compared (the benchmark's own runs plus engines re-measured here). Details, olmOCR-Bench results and how to reproduce: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+<!-- benchmarks:end -->
+
 ## Performance
 
 - Custom zero-dependency PDF parser (no external C libraries)
