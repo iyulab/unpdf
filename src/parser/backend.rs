@@ -16,7 +16,7 @@ use super::encoding::{
 use super::font::{
     is_likely_binary, parse_to_unicode_cmap, parse_truetype_cmap_table, ToUnicodeMap,
 };
-use super::glyph_metrics::{expand_w_array, FontMetrics, WEntry};
+use super::glyph_metrics::{expand_w_array, CidCoding, FontMetrics, WEntry};
 use super::sanitize::sanitize_extracted_text;
 use super::text_string::{decode_text_string, decode_text_string_lossy};
 
@@ -1707,6 +1707,9 @@ struct DeclaredStyle {
 
 struct RawFontResolver {
     cmap_cache: RwLock<HashMap<PageId, Option<ToUnicodeMap>>>,
+    /// The `cmap` table of a composite font's embedded TrueType program, by the Type 0
+    /// font's object: its CIDFont may be written inline, with no object of its own.
+    embedded_cmap_cache: RwLock<HashMap<PageId, Option<ToUnicodeMap>>>,
     encoding_cache: RwLock<HashMap<PageId, Option<HashMap<u8, char>>>>,
     program_encoding_cache: RwLock<HashMap<PageId, Option<HashMap<u8, char>>>>,
     style_cache: RwLock<HashMap<PageId, DeclaredStyle>>,
@@ -1718,6 +1721,7 @@ impl RawFontResolver {
     fn new() -> Self {
         Self {
             cmap_cache: RwLock::new(HashMap::new()),
+            embedded_cmap_cache: RwLock::new(HashMap::new()),
             encoding_cache: RwLock::new(HashMap::new()),
             program_encoding_cache: RwLock::new(HashMap::new()),
             style_cache: RwLock::new(HashMap::new()),
@@ -1748,22 +1752,29 @@ impl RawFontResolver {
 
     /// Read the advance widths a font dictionary declares (ISO 32000-1 §9.2.4, §9.7.4.3).
     ///
-    /// Only fonts whose code-to-glyph mapping is unambiguous without a CMap parser are
-    /// measured: simple fonts (one byte per code) and composite fonts under Identity-H
-    /// (two-byte code = CID). Anything else returns `None` rather than a width tied to
-    /// the wrong code.
+    /// Only fonts whose codes resolve to glyphs without guessing are measured: simple
+    /// fonts (one byte per code), and composite fonts in horizontal writing mode under
+    /// `Identity-H` (two-byte code = CID) or a predefined CMap whose code → CID table
+    /// ships with the crate. Anything else — a vertical CMap, whose advances are `/W2`'s,
+    /// or an embedded CMap — returns `None` rather than a width tied to the wrong code.
     fn parse_font_metrics(&self, doc: &RawDocument, font_obj_id: PageId) -> Option<FontMetrics> {
         let font_dict = doc.get_dict(font_obj_id).ok()?;
         let number = |obj: &RawPdfObject| doc.resolve(obj).as_f32();
 
         if self.is_composite_font(doc, font_obj_id) {
-            let horizontal_identity = raw_dict_get(font_dict, b"Encoding")
-                .and_then(|e| e.as_name())
-                .is_some_and(|n| n == b"Identity-H");
-            if !horizontal_identity {
-                return None;
-            }
-            let cid_font = doc.get_dict(self.get_cid_font_id(doc, font_obj_id)?).ok()?;
+            let cmap = raw_dict_get(font_dict, b"Encoding").and_then(|e| e.as_name())?;
+            let coding = if cmap == b"Identity-H" {
+                CidCoding::Identity
+            } else {
+                let cmap = String::from_utf8_lossy(cmap).into_owned();
+                let horizontal = cmap.ends_with("-H") || cmap == "H";
+                let (_, ordering) = self.get_cid_system_info_cached(doc, font_obj_id)?;
+                if !horizontal || !super::predefined_cmap::resolves_cids(&cmap, &ordering) {
+                    return None;
+                }
+                CidCoding::Predefined { cmap, ordering }
+            };
+            let cid_font = self.cid_font_dict(doc, font_obj_id)?;
             let default_width = raw_dict_get(cid_font, b"DW")
                 .and_then(number)
                 .unwrap_or(1000.0);
@@ -1784,6 +1795,7 @@ impl RawFontResolver {
             return Some(FontMetrics::Cid {
                 widths: expand_w_array(&entries),
                 default_width,
+                coding,
             });
         }
 
@@ -1912,13 +1924,15 @@ impl RawFontResolver {
             }
         }
 
-        // 4. Try a predefined CJK CMap (`/Encoding /KSC-EUC-H` and friends)
+        // 4. Try a predefined CJK CMap (`/Encoding /KSC-EUC-H` and friends). A Unicode
+        //    CMap (`UniKS-UCS2-H`) carries the text itself and reads without the
+        //    CIDFont's `/CIDSystemInfo`; a legacy one needs it to resolve its CIDs.
         if is_composite && !is_identity_h {
             if let Some(fid) = font_obj_id {
-                if let (Some(name), Some((registry, ordering))) = (
-                    self.get_encoding_name(doc, fid),
-                    self.get_cid_system_info_cached(doc, fid),
-                ) {
+                if let Some(name) = self.get_encoding_name(doc, fid) {
+                    let (registry, ordering) = self
+                        .get_cid_system_info_cached(doc, fid)
+                        .unwrap_or_default();
                     if let Some(decoded) =
                         crate::parser::predefined_cmap::decode(&name, &registry, &ordering, bytes)
                     {
@@ -2072,14 +2086,21 @@ impl RawFontResolver {
         is_type0 || raw_dict_get(font_dict, b"DescendantFonts").is_some()
     }
 
-    /// Get the CIDFont's object ID from a Type0 font.
-    fn get_cid_font_id(&self, doc: &RawDocument, font_obj_id: PageId) -> Option<PageId> {
+    /// The descendant CIDFont dictionary of a Type 0 font.
+    ///
+    /// `/DescendantFonts` is a one-element array (ISO 32000-1 §9.7.6, Table 121) whose
+    /// element is the CIDFont dictionary — by reference or written inline, both are
+    /// valid and both occur. The array itself may be an indirect object too.
+    fn cid_font_dict<'a>(
+        &self,
+        doc: &'a RawDocument,
+        font_obj_id: PageId,
+    ) -> Option<&'a RawPdfDict> {
         let font_dict = doc.get_dict(font_obj_id).ok()?;
-        let descendants = raw_dict_get(font_dict, b"DescendantFonts")?;
-        let descendants = doc.resolve(descendants);
-
-        let arr = descendants.as_array()?;
-        arr.first()?.as_reference()
+        let descendants = doc
+            .resolve(raw_dict_get(font_dict, b"DescendantFonts")?)
+            .as_array()?;
+        raw_resolve_dict(doc, descendants.first()?)
     }
 
     /// Extract CIDSystemInfo (Registry, Ordering) from a CIDFont.
@@ -2088,8 +2109,7 @@ impl RawFontResolver {
         doc: &RawDocument,
         font_obj_id: PageId,
     ) -> Option<(String, String)> {
-        let cid_font_id = self.get_cid_font_id(doc, font_obj_id)?;
-        let cid_font_dict = doc.get_dict(cid_font_id).ok()?;
+        let cid_font_dict = self.cid_font_dict(doc, font_obj_id)?;
 
         let csi = raw_dict_get(cid_font_dict, b"CIDSystemInfo")?;
         let csi = doc.resolve(csi);
@@ -2131,20 +2151,18 @@ impl RawFontResolver {
 
     /// Get or parse embedded TrueType cmap for Identity-H fonts.
     fn get_embedded_cmap(&self, doc: &RawDocument, font_obj_id: PageId) -> Option<ToUnicodeMap> {
-        let cid_font_id = self.get_cid_font_id(doc, font_obj_id)?;
-
         {
-            let cache = self.cmap_cache.read().unwrap();
-            if let Some(cached) = cache.get(&cid_font_id) {
+            let cache = self.embedded_cmap_cache.read().unwrap();
+            if let Some(cached) = cache.get(&font_obj_id) {
                 return cached.clone();
             }
         }
 
         let result = self.parse_embedded_truetype_cmap(doc, font_obj_id);
-        self.cmap_cache
+        self.embedded_cmap_cache
             .write()
             .unwrap()
-            .insert(cid_font_id, result.clone());
+            .insert(font_obj_id, result.clone());
         result
     }
 
@@ -2164,13 +2182,8 @@ impl RawFontResolver {
             return None;
         }
 
-        // Get CIDFont from DescendantFonts
-        let cid_font_id = self.get_cid_font_id(doc, font_obj_id)?;
-        let cid_font_dict = doc.get_dict(cid_font_id).ok()?;
-
-        // Get FontDescriptor
-        let fd_ref = raw_dict_get(cid_font_dict, b"FontDescriptor")?.as_reference()?;
-        let fd_dict = doc.get_dict(fd_ref).ok()?;
+        let cid_font_dict = self.cid_font_dict(doc, font_obj_id)?;
+        let fd_dict = raw_resolve_dict(doc, raw_dict_get(cid_font_dict, b"FontDescriptor")?)?;
 
         // Get FontFile2 (TrueType)
         let ff2 = raw_dict_get(fd_dict, b"FontFile2")?;
@@ -2206,7 +2219,7 @@ impl RawFontResolver {
             if !identity {
                 return None;
             }
-            let cid_font = doc.get_dict(self.get_cid_font_id(doc, fid)?).ok()?;
+            let cid_font = self.cid_font_dict(doc, fid)?;
             let (format, data) = embedded_font_program(doc, cid_font)?;
             let cid_to_gid = raw_dict_get(cid_font, b"CIDToGIDMap")
                 .map(|m| doc.resolve(m))
@@ -2467,10 +2480,7 @@ impl RawFontResolver {
         let style = (|| -> Option<DeclaredStyle> {
             let mut dict = doc.get_dict(font_obj_id).ok()?;
             if self.is_composite_font(doc, font_obj_id) {
-                let descendants = doc
-                    .resolve(raw_dict_get(dict, b"DescendantFonts")?)
-                    .as_array()?;
-                dict = raw_resolve_dict(doc, descendants.first()?)?;
+                dict = self.cid_font_dict(doc, font_obj_id)?;
             }
             let descriptor = raw_resolve_dict(doc, raw_dict_get(dict, b"FontDescriptor")?)?;
             let number = |key: &[u8]| {

@@ -14,6 +14,7 @@
 use std::collections::BTreeMap;
 
 use super::backend::GlyphAdvance;
+use super::predefined_cmap;
 
 /// The advance widths a font dictionary declares.
 #[derive(Debug, Clone, PartialEq)]
@@ -24,12 +25,23 @@ pub(crate) enum FontMetrics {
         widths: Vec<f32>,
         missing_width: f32,
     },
-    /// A composite font whose codes are two-byte CIDs (`Identity-H`), widths from
-    /// the CIDFont's `/W` with `/DW` as the default.
+    /// A composite font in horizontal writing mode, widths from the CIDFont's `/W`
+    /// with `/DW` as the default, keyed by the CIDs `coding` resolves the codes to.
     Cid {
         widths: BTreeMap<u32, f32>,
         default_width: f32,
+        coding: CidCoding,
     },
+}
+
+/// How a composite font's character codes become CIDs (ISO 32000-1 §9.7.5).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum CidCoding {
+    /// `Identity-H`: every code is two bytes, and the code is the CID.
+    Identity,
+    /// One of Adobe's predefined CMaps, by name (`UniKS-UCS2-H`, `KSC-EUC-H`), for a
+    /// CIDFont of the given `/CIDSystemInfo` ordering.
+    Predefined { cmap: String, ordering: String },
 }
 
 impl FontMetrics {
@@ -58,20 +70,34 @@ impl FontMetrics {
             FontMetrics::Cid {
                 widths,
                 default_width,
-            } => bytes
-                .chunks(2)
-                .map(|pair| {
-                    let cid = match pair {
-                        [hi, lo] => u32::from(*hi) << 8 | u32::from(*lo),
-                        [lone] => u32::from(*lone),
-                        _ => 0,
-                    };
-                    GlyphAdvance {
-                        width: widths.get(&cid).copied().unwrap_or(*default_width),
-                        is_word_space: false,
+                coding,
+            } => {
+                let advance = |cid: u32, is_word_space: bool| GlyphAdvance {
+                    width: widths.get(&cid).copied().unwrap_or(*default_width),
+                    is_word_space,
+                };
+                match coding {
+                    CidCoding::Identity => bytes
+                        .chunks(2)
+                        .map(|pair| {
+                            let cid = match pair {
+                                [hi, lo] => u32::from(*hi) << 8 | u32::from(*lo),
+                                [lone] => u32::from(*lone),
+                                _ => 0,
+                            };
+                            advance(cid, false)
+                        })
+                        .collect(),
+                    // The backend builds this variant only for a CMap that resolves.
+                    CidCoding::Predefined { cmap, ordering } => {
+                        predefined_cmap::cids(cmap, ordering, bytes)
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|code| advance(code.cid, code.is_word_space))
+                            .collect()
                     }
-                })
-                .collect(),
+                }
+            }
         }
     }
 }
@@ -160,6 +186,7 @@ mod tests {
         let m = FontMetrics::Cid {
             widths: BTreeMap::from([(0x50, 889.0)]),
             default_width: 1000.0,
+            coding: CidCoding::Identity,
         };
         let adv = m.advances(&[0x00, 0x50, 0x00, 0x03]);
         assert_eq!(adv.len(), 2);
@@ -167,6 +194,39 @@ mod tests {
         assert_eq!(adv[1].width, 1000.0);
         // Tw never applies to a multi-byte code, even one that maps to a space.
         assert!(!adv[1].is_word_space);
+    }
+
+    #[test]
+    fn a_predefined_cmap_resolves_codes_to_cids_before_the_widths() {
+        // Adobe-Korea1: `A` is CID 34 under UniKS-UCS2, CID 8127 under KSC-EUC.
+        let widths = BTreeMap::from([(34, 700.0), (8127, 500.0)]);
+        let unicode = FontMetrics::Cid {
+            widths: widths.clone(),
+            default_width: 1000.0,
+            coding: CidCoding::Predefined {
+                cmap: "UniKS-UCS2-H".into(),
+                ordering: "Korea1".into(),
+            },
+        };
+        let adv = unicode.advances(&[0x00, 0x41, 0xD5, 0x5C]);
+        let got: Vec<f32> = adv.iter().map(|a| a.width).collect();
+        assert_eq!(got, vec![700.0, 1000.0]);
+
+        let legacy = FontMetrics::Cid {
+            widths,
+            default_width: 1000.0,
+            coding: CidCoding::Predefined {
+                cmap: "KSC-EUC-H".into(),
+                ordering: "Korea1".into(),
+            },
+        };
+        // `A`, a one-byte space, and 한 (C7D1).
+        let adv = legacy.advances(&[0x41, 0x20, 0xC7, 0xD1]);
+        assert_eq!(adv.len(), 3);
+        assert_eq!(adv[0].width, 500.0);
+        // Tw applies to the single-byte code 32 of a composite font (§9.3.3).
+        assert!(adv[1].is_word_space);
+        assert!(!adv[2].is_word_space);
     }
 
     #[test]

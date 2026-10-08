@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Text in a composite font whose CIDFont is written inline is no longer lost.** A Type 0
+  font may give its descendant CIDFont as a dictionary inside `/DescendantFonts` instead of a
+  reference to a separate object; both are valid, and ReportLab, for one, writes the inline
+  form for its built-in CJK fonts. Only the reference was followed, so such a font's
+  `/CIDSystemInfo`, widths, descriptor and embedded program were never found, and a font
+  that relies on them — a non-embedded CJK font under a predefined CMap such as
+  `UniKS-UCS2-H`, with no `/ToUnicode` — extracted to no text at all (reported only through
+  `suppressed_text_runs`). It now reads in full.
+- **Every Unicode predefined CMap decodes, and a malformed code costs only itself.**
+  `/Encoding` names of the `UTF8` and `UTF32` forms (`UniJIS-UTF8-H`, `UniJISX0213-UTF32-V`,
+  ...) now decode alongside `UCS2` and `UTF16`, in both writing modes; a Unicode CMap no longer
+  needs the CIDFont's `/CIDSystemInfo` to be read. A lone surrogate or invalid sequence used to
+  discard its whole string; now only that code is dropped.
+- **Text under a predefined CMap advances by the font's declared widths.** Only `Identity-H`
+  fonts were measured, so two strings shown in a row with a font under `UniKS-UCS2-H` or
+  `KSC-EUC-H` were placed on top of each other and every run's width was a guess. Codes are now
+  resolved to their CIDs through the CMap before `/W` is read (horizontal writing mode).
+
 ## 0.34.1 — 2026-10-08
 
 ### Documentation
