@@ -198,29 +198,6 @@ fn render_html_row(output: &mut String, row: &TableRow, is_header: bool) {
     output.push_str("</tr>\n");
 }
 
-/// Format a link/image destination for `[text](destination)` syntax, wrapping it in
-/// `<...>` when it contains a character CommonMark's bare-parenthesis destination form
-/// forbids. A destination with a raw space is not valid CommonMark outside `<...>` at
-/// all -- `pulldown-cmark` does not even produce a `Link`/`Image` event for it, so a
-/// consumer sees the brackets as literal text instead of a link (`<`/`>` themselves are
-/// the only other characters the bare form forbids). Both renderers build a destination
-/// from data the document held (a hyperlink target, a resource id) that can legitimately
-/// contain either.
-pub(super) fn format_link_destination(url: &str) -> String {
-    if url.contains(' ') || url.contains(['<', '>']) {
-        // Backslash-escape, not percent-encode: a link destination is data, and
-        // percent-encoding `<`/`>` would silently change the target (e.g. a real
-        // file path) instead of just escaping it for Markdown syntax.
-        let escaped = url
-            .replace('\\', "\\\\")
-            .replace('<', "\\<")
-            .replace('>', "\\>");
-        format!("<{}>", escaped)
-    } else {
-        url.to_string()
-    }
-}
-
 /// Escape the characters that would otherwise be read as Markdown syntax.
 pub(super) fn escape_markdown(text: &str) -> String {
     let mut result = String::with_capacity(text.len());
@@ -301,31 +278,6 @@ mod tests {
             apply_text_style(",1", &sup, Some('a'), Some('b')),
             "<sup>,1</sup>"
         );
-    }
-
-    #[test]
-    fn test_format_link_destination_leaves_a_clean_destination_alone() {
-        assert_eq!(format_link_destination("images/a.png"), "images/a.png");
-    }
-
-    #[test]
-    fn test_format_link_destination_wraps_a_destination_containing_a_space() {
-        assert_eq!(
-            format_link_destination("my folder/file.png"),
-            "<my folder/file.png>"
-        );
-    }
-
-    #[test]
-    fn test_format_link_destination_escapes_angle_brackets_inside_the_wrapper() {
-        assert_eq!(format_link_destination("a<b>c d"), "<a\\<b\\>c d>");
-    }
-
-    #[test]
-    fn test_format_link_destination_escapes_backslash_before_angle_brackets() {
-        // Escaping order matters: escaping `<`/`>` first would double-escape the
-        // backslashes the escaping itself introduces.
-        assert_eq!(format_link_destination("a\\b c"), "<a\\\\b c>");
     }
 
     #[test]

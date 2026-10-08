@@ -5,8 +5,9 @@ use crate::model::{
     Block, Document, InlineContent, ListInfo, ListStyle, Page, Paragraph, Table, TextRun,
 };
 
-use super::syntax::{escape_markdown, format_link_destination, leading_char, render_table};
+use super::syntax::{escape_markdown, leading_char, render_table};
 use super::{CleanupPipeline, ExtractionStats, PageMarkerStyle, RenderOptions, RenderResult};
+use unparser_shared::markdown;
 
 /// Convert a document to Markdown.
 pub fn to_markdown(doc: &Document, options: &RenderOptions) -> Result<String> {
@@ -262,7 +263,7 @@ impl MarkdownRenderer {
                     }
                 }
                 InlineContent::Link { text, url, title } => {
-                    let dest = format_link_destination(url);
+                    let dest = markdown::link_destination(url, false);
                     if let Some(ref t) = title {
                         output.push_str(&format!("[{}]({} \"{}\")", text, dest, t));
                     } else {
@@ -275,7 +276,7 @@ impl MarkdownRenderer {
                 } => {
                     let alt = alt_text.as_deref().unwrap_or("");
                     let path = format!("{}{}", self.options.image_path_prefix, resource_id);
-                    output.push_str(&format!("![{}]({})", alt, format_link_destination(&path)));
+                    output.push_str(&markdown::image(alt, &path, false));
                 }
             }
         }
@@ -302,11 +303,8 @@ impl MarkdownRenderer {
     fn render_image(&self, output: &mut String, resource_id: &str, alt_text: Option<&str>) {
         let alt = alt_text.unwrap_or("");
         let path = format!("{}{}", self.options.image_path_prefix, resource_id);
-        output.push_str(&format!(
-            "![{}]({})\n\n",
-            alt,
-            format_link_destination(&path)
-        ));
+        output.push_str(&markdown::image(alt, &path, false));
+        output.push_str("\n\n");
     }
 }
 
@@ -418,6 +416,46 @@ mod tests {
             result.contains("![A photo](images/page1_Im1.jpg)"),
             "expected a real image link, got:\n{result}"
         );
+    }
+
+    /// A description with a blank line would end the paragraph inside `![...]`, and an
+    /// unbalanced `)` would end a bare destination — in the batch and the streaming writer.
+    #[test]
+    fn test_image_alt_and_targets_stay_inside_their_syntax() {
+        let mut doc = Document::new();
+        let mut page = Page::letter(1);
+        page.elements.push(Block::Image {
+            resource_id: "page1_Im1.jpg".to_string(),
+            alt_text: Some("First line\n\nsecond [line]".to_string()),
+            width: None,
+            height: None,
+            x: None,
+            y: None,
+        });
+        let mut para = Paragraph::new();
+        para.content.push(InlineContent::Link {
+            text: "notes".to_string(),
+            url: "notes).txt".to_string(),
+            title: None,
+        });
+        page.elements.push(Block::Paragraph(para));
+        doc.add_page(page);
+
+        let options = RenderOptions::new().with_image_prefix("images/");
+        let batch = to_markdown(&doc, &options).unwrap();
+        let streamed: String = crate::render::streaming::StreamingRenderer::new(&doc, options)
+            .filter_map(|e| match e {
+                crate::render::streaming::RenderEvent::Block(s) => Some(s),
+                _ => None,
+            })
+            .collect();
+        for result in [batch, streamed] {
+            assert!(
+                result.contains(r"![First line second \[line\]](images/page1_Im1.jpg)"),
+                "image: {result:?}"
+            );
+            assert!(result.contains("[notes](<notes).txt>)"), "link: {result:?}");
+        }
     }
 
     #[test]
