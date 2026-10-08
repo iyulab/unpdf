@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.34.1 — 2026-10-08
+
+### Documentation
+
+- **Benchmark results.** `docs/BENCHMARKS.md` reports the scores of the published package on
+  opendataloader-bench (reading order, tables, headings) and olmOCR-Bench, measured with each
+  benchmark's own evaluator, next to other engines' scores, with the commands to reproduce
+  them. The README summarises the headline result. No library changes.
+
 ## 0.34.0 — 2026-10-07
 
 ### Fixed
