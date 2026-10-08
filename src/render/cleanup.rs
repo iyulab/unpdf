@@ -164,7 +164,14 @@ impl CleanupPipeline {
     pub fn new(options: CleanupOptions) -> Self {
         Self {
             options,
-            page_number_regex: Regex::new(r"(?m)^[\s]*[-–—]?\s*\d+\s*[-–—]?\s*$").unwrap(),
+            // A number alone on its line, bare or set between dashes ("- 12 -", "-12-",
+            // "- 12"). A dash printed against the number with nothing after it is the
+            // number's minus sign, not decoration: "-12" (or "–12") is a value. The em
+            // dash is never a sign, so "—12" still reads as a decorated page number.
+            page_number_regex: Regex::new(
+                r"(?m)^[ \t]*(?:[-–—][ \t]*\d+[ \t]*[-–—]|[-–—][ \t]+\d+|—\d+|\d+(?:[ \t]*[-–—])?)[ \t]*$",
+            )
+            .unwrap(),
             // End-of-line dot leaders: "Chapter 1 ...... 6" → "Chapter 1 (p.6)"
             toc_dot_leader_regex: Regex::new(r"\s*\.{4,}\s*(\d+)?\s*$").unwrap(),
             // Inline dot leaders: "Chapter 1 ................ Chapter 2" → "Chapter 1 Chapter 2"
@@ -585,6 +592,29 @@ mod tests {
         let pipeline = CleanupPipeline::from_preset(CleanupPreset::Standard);
         let text = "| No. | Name |\n| --- | :---: |\n| 1 | Alpha |\n";
         assert_eq!(pipeline.process(text), text.trim_end());
+    }
+
+    /// A page number set between dashes is removed; a negative number alone on its line
+    /// is a value, and keeps its line.
+    #[test]
+    fn page_number_removal_keeps_a_lone_negative_number() {
+        let pipeline = CleanupPipeline::from_preset(CleanupPreset::Standard);
+        for page_number in ["- 12 -", "-12-", "– 3 –", "- 12", "12", "—12"] {
+            let text = format!("Before.\n\n{page_number}\n\nAfter.");
+            assert_eq!(
+                pipeline.process(&text),
+                "Before.\n\nAfter.",
+                "{page_number:?} is a page number"
+            );
+        }
+        for value in ["-12", "\u{2013}12", "\u{2212}12"] {
+            let text = format!("Before.\n\n{value}\n\nAfter.");
+            assert_eq!(
+                pipeline.process(&text),
+                format!("Before.\n\n{value}\n\nAfter."),
+                "{value:?} is a negative number"
+            );
+        }
     }
 
     /// A line that already ends in a space joins the next with one space, not two.

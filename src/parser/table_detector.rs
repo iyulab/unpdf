@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 
 use crate::model::{Table, TableCell, TableRow};
 
-use super::layout::TextSpan;
+use super::layout::{opens_with_signed_number, should_insert_space_between, TextSpan};
 
 /// A detected table region with its content.
 #[derive(Debug, Clone)]
@@ -1138,7 +1138,7 @@ impl TableDetector {
 
             if let Some(span) = first_span {
                 let text = span.text.trim();
-                if is_bullet_marker(text) {
+                if is_bullet_marker(text) && !signs_the_next_run(span, &row.spans) {
                     bullet_count += 1;
                 } else if is_number_marker(text) {
                     number_count += 1;
@@ -1170,6 +1170,20 @@ impl TableDetector {
 
         false
     }
+}
+
+/// Whether `dash`, a run of its own, is the minus sign of the number drawn right after it
+/// (`-` against `0.2`) rather than a bullet: the two runs join with no gap between them,
+/// the way a line's text joins them, and read as a signed number.
+fn signs_the_next_run(dash: &TextSpan, row: &[TextSpan]) -> bool {
+    let next = row
+        .iter()
+        .filter(|s| s.x > dash.x)
+        .min_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
+    next.is_some_and(|next| {
+        !should_insert_space_between(dash, next)
+            && opens_with_signed_number(&format!("{}{}", dash.text.trim_start(), next.text))
+    })
 }
 
 /// Check if text is a bullet marker (•, -, etc.).
@@ -1828,6 +1842,36 @@ mod tests {
             "Numbered list should not be detected as a table"
         );
         assert_eq!(remaining.len(), 10);
+    }
+
+    /// A dash drawn as a run of its own against the number after it is that number's sign:
+    /// rows that open with one are not bullet items.
+    #[test]
+    fn a_minus_sign_drawn_as_its_own_run_is_not_a_bullet() {
+        let detector = TableDetector::new();
+        let row = |y: f32, dash: &str, gap: f32| TableRowData {
+            y,
+            spans: vec![
+                measured(dash, 50.0, y, 4.0),
+                measured("0.2", 54.0 + gap, y, 15.0),
+                measured("4.5", 120.0, y, 15.0),
+            ],
+            sources: Vec::new(),
+        };
+        let columns = [50.0, 120.0];
+        let signed: Vec<_> = (0..4)
+            .map(|i| row(400.0 - 20.0 * i as f32, "-", 0.0))
+            .collect();
+        assert!(!detector.is_list_pattern(&signed, &columns));
+        let signed: Vec<_> = (0..4)
+            .map(|i| row(400.0 - 20.0 * i as f32, "\u{2013}", 0.0))
+            .collect();
+        assert!(!detector.is_list_pattern(&signed, &columns));
+        // Set apart from the text after it, the dash is a bullet.
+        let bullets: Vec<_> = (0..4)
+            .map(|i| row(400.0 - 20.0 * i as f32, "-", 20.0))
+            .collect();
+        assert!(detector.is_list_pattern(&bullets, &columns));
     }
 
     #[test]

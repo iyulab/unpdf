@@ -733,13 +733,52 @@ fn lines_follow_as_body(sizes: &[f32], has_bold: &[bool], i: usize, body_size: f
     }
 }
 
-/// Whether a character marks the line it opens as a list item rather than a heading.
+/// Whether `text` opens with a list item's glyph — a bullet or an enclosed enumeration —
+/// rather than a heading or plain text.
 ///
 /// Such a line is an enumeration inside body content no matter how large its font is, and a
 /// document that renders its lists in a display face would otherwise fill the output with
 /// headings. Enclosed enumerations (①, ⒈, ㈀, ❶ …) count: Korean documents use them for
 /// choices and clause lists, which are the least heading-like things on the page.
-fn starts_a_list_item(c: char) -> bool {
+///
+/// A dash that signs a number is not a bullet ([`opens_with_signed_number`]): a statistical
+/// table drawn as text lines puts `-0.2` at the start of a line, and read as a marker the
+/// value lost its sign.
+fn opens_a_list_item(text: &str) -> bool {
+    let text = text.trim_start();
+    text.chars().next().is_some_and(is_list_glyph) && !opens_with_signed_number(text)
+}
+
+/// Whether `text` opens with a number carrying a minus sign: a dash printed against a digit
+/// (`-0.2`, `−12`, `–3`) or against a decimal point and a digit (`-.5`).
+///
+/// A bullet is followed by its item's words, a sign by its number, and nothing comes between
+/// a sign and its number — so a dash with a space after it is a marker even before a number
+/// (`- 2023.1.12 …`), and a dash against a letter is a bullet drawn without a gap
+/// (`-item`). A sign drawn as a run of its own against the number joins it the same way, as
+/// [`TextLine::text`] joins two runs with no gap between them.
+pub(crate) fn opens_with_signed_number(text: &str) -> bool {
+    let mut chars = text.trim_start().chars();
+    let (Some(sign), Some(next)) = (chars.next(), chars.next()) else {
+        return false;
+    };
+    is_minus_sign(sign)
+        && (next.is_ascii_digit()
+            || (next == '.' && chars.next().is_some_and(|c| c.is_ascii_digit())))
+}
+
+/// The characters a number's minus sign is printed with: the hyphen-minus, the minus sign
+/// itself, the figure and en dashes typesetters set for it, and their small and fullwidth
+/// forms. The em dash is not among them.
+fn is_minus_sign(c: char) -> bool {
+    matches!(
+        c,
+        '-' | '\u{2012}' | '\u{2013}' | '\u{2212}' | '\u{FE63}' | '\u{FF0D}'
+    )
+}
+
+/// Whether `c` is a bullet or an enclosed-enumeration glyph — what can open a list item.
+fn is_list_glyph(c: char) -> bool {
     const BULLETS: &[char] = &[
         '-', '–', '—', '*', '·', '∙', 'ㆍ', 'ㅇ', '•', '◦', '○', '●', '◎', '■', '□', '▪', '▫', '◼',
         '◾', '◆', '◇', '★', '☆', '※', '→', '▶', '►', '▷', '▹', '◁', '◀', '◃', '◂', '☞',
@@ -759,7 +798,7 @@ fn starts_a_list_item(c: char) -> bool {
 /// A list marker recognized at the very start of a line's text.
 struct ListMarkerMatch {
     /// `Some(n)` for an ordered item's printed number; `None` for a bullet or
-    /// enclosed-enumeration glyph ([`starts_a_list_item`]).
+    /// enclosed-enumeration glyph ([`opens_a_list_item`]).
     ordered_number: Option<u32>,
     /// Bytes of the line's text — the marker plus the whitespace right after
     /// it — to strip before treating the rest as the item's visible content.
@@ -768,8 +807,9 @@ struct ListMarkerMatch {
 
 /// Recognize a list marker opening `text`, if any.
 ///
-/// The unordered case reuses [`starts_a_list_item`]'s bullet/enclosed-enumeration
-/// glyphs. The ordered case is a literal `"<1-3 digits>."` or `"<1-3 digits>)"`
+/// The unordered case reuses [`opens_a_list_item`]'s bullet/enclosed-enumeration
+/// glyphs, so a dash that signs a number (`-0.2`) is not a marker. The ordered case is a
+/// literal `"<1-3 digits>."` or `"<1-3 digits>)"`
 /// prefix — the number is read off the page as printed, not inferred: unpdf
 /// analyzes one page at a time and has no cross-line state to detect a
 /// *continuing* sequence the way undoc/unhwp's two-pass IR can (see the
@@ -781,7 +821,7 @@ fn detect_list_marker(text: &str) -> Option<ListMarkerMatch> {
     let trimmed = &text[leading_ws..];
     let first = trimmed.chars().next()?;
 
-    if starts_a_list_item(first) {
+    if opens_a_list_item(trimmed) {
         let marker_len = first.len_utf8();
         let after = &trimmed[marker_len..];
         let ws_len = after.len() - after.trim_start().len();
@@ -1482,7 +1522,7 @@ impl<'a> LayoutAnalyzer<'a> {
             // enumerations inside body content, regardless of font size.
             let trimmed = line.text();
             let trimmed = trimmed.trim_start();
-            if trimmed.chars().next().is_some_and(starts_a_list_item) {
+            if opens_a_list_item(trimmed) {
                 continue;
             }
 
@@ -1654,7 +1694,7 @@ impl<'a> LayoutAnalyzer<'a> {
     ///
     /// Heading takes precedence over list-marker detection: `detect_headings`
     /// already declines to promote a bullet/enclosed-enumeration line (see
-    /// `starts_a_list_item`), so a line that still reaches here `is_heading`
+    /// `opens_a_list_item`), so a line that still reaches here `is_heading`
     /// is never itself an unordered marker — but an ordered numeral prefix
     /// (`"1. "`) isn't excluded there, since a numbered *heading*
     /// ("1. Introduction") is common and must stay a heading when the
@@ -2268,7 +2308,7 @@ fn median_font_size(spans: &[TextSpan]) -> f32 {
 /// span's left edge. Shared by [`TextLine::text`] and [`TextLine::styled_segments`]
 /// so the plain-text and styled-run views of a line always agree on spacing.
 /// For CJK characters, no space is inserted between adjacent characters.
-fn should_insert_space_between(prev_span: &TextSpan, span: &TextSpan) -> bool {
+pub(crate) fn should_insert_space_between(prev_span: &TextSpan, span: &TextSpan) -> bool {
     // Calculate gap between end of previous span and start of current span
     let prev_end = prev_span.x + prev_span.width;
     let gap = span.x - prev_end;
@@ -2869,6 +2909,63 @@ mod tests {
                 "{marker:?} opens a list item, not a heading"
             );
         }
+    }
+
+    /// A dash printed against a digit, or against a decimal point and a digit, is a minus
+    /// sign — with the hyphen-minus, the minus sign, the figure and en dashes.
+    #[test]
+    fn a_dash_against_a_number_is_its_sign() {
+        for signed in [
+            "-0.2 4.5",
+            "-12",
+            "-.5",
+            "  -3.1",
+            "\u{2212}0.8 3.1",
+            "\u{2013}0.7",
+            "\u{2012}4",
+            "\u{FF0D}2",
+        ] {
+            assert!(opens_with_signed_number(signed), "{signed:?}");
+            assert!(!opens_a_list_item(signed), "{signed:?} is not a list item");
+            assert!(detect_list_marker(signed).is_none(), "{signed:?}");
+        }
+    }
+
+    /// A dash with a space after it is a marker whatever follows; so is a dash glued to a
+    /// word (a bullet drawn without a gap), and a dash before a lone point. The em dash is
+    /// never a sign.
+    #[test]
+    fn a_dash_before_a_space_or_a_word_is_a_list_marker() {
+        for (item, rest) in [
+            ("- 2023.1.12일 실시한 점검", "2023.1.12일 실시한 점검"),
+            ("\u{2013} 0.3 하락", "0.3 하락"),
+            ("-외화 유동성 점검", "외화 유동성 점검"),
+            ("-item", "item"),
+            ("-. trailing", ". trailing"),
+            ("\u{2014}5 items", "5 items"),
+        ] {
+            assert!(!opens_with_signed_number(item), "{item:?}");
+            let m = detect_list_marker(item).unwrap_or_else(|| panic!("{item:?} is a bullet"));
+            assert_eq!(m.ordered_number, None);
+            assert_eq!(&item[m.prefix_len..], rest);
+        }
+        assert!(!opens_with_signed_number("-"));
+        assert!(!opens_with_signed_number(""));
+        assert!(!opens_with_signed_number("5"));
+    }
+
+    /// A large line that opens with a negative number is not kept from being a heading as
+    /// if it were a list item — the exclusion is for list items.
+    #[test]
+    fn test_detect_headings_does_not_take_a_signed_number_for_a_list_marker() {
+        let stats = body_12pt_stats(&[20.0]);
+        let lines = vec![
+            line_at("Body text.", 100.0, 12.0, "Helvetica"),
+            line_at("-3.9% growth forecast", 80.0, 20.0, "Helvetica"),
+            line_at("Body text.", 60.0, 12.0, "Helvetica"),
+        ];
+        let result = LayoutAnalyzer::detect_headings(&stats, lines);
+        assert!(result[1].is_heading, "the size makes it a heading");
     }
 
     #[test]

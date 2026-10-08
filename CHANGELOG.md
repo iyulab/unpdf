@@ -29,6 +29,17 @@
   fonts were measured, so two strings shown in a row with a font under `UniKS-UCS2-H` or
   `KSC-EUC-H` were placed on top of each other and every run's width was a guess. Codes are now
   resolved to their CIDs through the CMap before `/W` is read (horizontal writing mode).
+- **A line that opens with a negative number keeps its sign.** A dash at the start of a line
+  was taken for a bullet whatever followed it, so a line such as `-0.2 4.5` — common where a
+  statistical table is drawn as text lines — became a list item and lost its sign (`• 0.2 4.5`
+  in text, `- 0.2 4.5` in Markdown). A hyphen-minus, minus sign, figure dash or en dash printed
+  against a digit (`-0.2`, `−12`, `–3`) or a decimal point and a digit (`-.5`) is now read as
+  the number's sign, in list detection, heading detection and the check that keeps a list from
+  being read as a table — there also when the sign is drawn as a run of its own against the
+  number. A dash followed by a space stays a list marker even before a number
+  (`- 2023.1.12 …`), as does a dash glued to a word (`-item`). The standard cleanup no longer
+  removes a negative number standing alone on its line (`-12`) as if it were a page number;
+  a number set between dashes (`- 12 -`) still is.
 
 ## 0.34.1 — 2026-10-08
 
