@@ -907,7 +907,7 @@ impl PdfBackend for RawBackend {
     fn xobject(&self, scope: ResourceScope, name: &[u8]) -> Option<PaintedXObject> {
         let id = resource_chain(&self.doc, scope)
             .into_iter()
-            .find_map(|res| named_resource(&self.doc, res, b"XObject", name))?;
+            .find_map(|res| named_xobject(&self.doc, res, name))?;
         let stream = self.doc.resolve(self.doc.get_object(id)?).as_stream()?;
         let subtype = raw_dict_get(&stream.dict, b"Subtype").and_then(|s| s.as_name());
         Some(match subtype {
@@ -928,7 +928,7 @@ impl PdfBackend for RawBackend {
     fn image_xobject(&self, scope: ResourceScope, name: &[u8]) -> Option<RawXObject> {
         let id = resource_chain(&self.doc, scope)
             .into_iter()
-            .find_map(|res| named_resource(&self.doc, res, b"XObject", name))?;
+            .find_map(|res| named_xobject(&self.doc, res, name))?;
         let stream = self.doc.resolve(self.doc.get_object(id)?).as_stream()?;
         let subtype = raw_dict_get(&stream.dict, b"Subtype").and_then(|s| s.as_name());
         if subtype != Some(b"Image".as_slice()) {
@@ -941,8 +941,8 @@ impl PdfBackend for RawBackend {
         let dict = resource_chain(&self.doc, scope)
             .into_iter()
             .find_map(|res| {
-                let sub = raw_resolve_dict(&self.doc, raw_dict_get(res, b"ExtGState")?)?;
-                raw_resolve_dict(&self.doc, raw_dict_get(sub, name)?)
+                let sub = res.category(&self.doc, b"ExtGState")?;
+                raw_resolve_dict(&self.doc, raw_dict_get(sub.dict, name)?)
             })?;
         let number = |key: &[u8]| {
             raw_dict_get(dict, key)
@@ -964,8 +964,8 @@ impl PdfBackend for RawBackend {
         resource_chain(&self.doc, scope)
             .into_iter()
             .find_map(|res| {
-                let sub = raw_resolve_dict(&self.doc, raw_dict_get(res, b"ColorSpace")?)?;
-                resolve_image_color_space(&self.doc, raw_dict_get(sub, name)?, 0)
+                let sub = res.category(&self.doc, b"ColorSpace")?;
+                resolve_image_color_space(&self.doc, raw_dict_get(sub.dict, name)?, 0)
             })
     }
 
@@ -1055,13 +1055,11 @@ impl RawBackend {
         let Some(res) = resource_chain(&self.doc, scope).into_iter().next() else {
             return;
         };
-        let Some(xobj_dict) =
-            raw_dict_get(res, b"XObject").and_then(|x| raw_resolve_dict(&self.doc, x))
-        else {
+        let Some(xobjects) = res.category(&self.doc, b"XObject") else {
             return;
         };
 
-        for (name, obj) in xobj_dict {
+        for (name, obj) in xobjects.dict {
             let Some(id) = obj.as_reference() else {
                 continue;
             };
@@ -1253,17 +1251,50 @@ fn page_box_from_array(doc: &RawDocument, obj: &RawPdfObject) -> Option<PageBox>
     (page_box.width() > 0.0 && page_box.height() > 0.0).then_some(page_box)
 }
 
+/// A resource dictionary (or one of its category sub-dictionaries), with the indirect object
+/// it is written in: itself when it is one, else the nearest object around it -- the page,
+/// Pages node or form whose `/Resources` it is, or the resource dictionary holding it.
+///
+/// Resources may be written inline at every level, and an inline value has no object id of
+/// its own; the holder is what still names it (see [`FontKey`]).
+#[derive(Clone, Copy)]
+struct ResourceDict<'d> {
+    dict: &'d RawPdfDict,
+    holder: ObjectId,
+}
+
+impl<'d> ResourceDict<'d> {
+    /// The entry `key` of `holder`'s dictionary, when it is a dictionary.
+    fn entry_of(
+        doc: &'d RawDocument,
+        holder: ObjectId,
+        dict: &'d RawPdfDict,
+        key: &[u8],
+    ) -> Option<Self> {
+        let entry = raw_dict_get(dict, key)?;
+        Some(Self {
+            dict: raw_resolve_dict(doc, entry)?,
+            holder: entry.as_reference().unwrap_or(holder),
+        })
+    }
+
+    /// The `category` sub-dictionary (`/Font`, `/XObject`, ...).
+    fn category(&self, doc: &'d RawDocument, category: &[u8]) -> Option<Self> {
+        Self::entry_of(doc, self.holder, self.dict, category)
+    }
+}
+
 /// The resource dictionaries the names in `scope` resolve through, innermost first: the
 /// form's own `/Resources`, then the page's, then each Pages-tree ancestor's -- resources a
 /// page inherits (ISO 32000-1 §7.7.3.4).
 ///
 /// Looking a name up walks the whole chain, so a form or page that omits a resource its
 /// content uses still finds it further out -- the lenient reading every viewer applies.
-fn resource_chain(doc: &RawDocument, scope: ResourceScope) -> Vec<&RawPdfDict> {
+fn resource_chain(doc: &RawDocument, scope: ResourceScope) -> Vec<ResourceDict<'_>> {
     const MAX_TREE_DEPTH: usize = 64;
     let resources_of = |id: ObjectId| {
         let dict = doc.get_dict(id).ok()?;
-        raw_dict_get(dict, b"Resources").and_then(|r| raw_resolve_dict(doc, r))
+        ResourceDict::entry_of(doc, id, dict, b"Resources")
     };
 
     let mut chain = Vec::new();
@@ -1288,16 +1319,10 @@ fn resource_chain(doc: &RawDocument, scope: ResourceScope) -> Vec<&RawPdfDict> {
     chain
 }
 
-/// The object `name` refers to in the `category` sub-dictionary (`/Font`, `/XObject`) of
-/// `resources`.
-fn named_resource(
-    doc: &RawDocument,
-    resources: &RawPdfDict,
-    category: &[u8],
-    name: &[u8],
-) -> Option<ObjectId> {
-    let sub = raw_resolve_dict(doc, raw_dict_get(resources, category)?)?;
-    raw_dict_get(sub, name)?.as_reference()
+/// The XObject `name` refers to in `resources`. An XObject is a stream, and a stream is
+/// always an indirect object (ISO 32000-1 §7.3.8.1), so it always has an id.
+fn named_xobject(doc: &RawDocument, resources: ResourceDict<'_>, name: &[u8]) -> Option<ObjectId> {
+    raw_dict_get(resources.category(doc, b"XObject")?.dict, name)?.as_reference()
 }
 
 /// Resolve an image XObject's `/ColorSpace` entry to a name.
@@ -1705,16 +1730,85 @@ struct DeclaredStyle {
     italic: bool,
 }
 
+/// A font's identity, under which what is read from it is cached.
+///
+/// A font dictionary is usually an indirect object, named by its id. But the `/Font`
+/// resource may hold it inline -- ISO 32000-1 does not require a font to be indirect -- and
+/// then it has no id: it is named by where it is written, the indirect object holding the
+/// `/Font` dictionary ([`ResourceDict::holder`]) and its name there. Pages that share one
+/// resource dictionary share its inline fonts; two pages that each write their own `/F1`
+/// hold two fonts.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum FontKey {
+    Object(ObjectId),
+    Inline { holder: ObjectId, name: Vec<u8> },
+}
+
+/// A font dictionary, by reference or inline, and its identity.
+struct FontRef<'d> {
+    key: FontKey,
+    dict: &'d RawPdfDict,
+}
+
+impl<'d> FontRef<'d> {
+    /// The font `value` holds under `name` in the `/Font` resource dictionary `fonts`.
+    fn new(
+        doc: &'d RawDocument,
+        fonts: &ResourceDict<'d>,
+        name: &[u8],
+        value: &'d RawPdfObject,
+    ) -> Option<Self> {
+        let key = match value.as_reference() {
+            Some(id) => FontKey::Object(id),
+            None => FontKey::Inline {
+                holder: fonts.holder,
+                name: name.to_vec(),
+            },
+        };
+        let dict = match doc.resolve(value) {
+            RawPdfObject::Dict(dict) => dict,
+            _ => return None,
+        };
+        Some(Self { key, dict })
+    }
+
+    /// Whether this is a composite (Type 0) font.
+    ///
+    /// Composite fonts address glyphs through CIDs, so their content-stream bytes must
+    /// be decoded via a CMap (ToUnicode, embedded cmap, or a predefined CMap). Any
+    /// single-byte fallback decoding is meaningless for them.
+    fn is_composite(&self) -> bool {
+        raw_dict_get(self.dict, b"Subtype").and_then(|s| s.as_name()) == Some(b"Type0".as_slice())
+            || raw_dict_get(self.dict, b"DescendantFonts").is_some()
+    }
+
+    /// `/Encoding` when it is a name: a predefined CMap for a composite font, a base
+    /// encoding for a simple one.
+    fn encoding_name<'a>(&'a self, doc: &'a RawDocument) -> Option<&'a [u8]> {
+        doc.resolve(raw_dict_get(self.dict, b"Encoding")?).as_name()
+    }
+
+    /// Whether `/Encoding` is `Identity-H` or `Identity-V`: two-byte codes are CIDs.
+    fn has_identity_cmap(&self, doc: &RawDocument) -> bool {
+        matches!(self.encoding_name(doc), Some(b"Identity-H" | b"Identity-V"))
+    }
+
+    /// `/BaseFont`.
+    fn base_font<'a>(&'a self, doc: &'a RawDocument) -> Option<&'a [u8]> {
+        doc.resolve(raw_dict_get(self.dict, b"BaseFont")?).as_name()
+    }
+}
+
 struct RawFontResolver {
-    cmap_cache: RwLock<HashMap<PageId, Option<ToUnicodeMap>>>,
+    cmap_cache: RwLock<HashMap<FontKey, Option<ToUnicodeMap>>>,
     /// The `cmap` table of a composite font's embedded TrueType program, by the Type 0
-    /// font's object: its CIDFont may be written inline, with no object of its own.
-    embedded_cmap_cache: RwLock<HashMap<PageId, Option<ToUnicodeMap>>>,
-    encoding_cache: RwLock<HashMap<PageId, Option<HashMap<u8, char>>>>,
-    program_encoding_cache: RwLock<HashMap<PageId, Option<HashMap<u8, char>>>>,
-    style_cache: RwLock<HashMap<PageId, DeclaredStyle>>,
-    cid_system_info_cache: RwLock<HashMap<PageId, Option<(String, String)>>>,
-    metrics_cache: RwLock<HashMap<PageId, Option<FontMetrics>>>,
+    /// font: its CIDFont may be written inline, with no identity of its own.
+    embedded_cmap_cache: RwLock<HashMap<FontKey, Option<ToUnicodeMap>>>,
+    encoding_cache: RwLock<HashMap<FontKey, Option<HashMap<u8, char>>>>,
+    program_encoding_cache: RwLock<HashMap<FontKey, Option<HashMap<u8, char>>>>,
+    style_cache: RwLock<HashMap<FontKey, DeclaredStyle>>,
+    cid_system_info_cache: RwLock<HashMap<FontKey, Option<(String, String)>>>,
+    metrics_cache: RwLock<HashMap<FontKey, Option<FontMetrics>>>,
 }
 
 impl RawFontResolver {
@@ -1737,16 +1831,19 @@ impl RawFontResolver {
         font_name: &[u8],
         bytes: &[u8],
     ) -> Option<Vec<GlyphAdvance>> {
-        let fid = self.find_font_dict(doc, scope, font_name)?;
+        let font = &self.find_font(doc, scope, font_name)?;
         {
             let cache = self.metrics_cache.read().unwrap();
-            if let Some(cached) = cache.get(&fid) {
+            if let Some(cached) = cache.get(&font.key) {
                 return cached.as_ref().map(|m| m.advances(bytes));
             }
         }
-        let metrics = self.parse_font_metrics(doc, fid);
+        let metrics = self.parse_font_metrics(doc, font);
         let advances = metrics.as_ref().map(|m| m.advances(bytes));
-        self.metrics_cache.write().unwrap().insert(fid, metrics);
+        self.metrics_cache
+            .write()
+            .unwrap()
+            .insert(font.key.clone(), metrics);
         advances
     }
 
@@ -1757,24 +1854,24 @@ impl RawFontResolver {
     /// `Identity-H` (two-byte code = CID) or a predefined CMap whose code → CID table
     /// ships with the crate. Anything else — a vertical CMap, whose advances are `/W2`'s,
     /// or an embedded CMap — returns `None` rather than a width tied to the wrong code.
-    fn parse_font_metrics(&self, doc: &RawDocument, font_obj_id: PageId) -> Option<FontMetrics> {
-        let font_dict = doc.get_dict(font_obj_id).ok()?;
+    fn parse_font_metrics(&self, doc: &RawDocument, font: &FontRef<'_>) -> Option<FontMetrics> {
+        let font_dict = font.dict;
         let number = |obj: &RawPdfObject| doc.resolve(obj).as_f32();
 
-        if self.is_composite_font(doc, font_obj_id) {
-            let cmap = raw_dict_get(font_dict, b"Encoding").and_then(|e| e.as_name())?;
+        if font.is_composite() {
+            let cmap = font.encoding_name(doc)?;
             let coding = if cmap == b"Identity-H" {
                 CidCoding::Identity
             } else {
                 let cmap = String::from_utf8_lossy(cmap).into_owned();
                 let horizontal = cmap.ends_with("-H") || cmap == "H";
-                let (_, ordering) = self.get_cid_system_info_cached(doc, font_obj_id)?;
+                let (_, ordering) = self.get_cid_system_info_cached(doc, font)?;
                 if !horizontal || !super::predefined_cmap::resolves_cids(&cmap, &ordering) {
                     return None;
                 }
                 CidCoding::Predefined { cmap, ordering }
             };
-            let cid_font = self.cid_font_dict(doc, font_obj_id)?;
+            let cid_font = self.cid_font_dict(doc, font)?;
             let default_width = raw_dict_get(cid_font, b"DW")
                 .and_then(number)
                 .unwrap_or(1000.0);
@@ -1803,7 +1900,7 @@ impl RawFontResolver {
             .and_then(number)
             .zip(raw_dict_get(font_dict, b"Widths").and_then(|w| doc.resolve(w).as_array()));
         let Some((first_char, widths)) = declared else {
-            return self.standard_font_metrics(doc, font_obj_id);
+            return self.standard_font_metrics(doc, font);
         };
         let first_char = first_char as u32;
         let widths: Vec<f32> = widths.iter().map(|w| number(w).unwrap_or(0.0)).collect();
@@ -1838,11 +1935,11 @@ impl RawFontResolver {
     /// Widths for a simple font that declares none: one of the standard 14, named
     /// by `/BaseFont` alone (ISO 32000-1 §9.6.2.2). Any other font without
     /// `/Widths` stays unmeasured.
-    fn standard_font_metrics(&self, doc: &RawDocument, font_obj_id: PageId) -> Option<FontMetrics> {
-        let standard = self.standard_font(doc, font_obj_id)?;
+    fn standard_font_metrics(&self, doc: &RawDocument, font: &FontRef<'_>) -> Option<FontMetrics> {
+        let standard = self.standard_font(doc, font)?;
         // The same code → character map the text decoder uses: the font's
         // `/Encoding`, or its built-in one. Symbol and ZapfDingbats ignore it.
-        let widths = match self.get_encoding_map(doc, font_obj_id) {
+        let widths = match self.get_encoding_map(doc, font) {
             Some(declared) => standard.widths_by_code(&declared),
             None => standard.widths_by_code(standard.builtin_encoding()),
         };
@@ -1855,15 +1952,12 @@ impl RawFontResolver {
 
     /// The standard 14 font a simple font dictionary names, if any. Composite fonts
     /// and Type 3 fonts are never standard fonts, whatever their `/BaseFont` says.
-    fn standard_font(&self, doc: &RawDocument, font_obj_id: PageId) -> Option<StandardFont> {
-        let font_dict = doc.get_dict(font_obj_id).ok()?;
-        let subtype = raw_dict_get(font_dict, b"Subtype").and_then(|s| s.as_name())?;
+    fn standard_font(&self, doc: &RawDocument, font: &FontRef<'_>) -> Option<StandardFont> {
+        let subtype = raw_dict_get(font.dict, b"Subtype").and_then(|s| s.as_name())?;
         if !matches!(subtype, b"Type1" | b"MMType1" | b"TrueType") {
             return None;
         }
-        raw_dict_get(font_dict, b"BaseFont")
-            .and_then(|n| doc.resolve(n).as_name())
-            .and_then(StandardFont::from_base_font)
+        font.base_font(doc).and_then(StandardFont::from_base_font)
     }
 
     fn decode_text(
@@ -1873,19 +1967,20 @@ impl RawFontResolver {
         font_name: &[u8],
         bytes: &[u8],
     ) -> DecodedText {
-        let font_obj_id = self.find_font_dict(doc, scope, font_name);
+        let font = self.find_font(doc, scope, font_name);
+        let font = font.as_ref();
         let mut is_identity_h = false;
         let mut is_composite = false;
 
         // 1. Try ToUnicode CMap first. For a simple font, a code the CMap leaves
         //    unmapped still has the glyph its `/Encoding` names (ISO 32000-1 §9.10.2
         //    orders the sources per character code, not per string).
-        if let Some(fid) = font_obj_id {
-            is_identity_h = self.is_identity_cid_font(doc, fid);
-            is_composite = self.is_composite_font(doc, fid);
-            if let Some(cmap) = self.get_to_unicode_map(doc, fid) {
+        if let Some(font) = font {
+            is_identity_h = font.has_identity_cmap(doc);
+            is_composite = font.is_composite();
+            if let Some(cmap) = self.get_to_unicode_map(doc, font) {
                 let encoding = if !is_composite && cmap.code_width == 1 {
-                    self.get_encoding_map(doc, fid)
+                    self.get_encoding_map(doc, font)
                 } else {
                     None
                 };
@@ -1900,8 +1995,8 @@ impl RawFontResolver {
         }
 
         // 2. Try embedded TrueType cmap table (for Identity-H CID fonts without ToUnicode)
-        if let Some(fid) = font_obj_id {
-            if let Some(cmap) = self.get_embedded_cmap(doc, fid) {
+        if let Some(font) = font {
+            if let Some(cmap) = self.get_embedded_cmap(doc, font) {
                 let decoded = cmap.decode(bytes);
                 if !decoded.is_empty() {
                     return DecodedText::text(decoded);
@@ -1911,8 +2006,8 @@ impl RawFontResolver {
 
         // 3. Try CIDSystemInfo-based CMap resource lookup (for Identity-H CID fonts)
         if is_identity_h {
-            if let Some(fid) = font_obj_id {
-                if let Some((registry, ordering)) = self.get_cid_system_info_cached(doc, fid) {
+            if let Some(font) = font {
+                if let Some((registry, ordering)) = self.get_cid_system_info_cached(doc, font) {
                     if let Some(decoded) = crate::parser::cmap_table::decode_with_cid_system_info(
                         &registry, &ordering, bytes,
                     ) {
@@ -1928,10 +2023,10 @@ impl RawFontResolver {
         //    CMap (`UniKS-UCS2-H`) carries the text itself and reads without the
         //    CIDFont's `/CIDSystemInfo`; a legacy one needs it to resolve its CIDs.
         if is_composite && !is_identity_h {
-            if let Some(fid) = font_obj_id {
-                if let Some(name) = self.get_encoding_name(doc, fid) {
+            if let Some(font) = font {
+                if let Some(name) = self.get_encoding_name(doc, font) {
                     let (registry, ordering) = self
-                        .get_cid_system_info_cached(doc, fid)
+                        .get_cid_system_info_cached(doc, font)
                         .unwrap_or_default();
                     if let Some(decoded) =
                         crate::parser::predefined_cmap::decode(&name, &registry, &ordering, bytes)
@@ -1945,8 +2040,8 @@ impl RawFontResolver {
         }
 
         // 5. Try encoding dictionary (BaseEncoding + Differences)
-        if let Some(fid) = font_obj_id {
-            if let Some(enc_map) = self.get_encoding_map(doc, fid) {
+        if let Some(font) = font {
+            if let Some(enc_map) = self.get_encoding_map(doc, font) {
                 let decoded = decode_with_encoding_map(bytes, &enc_map);
                 if !decoded.is_empty() {
                     return DecodedText::text(decoded);
@@ -1966,8 +2061,8 @@ impl RawFontResolver {
         //     built-in encoding (ISO 32000-1 §9.6.6.1) — TeX's fonts, for one, put
         //     ligatures, quotes and dashes at codes no Latin encoding has there. Before
         //     the binary judgement below: those codes are control characters in Latin-1.
-        if let Some(fid) = font_obj_id {
-            if let Some(enc_map) = self.program_encoding(doc, fid) {
+        if let Some(font) = font {
+            if let Some(enc_map) = self.program_encoding(doc, font) {
                 let decoded = decode_with_encoding_map(bytes, &enc_map);
                 if !decoded.is_empty() {
                     return DecodedText::text(decoded);
@@ -1983,7 +2078,7 @@ impl RawFontResolver {
         if is_likely_binary(&simple) {
             return DecodedText::suppressed(TextSuppression::BinaryDensity);
         }
-        if let Some(standard) = font_obj_id.and_then(|fid| self.standard_font(doc, fid)) {
+        if let Some(standard) = font.and_then(|font| self.standard_font(doc, font)) {
             let decoded = decode_with_encoding_map(bytes, standard.builtin_encoding());
             if !decoded.is_empty() {
                 return DecodedText::text(decoded);
@@ -1994,41 +2089,39 @@ impl RawFontResolver {
         DecodedText::text(simple)
     }
 
-    /// The font dictionary `font_name` refers to in `scope`.
-    fn find_font_dict(
+    /// The font `font_name` refers to in `scope`: the innermost resource dictionary that
+    /// names it wins, whether it holds the font by reference or inline.
+    fn find_font<'d>(
         &self,
-        doc: &RawDocument,
+        doc: &'d RawDocument,
         scope: ResourceScope,
         font_name: &[u8],
-    ) -> Option<ObjectId> {
-        resource_chain(doc, scope)
-            .into_iter()
-            .find_map(|res| named_resource(doc, res, b"Font", font_name))
+    ) -> Option<FontRef<'d>> {
+        resource_chain(doc, scope).into_iter().find_map(|res| {
+            let fonts = res.category(doc, b"Font")?;
+            FontRef::new(doc, &fonts, font_name, raw_dict_get(fonts.dict, font_name)?)
+        })
     }
 
     /// Get or parse the ToUnicode CMap for a font.
-    fn get_to_unicode_map(&self, doc: &RawDocument, font_obj_id: PageId) -> Option<ToUnicodeMap> {
+    fn get_to_unicode_map(&self, doc: &RawDocument, font: &FontRef<'_>) -> Option<ToUnicodeMap> {
         {
             let cache = self.cmap_cache.read().unwrap();
-            if let Some(cached) = cache.get(&font_obj_id) {
+            if let Some(cached) = cache.get(&font.key) {
                 return cached.clone();
             }
         }
 
-        let result = self.parse_font_to_unicode(doc, font_obj_id);
+        let result = self.parse_font_to_unicode(doc, font);
         self.cmap_cache
             .write()
             .unwrap()
-            .insert(font_obj_id, result.clone());
+            .insert(font.key.clone(), result.clone());
         result
     }
 
-    fn parse_font_to_unicode(
-        &self,
-        doc: &RawDocument,
-        font_obj_id: PageId,
-    ) -> Option<ToUnicodeMap> {
-        let font_dict = doc.get_dict(font_obj_id).ok()?;
+    fn parse_font_to_unicode(&self, doc: &RawDocument, font: &FontRef<'_>) -> Option<ToUnicodeMap> {
+        let font_dict = font.dict;
         let to_unicode = raw_dict_get(font_dict, b"ToUnicode")?;
         let to_unicode = doc.resolve(to_unicode);
 
@@ -2046,44 +2139,11 @@ impl RawFontResolver {
         parse_to_unicode_cmap(&data)
     }
 
-    /// Check if a font uses Identity-H or Identity-V CID encoding.
-    fn is_identity_cid_font(&self, doc: &RawDocument, font_obj_id: PageId) -> bool {
-        let font_dict = match doc.get_dict(font_obj_id) {
-            Ok(d) => d,
-            Err(_) => return false,
-        };
-
-        raw_dict_get(font_dict, b"Encoding")
-            .and_then(|e| e.as_name())
-            .map(|n| n == b"Identity-H" || n == b"Identity-V")
-            .unwrap_or(false)
-    }
-
     /// Get the font's `/Encoding` when it is a name (a predefined CMap), not a
     /// dictionary or an embedded CMap stream.
-    fn get_encoding_name(&self, doc: &RawDocument, font_obj_id: PageId) -> Option<String> {
-        let font_dict = doc.get_dict(font_obj_id).ok()?;
-        let name = raw_dict_get(font_dict, b"Encoding")?.as_name()?;
+    fn get_encoding_name(&self, doc: &RawDocument, font: &FontRef<'_>) -> Option<String> {
+        let name = font.encoding_name(doc)?;
         Some(String::from_utf8_lossy(name).into_owned())
-    }
-
-    /// Check if a font is a composite (Type0/CID) font.
-    ///
-    /// Composite fonts address glyphs through CIDs, so their content-stream bytes must
-    /// be decoded via a CMap (ToUnicode, embedded cmap, or a predefined CMap). Any
-    /// single-byte fallback decoding is meaningless for them.
-    fn is_composite_font(&self, doc: &RawDocument, font_obj_id: PageId) -> bool {
-        let font_dict = match doc.get_dict(font_obj_id) {
-            Ok(d) => d,
-            Err(_) => return false,
-        };
-
-        let is_type0 = raw_dict_get(font_dict, b"Subtype")
-            .and_then(|s| s.as_name())
-            .map(|n| n == b"Type0")
-            .unwrap_or(false);
-
-        is_type0 || raw_dict_get(font_dict, b"DescendantFonts").is_some()
     }
 
     /// The descendant CIDFont dictionary of a Type 0 font.
@@ -2091,14 +2151,13 @@ impl RawFontResolver {
     /// `/DescendantFonts` is a one-element array (ISO 32000-1 §9.7.6, Table 121) whose
     /// element is the CIDFont dictionary — by reference or written inline, both are
     /// valid and both occur. The array itself may be an indirect object too.
-    fn cid_font_dict<'a>(
+    fn cid_font_dict<'d>(
         &self,
-        doc: &'a RawDocument,
-        font_obj_id: PageId,
-    ) -> Option<&'a RawPdfDict> {
-        let font_dict = doc.get_dict(font_obj_id).ok()?;
+        doc: &'d RawDocument,
+        font: &FontRef<'d>,
+    ) -> Option<&'d RawPdfDict> {
         let descendants = doc
-            .resolve(raw_dict_get(font_dict, b"DescendantFonts")?)
+            .resolve(raw_dict_get(font.dict, b"DescendantFonts")?)
             .as_array()?;
         raw_resolve_dict(doc, descendants.first()?)
     }
@@ -2107,9 +2166,9 @@ impl RawFontResolver {
     fn get_cid_system_info(
         &self,
         doc: &RawDocument,
-        font_obj_id: PageId,
+        font: &FontRef<'_>,
     ) -> Option<(String, String)> {
-        let cid_font_dict = self.cid_font_dict(doc, font_obj_id)?;
+        let cid_font_dict = self.cid_font_dict(doc, font)?;
 
         let csi = raw_dict_get(cid_font_dict, b"CIDSystemInfo")?;
         let csi = doc.resolve(csi);
@@ -2133,56 +2192,49 @@ impl RawFontResolver {
     fn get_cid_system_info_cached(
         &self,
         doc: &RawDocument,
-        font_obj_id: PageId,
+        font: &FontRef<'_>,
     ) -> Option<(String, String)> {
         {
             let cache = self.cid_system_info_cache.read().unwrap();
-            if let Some(cached) = cache.get(&font_obj_id) {
+            if let Some(cached) = cache.get(&font.key) {
                 return cached.clone();
             }
         }
-        let result = self.get_cid_system_info(doc, font_obj_id);
+        let result = self.get_cid_system_info(doc, font);
         self.cid_system_info_cache
             .write()
             .unwrap()
-            .insert(font_obj_id, result.clone());
+            .insert(font.key.clone(), result.clone());
         result
     }
 
     /// Get or parse embedded TrueType cmap for Identity-H fonts.
-    fn get_embedded_cmap(&self, doc: &RawDocument, font_obj_id: PageId) -> Option<ToUnicodeMap> {
+    fn get_embedded_cmap(&self, doc: &RawDocument, font: &FontRef<'_>) -> Option<ToUnicodeMap> {
         {
             let cache = self.embedded_cmap_cache.read().unwrap();
-            if let Some(cached) = cache.get(&font_obj_id) {
+            if let Some(cached) = cache.get(&font.key) {
                 return cached.clone();
             }
         }
 
-        let result = self.parse_embedded_truetype_cmap(doc, font_obj_id);
+        let result = self.parse_embedded_truetype_cmap(doc, font);
         self.embedded_cmap_cache
             .write()
             .unwrap()
-            .insert(font_obj_id, result.clone());
+            .insert(font.key.clone(), result.clone());
         result
     }
 
     fn parse_embedded_truetype_cmap(
         &self,
         doc: &RawDocument,
-        font_obj_id: PageId,
+        font: &FontRef<'_>,
     ) -> Option<ToUnicodeMap> {
-        let font_dict = doc.get_dict(font_obj_id).ok()?;
-
-        // Check Identity-H/V encoding
-        let encoding = raw_dict_get(font_dict, b"Encoding")
-            .and_then(|e| e.as_name())
-            .map(|n| String::from_utf8_lossy(n).to_string())?;
-
-        if encoding != "Identity-H" && encoding != "Identity-V" {
+        if !font.has_identity_cmap(doc) {
             return None;
         }
 
-        let cid_font_dict = self.cid_font_dict(doc, font_obj_id)?;
+        let cid_font_dict = self.cid_font_dict(doc, font)?;
         let fd_dict = raw_resolve_dict(doc, raw_dict_get(cid_font_dict, b"FontDescriptor")?)?;
 
         // Get FontFile2 (TrueType)
@@ -2210,16 +2262,13 @@ impl RawFontResolver {
         scope: ResourceScope,
         font_name: &[u8],
     ) -> Option<FontProgram> {
-        let fid = self.find_font_dict(doc, scope, font_name)?;
-        let font_dict = doc.get_dict(fid).ok()?;
-        if self.is_composite_font(doc, fid) {
-            let identity = raw_dict_get(font_dict, b"Encoding")
-                .and_then(|e| e.as_name())
-                .is_some_and(|n| n == b"Identity-H" || n == b"Identity-V");
-            if !identity {
+        let font = &self.find_font(doc, scope, font_name)?;
+        let font_dict = font.dict;
+        if font.is_composite() {
+            if !font.has_identity_cmap(doc) {
                 return None;
             }
-            let cid_font = self.cid_font_dict(doc, fid)?;
+            let cid_font = self.cid_font_dict(doc, font)?;
             let (format, data) = embedded_font_program(doc, cid_font)?;
             let cid_to_gid = raw_dict_get(cid_font, b"CIDToGIDMap")
                 .map(|m| doc.resolve(m))
@@ -2248,7 +2297,7 @@ impl RawFontResolver {
             .and_then(|f| f.as_i64());
         let (format, data, stand_in) = match embedded_font_program(doc, font_dict) {
             Some((format, data)) => (format, data, false),
-            None => (FontFormat::Cff, self.stand_in(doc, fid, flags)?, true),
+            None => (FontFormat::Cff, self.stand_in(doc, font, flags)?, true),
         };
         let symbolic = flags.is_some_and(|flags| flags & 4 != 0);
         let names = raw_dict_get(font_dict, b"Encoding")
@@ -2259,7 +2308,7 @@ impl RawFontResolver {
             format,
             data,
             selection: GlyphSelection::Simple {
-                chars: self.get_encoding_map(doc, fid),
+                chars: self.get_encoding_map(doc, font),
                 names,
                 symbolic,
             },
@@ -2272,44 +2321,49 @@ impl RawFontResolver {
     /// by its name, its descriptor's `/Flags` and the style it declares. A Type 3 font draws
     /// its own glyphs and has none.
     #[cfg(feature = "standard-fonts")]
-    fn stand_in(&self, doc: &RawDocument, fid: PageId, flags: Option<i64>) -> Option<Vec<u8>> {
-        let dict = doc.get_dict(fid).ok()?;
-        let subtype = raw_dict_get(dict, b"Subtype").and_then(|s| s.as_name())?;
+    fn stand_in(
+        &self,
+        doc: &RawDocument,
+        font: &FontRef<'_>,
+        flags: Option<i64>,
+    ) -> Option<Vec<u8>> {
+        let subtype = raw_dict_get(font.dict, b"Subtype").and_then(|s| s.as_name())?;
         if !matches!(subtype, b"Type1" | b"TrueType" | b"MMType1") {
             return None;
         }
-        let base_font = raw_dict_get(dict, b"BaseFont")
-            .and_then(|n| n.as_name())
+        let base_font = font
+            .base_font(doc)
             .map(|n| String::from_utf8_lossy(n).into_owned())
             .unwrap_or_default();
-        let style = self.declared_style(doc, fid);
+        let style = self.declared_style(doc, font);
         super::standard_fonts::stand_in(&base_font, flags, style.bold, style.italic)
             .map(<[u8]>::to_vec)
     }
 
     #[cfg(not(feature = "standard-fonts"))]
-    fn stand_in(&self, _doc: &RawDocument, _fid: PageId, _flags: Option<i64>) -> Option<Vec<u8>> {
+    fn stand_in(
+        &self,
+        _doc: &RawDocument,
+        _font: &FontRef<'_>,
+        _flags: Option<i64>,
+    ) -> Option<Vec<u8>> {
         None
     }
 
     /// Get or parse the encoding map for a font.
-    fn get_encoding_map(
-        &self,
-        doc: &RawDocument,
-        font_obj_id: PageId,
-    ) -> Option<HashMap<u8, char>> {
+    fn get_encoding_map(&self, doc: &RawDocument, font: &FontRef<'_>) -> Option<HashMap<u8, char>> {
         {
             let cache = self.encoding_cache.read().unwrap();
-            if let Some(cached) = cache.get(&font_obj_id) {
+            if let Some(cached) = cache.get(&font.key) {
                 return cached.clone();
             }
         }
 
-        let result = self.parse_encoding_dict(doc, font_obj_id);
+        let result = self.parse_encoding_dict(doc, font);
         self.encoding_cache
             .write()
             .unwrap()
-            .insert(font_obj_id, result.clone());
+            .insert(font.key.clone(), result.clone());
         result
     }
 
@@ -2319,26 +2373,12 @@ impl RawFontResolver {
     /// implicit base is the program's own encoding, not StandardEncoding). Read for a Type 1
     /// program (`/FontFile`) and a bare CFF one (`/FontFile3 /Type1C`); `None` for any
     /// other font.
-    fn program_encoding(
-        &self,
-        doc: &RawDocument,
-        font_obj_id: PageId,
-    ) -> Option<HashMap<u8, char>> {
-        if let Some(cached) = self
-            .program_encoding_cache
-            .read()
-            .unwrap()
-            .get(&font_obj_id)
-        {
+    fn program_encoding(&self, doc: &RawDocument, font: &FontRef<'_>) -> Option<HashMap<u8, char>> {
+        if let Some(cached) = self.program_encoding_cache.read().unwrap().get(&font.key) {
             return cached.clone();
         }
-        let result = doc
-            .get_dict(font_obj_id)
-            .ok()
-            .filter(|dict| {
-                !self.is_composite_font(doc, font_obj_id)
-                    && raw_dict_get(dict, b"FontDescriptor").is_some()
-            })
+        let result = Some(font.dict)
+            .filter(|dict| !font.is_composite() && raw_dict_get(dict, b"FontDescriptor").is_some())
             .and_then(|dict| embedded_font_program(doc, dict))
             .and_then(|(format, data)| match format {
                 FontFormat::Type1 => super::type1::builtin_encoding_chars(&data),
@@ -2348,7 +2388,7 @@ impl RawFontResolver {
         self.program_encoding_cache
             .write()
             .unwrap()
-            .insert(font_obj_id, result.clone());
+            .insert(font.key.clone(), result.clone());
         result
     }
 
@@ -2360,9 +2400,9 @@ impl RawFontResolver {
     fn parse_encoding_dict(
         &self,
         doc: &RawDocument,
-        font_obj_id: PageId,
+        font: &FontRef<'_>,
     ) -> Option<HashMap<u8, char>> {
-        let font_dict = doc.get_dict(font_obj_id).ok()?;
+        let font_dict = font.dict;
         let encoding_obj = raw_dict_get(font_dict, b"Encoding")?;
         let encoding_obj = doc.resolve(encoding_obj);
 
@@ -2375,7 +2415,7 @@ impl RawFontResolver {
             // Encoding dictionary with optional BaseEncoding and Differences
             RawPdfObject::Dict(dict) => {
                 let differences = self.parse_differences(doc, dict);
-                Some(self.encoding_over_base(doc, font_obj_id, dict, &differences))
+                Some(self.encoding_over_base(doc, font, dict, &differences))
             }
             RawPdfObject::Reference(n, g) => {
                 let obj = doc.get_object((*n, *g))?;
@@ -2387,7 +2427,7 @@ impl RawFontResolver {
                     }
                     RawPdfObject::Dict(dict) => {
                         let differences = self.parse_differences(doc, dict);
-                        Some(self.encoding_over_base(doc, font_obj_id, dict, &differences))
+                        Some(self.encoding_over_base(doc, font, dict, &differences))
                     }
                     _ => None,
                 }
@@ -2403,7 +2443,7 @@ impl RawFontResolver {
     fn encoding_over_base(
         &self,
         doc: &RawDocument,
-        font_obj_id: PageId,
+        font: &FontRef<'_>,
         dict: &RawPdfDict,
         differences: &[(u8, String)],
     ) -> HashMap<u8, char> {
@@ -2411,8 +2451,8 @@ impl RawFontResolver {
             .and_then(|b| b.as_name())
             .and_then(BaseEncoding::from_name);
         if named.is_none() {
-            let own = self.program_encoding(doc, font_obj_id).or_else(|| {
-                self.standard_font(doc, font_obj_id)
+            let own = self.program_encoding(doc, font).or_else(|| {
+                self.standard_font(doc, font)
                     .map(|standard| standard.builtin_encoding().clone())
             });
             if let Some(mut map) = own {
@@ -2473,14 +2513,14 @@ impl RawFontResolver {
     /// upright fonts write 0) or its `/Flags` sets Italic. A composite font answers through
     /// its descendant. Names alone miss the styles a family calls something else (URW's
     /// `-Medi` is its bold, `-ReguItal` its italic; TeX's `CMTI10` names neither).
-    fn declared_style(&self, doc: &RawDocument, font_obj_id: PageId) -> DeclaredStyle {
-        if let Some(&cached) = self.style_cache.read().unwrap().get(&font_obj_id) {
+    fn declared_style(&self, doc: &RawDocument, font: &FontRef<'_>) -> DeclaredStyle {
+        if let Some(&cached) = self.style_cache.read().unwrap().get(&font.key) {
             return cached;
         }
         let style = (|| -> Option<DeclaredStyle> {
-            let mut dict = doc.get_dict(font_obj_id).ok()?;
-            if self.is_composite_font(doc, font_obj_id) {
-                dict = self.cid_font_dict(doc, font_obj_id)?;
+            let mut dict = font.dict;
+            if font.is_composite() {
+                dict = self.cid_font_dict(doc, font)?;
             }
             let descriptor = raw_resolve_dict(doc, raw_dict_get(dict, b"FontDescriptor")?)?;
             let number = |key: &[u8]| {
@@ -2508,7 +2548,10 @@ impl RawFontResolver {
             Some(DeclaredStyle { bold, italic })
         })()
         .unwrap_or_default();
-        self.style_cache.write().unwrap().insert(font_obj_id, style);
+        self.style_cache
+            .write()
+            .unwrap()
+            .insert(font.key.clone(), style);
         style
     }
 
@@ -2516,25 +2559,21 @@ impl RawFontResolver {
     fn page_fonts(&self, doc: &RawDocument, scope: ResourceScope) -> Vec<BackendFontInfo> {
         let mut result: Vec<BackendFontInfo> = Vec::new();
         for res in resource_chain(doc, scope) {
-            let Some(font_dict) = raw_dict_get(res, b"Font").and_then(|f| raw_resolve_dict(doc, f))
-            else {
+            let Some(fonts) = res.category(doc, b"Font") else {
                 continue;
             };
-            for (name, val) in font_dict {
+            for (name, val) in fonts.dict {
                 if result.iter().any(|f| &f.name == name) {
                     continue;
                 }
-                let Some(fd) = val.as_reference().and_then(|id| doc.get_dict(id).ok()) else {
+                let Some(font) = FontRef::new(doc, &fonts, name, val) else {
                     continue;
                 };
-                let base_font = raw_dict_get(fd, b"BaseFont")
-                    .and_then(|o| o.as_name())
+                let base_font = font
+                    .base_font(doc)
                     .map(|n| String::from_utf8_lossy(n).to_string())
                     .unwrap_or_else(|| "Unknown".to_string());
-                let style = val
-                    .as_reference()
-                    .map(|id| self.declared_style(doc, id))
-                    .unwrap_or_default();
+                let style = self.declared_style(doc, &font);
                 result.push(BackendFontInfo {
                     name: name.clone(),
                     base_font,

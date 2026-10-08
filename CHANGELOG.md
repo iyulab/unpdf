@@ -12,6 +12,14 @@
   that relies on them — a non-embedded CJK font under a predefined CMap such as
   `UniKS-UCS2-H`, with no `/ToUnicode` — extracted to no text at all (reported only through
   `suppressed_text_runs`). It now reads in full.
+- **A font written inline in a page's `/Font` resource is read.** A resource dictionary may
+  hold a font dictionary as the value of its name instead of a reference to a separate object.
+  Only references were followed, so such a font was never found: its text fell to a byte-wise
+  reading with nothing reported — a Korean string under `UniKS-UCS2-H` came out as Latin-1
+  mojibake, WinAnsi quotes and dashes disappeared, a `/ToUnicode` map was ignored — and its
+  widths and declared weight were lost. Inline fonts now read like referenced ones, in a
+  page's resources and in a Form XObject's, and two pages that each write their own inline
+  `/F1` keep them apart.
 - **Every Unicode predefined CMap decodes, and a malformed code costs only itself.**
   `/Encoding` names of the `UTF8` and `UTF32` forms (`UniJIS-UTF8-H`, `UniJISX0213-UTF32-V`,
   ...) now decode alongside `UCS2` and `UTF16`, in both writing modes; a Unicode CMap no longer
