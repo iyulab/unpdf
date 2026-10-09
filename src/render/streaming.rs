@@ -257,12 +257,12 @@ impl<'a> StreamingRenderer<'a> {
                     }
                 }
                 crate::model::InlineContent::Link { text, url, title } => {
-                    let dest = markdown::link_destination(url, false);
-                    if let Some(t) = title {
-                        output.push_str(&format!("[{}]({} \"{}\")", text, dest, t));
+                    let label = if self.options.escape_special_chars {
+                        escape_markdown(text)
                     } else {
-                        output.push_str(&format!("[{}]({})", text, dest));
-                    }
+                        text.clone()
+                    };
+                    output.push_str(&markdown::link(&label, url, title.as_deref(), false));
                 }
                 crate::model::InlineContent::Image {
                     resource_id,
@@ -464,6 +464,29 @@ pub fn collect_content(renderer: StreamingRenderer<'_>) -> String {
 mod tests {
     use super::*;
     use crate::model::{Page, Paragraph};
+
+    /// Link text and title are document data: a `]` in the text and a `"` in the title must
+    /// not end the link — in the streaming renderer exactly as in `to_markdown`.
+    #[test]
+    fn test_link_text_and_title_stay_inside_the_link_in_both_renderers() {
+        let mut para = Paragraph::new();
+        para.content.push(crate::model::InlineContent::Link {
+            text: "see [3] *now*".to_string(),
+            url: "https://example.com".to_string(),
+            title: Some(r#"say "hi""#.to_string()),
+        });
+        let mut doc = Document::new();
+        let mut page = Page::letter(1);
+        page.elements.push(Block::Paragraph(para.clone()));
+        doc.add_page(page);
+
+        let expected = r#"[see \[3\] \*now\*](https://example.com "say \"hi\"")"#;
+        let batch = crate::render::to_markdown(&doc, &RenderOptions::default()).unwrap();
+        assert!(batch.contains(expected), "to_markdown: {batch:?}");
+        let streamed = StreamingRenderer::new(&doc, RenderOptions::default())
+            .render_block_public(&Block::Paragraph(para));
+        assert!(streamed.contains(expected), "streaming: {streamed:?}");
+    }
 
     #[test]
     fn test_streaming_renderer_empty_doc() {

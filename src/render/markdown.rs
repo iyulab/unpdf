@@ -263,12 +263,12 @@ impl MarkdownRenderer {
                     }
                 }
                 InlineContent::Link { text, url, title } => {
-                    let dest = markdown::link_destination(url, false);
-                    if let Some(ref t) = title {
-                        output.push_str(&format!("[{}]({} \"{}\")", text, dest, t));
+                    let label = if self.options.escape_special_chars {
+                        escape_markdown(text)
                     } else {
-                        output.push_str(&format!("[{}]({})", text, dest));
-                    }
+                        text.clone()
+                    };
+                    output.push_str(&markdown::link(&label, url, title.as_deref(), false));
                 }
                 InlineContent::Image {
                     resource_id,
