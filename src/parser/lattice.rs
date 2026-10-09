@@ -103,10 +103,12 @@ pub fn infer_grids(lines: &[GraphicsLine], config: &LatticeConfig) -> Vec<Lattic
 /// Build a grid from one connected cluster of ruling lines, or `None` if the
 /// cluster is too sparse to describe a table (e.g. a single frame rectangle).
 fn grid_from_component(component: &[AxisSegment], config: &LatticeConfig) -> Option<LatticeGrid> {
-    let mut row_positions = boundaries(component, Axis::Horizontal, config)?;
+    let x_rules = ruled_positions(component, Axis::Vertical, config);
+    let y_rules = ruled_positions(component, Axis::Horizontal, config);
+    let mut row_positions = boundaries(component, Axis::Horizontal, &x_rules, config)?;
     // Descending: PDF y increases upward, and reading order is top (high y) to bottom.
     row_positions.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
-    let mut col_positions = boundaries(component, Axis::Vertical, config)?;
+    let mut col_positions = boundaries(component, Axis::Vertical, &y_rules, config)?;
     col_positions.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
     if row_positions.len() < config.min_rows + 1 || col_positions.len() < config.min_columns + 1 {
@@ -137,7 +139,18 @@ const FILL_SNAP: f32 = 8.0;
 /// An axis needs at least two ruled boundaries. Filled areas complete a ruled grid, but
 /// boundaries from filled areas alone are a figure — the bars of a bar chart between its
 /// stroked gridlines.
-fn boundaries(component: &[AxisSegment], axis: Axis, config: &LatticeConfig) -> Option<Vec<f32>> {
+///
+/// And a filled edge is a boundary only where it reaches a rule of the other axis
+/// (`across`): one unbroken stretch (pieces at most [`FILL_GAP`] apart) that meets or crosses
+/// one. A shaded row does, cell by cell; a highlight drawn behind one line of a cell's text
+/// stops short of the rules around the cell, and taking each such edge as a row boundary
+/// split a three-line header cell into three rows.
+fn boundaries(
+    component: &[AxisSegment],
+    axis: Axis,
+    across: &[f32],
+    config: &LatticeConfig,
+) -> Option<Vec<f32>> {
     let on_axis = || component.iter().filter(move |s| s.axis == axis);
     let mut positions = cluster_positions(
         on_axis().filter(|s| s.ruled).map(|s| s.pos),
@@ -151,12 +164,55 @@ fn boundaries(component: &[AxisSegment], axis: Axis, config: &LatticeConfig) -> 
         config.cluster_tolerance,
     );
     let ruled = positions.clone();
+    let runs_across = |f: f32| {
+        let mut extents: Vec<(f32, f32)> = on_axis()
+            .filter(|s| !s.ruled && (s.pos - f).abs() <= config.cluster_tolerance)
+            .map(|s| (s.lo, s.hi))
+            .collect();
+        extents.sort_by(|a, b| a.0.total_cmp(&b.0));
+        // The unbroken stretches the pieces make.
+        let mut stretches: Vec<(f32, f32)> = Vec::new();
+        for (lo, hi) in extents {
+            match stretches.last_mut() {
+                Some(last) if lo - last.1 <= FILL_GAP => last.1 = last.1.max(hi),
+                _ => stretches.push((lo, hi)),
+            }
+        }
+        // Only rows need it: a column's filled edge is the side of a shaded row, broken
+        // wherever the next row is not shaded, and a highlight's sides fall within
+        // [`FILL_SNAP`] of the cell's rules already.
+        axis == Axis::Vertical
+            || stretches.iter().any(|&(lo, hi)| {
+                across
+                    .iter()
+                    .any(|&r| r >= lo - FILL_TOUCH && r <= hi + FILL_TOUCH)
+            })
+    };
     positions.extend(
         filled
             .into_iter()
-            .filter(|f| ruled.iter().all(|r| (r - f).abs() > FILL_SNAP)),
+            .filter(|&f| ruled.iter().all(|r| (r - f).abs() > FILL_SNAP) && runs_across(f)),
     );
     Some(positions)
+}
+
+/// The widest break a filled edge may have and still be one stretch: a band drawn cell by
+/// cell leaves a hairline between cells.
+const FILL_GAP: f32 = 3.0;
+
+/// How close a filled stretch must come to a rule to meet it. Highlights behind a cell's text
+/// are inset several points from the cell's rules; a shaded cell meets them.
+const FILL_TOUCH: f32 = 2.0;
+
+/// The positions of the ruled segments of `axis`.
+fn ruled_positions(component: &[AxisSegment], axis: Axis, config: &LatticeConfig) -> Vec<f32> {
+    cluster_positions(
+        component
+            .iter()
+            .filter(|s| s.axis == axis && s.ruled)
+            .map(|s| s.pos),
+        config.cluster_tolerance,
+    )
 }
 
 /// Group segments into clusters of lines that touch or cross (within
@@ -533,6 +589,57 @@ mod tests {
         assert_eq!(grids.len(), 1);
         assert_eq!(grids[0].row_count(), 2);
         assert_eq!(grids[0].column_count(), 2);
+    }
+
+    #[test]
+    fn a_highlight_behind_a_line_of_cell_text_adds_no_row() {
+        // A 2x2 grid; the top cells' three text lines each have a shaded band behind them,
+        // inset from the cell's rules.
+        let mut lines = vec![
+            h(300.0, 50.0, 250.0),
+            h(240.0, 50.0, 250.0),
+            h(200.0, 50.0, 250.0),
+            v(50.0, 200.0, 300.0),
+            v(150.0, 200.0, 300.0),
+            v(250.0, 200.0, 300.0),
+        ];
+        // ... and the same in the top-right cell, so the bands together span most of the width.
+        for top in [296.0, 282.0, 268.0] {
+            for edge in [
+                h(top, 55.0, 145.0),
+                h(top - 13.0, 55.0, 145.0),
+                h(top, 155.0, 245.0),
+                h(top - 13.0, 155.0, 245.0),
+            ] {
+                lines.push(GraphicsLine {
+                    ruled: false,
+                    ..edge
+                });
+            }
+        }
+        let grids = infer_grids(&lines, &LatticeConfig::default());
+        assert_eq!(grids.len(), 1);
+        assert_eq!(grids[0].row_count(), 2, "{:?}", grids[0].row_bounds);
+    }
+
+    #[test]
+    fn a_shaded_band_across_the_table_still_completes_the_grid() {
+        // Rules above and below; the band between them is drawn as a filled area only.
+        let mut lines = vec![
+            h(300.0, 50.0, 250.0),
+            h(240.0, 50.0, 250.0),
+            v(50.0, 240.0, 300.0),
+            v(150.0, 240.0, 300.0),
+            v(250.0, 240.0, 300.0),
+        ];
+        for edge in [h(270.0, 50.0, 250.0)] {
+            lines.push(GraphicsLine {
+                ruled: false,
+                ..edge
+            });
+        }
+        let grids = infer_grids(&lines, &LatticeConfig::default());
+        assert_eq!(grids[0].row_count(), 2, "{:?}", grids[0].row_bounds);
     }
 
     #[test]

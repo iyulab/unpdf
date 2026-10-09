@@ -22,6 +22,10 @@
   row as a single `TJ` array, with the space between cells as one large adjustment, had the
   whole row read as one run of text with a space in it, so no column could be found. An
   adjustment of 0.8 em or more now ends the run, and the next part starts where it is drawn.
+- **A highlight behind a line of a cell's text no longer splits the row.** In a table drawn
+  with filled cells, a band shaded behind each line of a header cell added a row boundary per
+  line, so a three-line header became three rows. A filled edge now counts as a row boundary
+  only where it reaches a rule of the table.
 - **A section heading is not a table's first or last row.** A line of one cell set larger
   than the table's text, or set out to the left of where its rows start, is no longer taken
   into a table it lines up with.
