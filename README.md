@@ -197,6 +197,7 @@ unpdf text <file> [OPTIONS]        # Convert to plain text only
 unpdf json <file> [OPTIONS]        # Convert to JSON only
 unpdf info <file>                  # Show document information
 unpdf extract <file> [OPTIONS]     # Extract images only
+unpdf tables <file> [OPTIONS]      # Extract tables as CSV
 unpdf update [OPTIONS]             # Self-update to latest version
 unpdf version                      # Show version information
 ```
@@ -394,6 +395,23 @@ unpdf extract document.pdf -o ./images
 # Extract specific pages
 unpdf extract document.pdf --pages 1-5 -o ./images
 ```
+
+### Extract Tables as CSV
+
+```bash
+# Every table to standard output, a blank line between two
+unpdf tables document.pdf > tables.csv
+
+# One file per table, named for its page and place: p3-t1.csv, p3-t2.csv, ...
+unpdf tables document.pdf -o ./tables --pages 3-5
+
+# Tab-separated instead (files named .tsv)
+unpdf tables document.pdf --tsv -o ./tables
+```
+
+The output is RFC 4180 CSV: a field holding a comma, a quote or a line break is quoted.
+A merged cell's text is in its top-left position and the positions it covers are empty, so
+every row has the same number of fields. From Rust, the same comes from `Table::to_csv()`.
 
 ### Self-Update
 

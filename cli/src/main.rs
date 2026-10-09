@@ -326,6 +326,30 @@ enum Commands {
         pages: Option<String>,
     },
 
+    /// Extract the tables as CSV (RFC 4180), one per table
+    ///
+    /// Without --output the tables are written to standard output, a blank line between
+    /// two. With --output each table is a file in that directory, named for the page it is
+    /// on and its place there: p3-t1.csv, p3-t2.csv, … A merged cell's text is in its
+    /// top-left position and the positions it covers are empty.
+    Tables {
+        /// Input PDF file
+        #[arg(value_name = "FILE")]
+        input: PathBuf,
+
+        /// Output directory (stdout if not specified)
+        #[arg(short, long, value_name = "DIR")]
+        output: Option<PathBuf>,
+
+        /// Page range (e.g., "1-10", "1,3,5")
+        #[arg(long)]
+        pages: Option<String>,
+
+        /// Separate fields with tabs instead of commas (files are named .tsv)
+        #[arg(long)]
+        tsv: bool,
+    },
+
     /// Self-update to latest version
     Update {
         /// Only check for updates, don't install
@@ -481,6 +505,12 @@ fn main() {
             output,
             pages,
         }) => cmd_extract(&input, output.as_deref(), pages.as_deref(), quiet),
+        Some(Commands::Tables {
+            input,
+            output,
+            pages,
+            tsv,
+        }) => cmd_tables(&input, output.as_deref(), pages.as_deref(), tsv, quiet),
         Some(Commands::Update { check, force }) => {
             if let Err(e) = update::run_update(check, force) {
                 eprintln!("{}: {}", "Error".red().bold(), e);
@@ -1089,6 +1119,64 @@ fn cmd_extract(
     }
 
     println!("\n{} {} images extracted", "Done!".green().bold(), count);
+
+    Ok(had_warnings)
+}
+
+fn cmd_tables(
+    input: &Path,
+    output: Option<&Path>,
+    pages: Option<&str>,
+    tsv: bool,
+    quiet: bool,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let page_selection = if let Some(p) = pages {
+        PageSelection::parse(p).map_err(|e| format!("Invalid page range: {}", e))?
+    } else {
+        PageSelection::All
+    };
+
+    // Use lenient mode to continue even if some text extraction fails
+    let options = ParseOptions::new().lenient().with_pages(page_selection);
+    let doc = parse_file_with_options(input, options)?;
+    let had_warnings = check_quality(&doc, quiet);
+
+    let (delimiter, extension) = if tsv { ('\t', "tsv") } else { (',', "csv") };
+    let tables: Vec<(u32, usize, String)> = doc
+        .pages
+        .iter()
+        .flat_map(|page| {
+            page.elements
+                .iter()
+                .filter_map(|block| match block {
+                    unpdf::Block::Table(table) => Some(table),
+                    _ => None,
+                })
+                .enumerate()
+                .map(move |(i, table)| (page.number, i + 1, table.to_delimited(delimiter)))
+        })
+        .collect();
+
+    match output {
+        // Standard output carries the tables alone, so it can be piped into another tool.
+        None => {
+            let text: Vec<&str> = tables.iter().map(|(_, _, t)| t.as_str()).collect();
+            print!("{}", text.join("\r\n"));
+        }
+        Some(dir) => {
+            fs::create_dir_all(dir)?;
+            for (page, n, text) in &tables {
+                let name = format!("p{page}-t{n}.{extension}");
+                fs::write(dir.join(&name), text)?;
+                println!("{} {}", "Extracted".green(), name);
+            }
+            println!(
+                "\n{} {} tables extracted",
+                "Done!".green().bold(),
+                tables.len()
+            );
+        }
+    }
 
     Ok(had_warnings)
 }

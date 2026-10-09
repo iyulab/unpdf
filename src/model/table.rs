@@ -84,6 +84,107 @@ impl Table {
             .flat_map(|r| &r.cells)
             .any(|c| c.rowspan > 1 || c.colspan > 1)
     }
+
+    /// The table as CSV ([RFC 4180](https://www.rfc-editor.org/rfc/rfc4180)): one record per
+    /// row, header rows first as they are, records ended by CRLF.
+    ///
+    /// A merged cell's text is in its top-left position and the positions it covers are
+    /// empty, so every record has the same number of fields and a value is never counted
+    /// twice. A field holding the delimiter, a quote or a line break is quoted, with quotes
+    /// doubled; a cell's paragraphs are kept on their own lines inside it.
+    ///
+    /// ```
+    /// use unpdf::model::{Table, TableCell, TableRow};
+    ///
+    /// let mut table = Table::with_header(1);
+    /// table.add_row(TableRow::header(vec![TableCell::text("Item"), TableCell::text("Note")]));
+    /// table.add_row(TableRow::from_strings(["Bolt, M6", "He said \"no\""]));
+    /// assert_eq!(table.to_csv(), "Item,Note\r\n\"Bolt, M6\",\"He said \"\"no\"\"\"\r\n");
+    /// ```
+    pub fn to_csv(&self) -> String {
+        self.to_delimited(',')
+    }
+
+    /// The table as delimited text, like [`Table::to_csv`] with `delimiter` between fields
+    /// (`'\t'` for TSV).
+    pub fn to_delimited(&self, delimiter: char) -> String {
+        let mut out = String::new();
+        for record in self.grid() {
+            for (i, field) in record.iter().enumerate() {
+                if i > 0 {
+                    out.push(delimiter);
+                }
+                let quote = field.contains(delimiter)
+                    || field.contains('"')
+                    || field.contains('\n')
+                    || field.contains('\r');
+                if quote {
+                    out.push('"');
+                    out.push_str(&field.replace('"', "\"\""));
+                    out.push('"');
+                } else {
+                    out.push_str(field);
+                }
+            }
+            out.push_str("\r\n");
+        }
+        out
+    }
+
+    /// The table laid out on its grid: each merged cell's text at its top-left position, the
+    /// positions it covers empty, every row as wide as the widest.
+    fn grid(&self) -> Vec<Vec<String>> {
+        // Rows still covered, per column, by a cell merged down from a row above.
+        let mut covered: Vec<usize> = Vec::new();
+        let mut grid: Vec<Vec<String>> = Vec::new();
+        for row in &self.rows {
+            let mut record: Vec<String> = Vec::new();
+            let mut col = 0;
+            for cell in &row.cells {
+                skip_covered(&mut covered, &mut record, &mut col);
+                let text = cell
+                    .content
+                    .iter()
+                    .map(|p| p.plain_text())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                record.push(text);
+                let span = usize::from(cell.colspan.max(1));
+                record.extend(std::iter::repeat_n(String::new(), span - 1));
+                if covered.len() < col + span {
+                    covered.resize(col + span, 0);
+                }
+                for c in &mut covered[col..col + span] {
+                    *c = usize::from(cell.rowspan.max(1)) - 1;
+                }
+                col += span;
+            }
+            // Columns past the row's last cell that a cell above still covers.
+            while col < covered.len() {
+                if covered[col] > 0 {
+                    covered[col] -= 1;
+                }
+                record.push(String::new());
+                col += 1;
+            }
+            grid.push(record);
+        }
+        let width = grid.iter().map(Vec::len).max().unwrap_or(0);
+        for record in &mut grid {
+            record.resize(width, String::new());
+        }
+        grid
+    }
+}
+
+/// Pass the columns, from `col` on, that a cell merged down from a row above still covers,
+/// leaving each one empty in `record`.
+fn skip_covered(covered: &mut [usize], record: &mut Vec<String>, col: &mut usize) {
+    while covered.get(*col).is_some_and(|&n| n > 0) {
+        covered[*col] -= 1;
+        record.push(String::new());
+        *col += 1;
+    }
 }
 
 impl Default for Table {
@@ -279,5 +380,56 @@ mod tests {
         let cell = TableCell::text("Hello");
         assert_eq!(cell.plain_text(), "Hello");
         assert!(!cell.is_empty());
+    }
+
+    fn merged(text: &str, rowspan: u8, colspan: u8) -> TableCell {
+        let mut cell = TableCell::text(text);
+        cell.rowspan = rowspan;
+        cell.colspan = colspan;
+        cell
+    }
+
+    #[test]
+    fn merged_cells_keep_their_value_once_and_their_grid() {
+        // | Region (2 rows) | Sales (2 cols)  |
+        // |                 | 2024   | 2025   |
+        // | North           | 10     | 12     |
+        let mut table = Table::with_header(2);
+        table.add_row(TableRow::header(vec![
+            merged("Region", 2, 1),
+            merged("Sales", 1, 2),
+        ]));
+        table.add_row(TableRow::header(vec![
+            TableCell::text("2024"),
+            TableCell::text("2025"),
+        ]));
+        table.add_row(TableRow::from_strings(["North", "10", "12"]));
+        assert_eq!(
+            table.to_csv(),
+            "Region,Sales,\r\n,2024,2025\r\nNorth,10,12\r\n"
+        );
+    }
+
+    #[test]
+    fn a_cell_merged_down_at_the_row_end_leaves_the_next_row_aligned() {
+        let mut table = Table::new();
+        table.add_row(TableRow::new(vec![
+            TableCell::text("a"),
+            merged("tall", 2, 1),
+        ]));
+        table.add_row(TableRow::from_strings(["b"]));
+        table.add_row(TableRow::from_strings(["c", "d"]));
+        assert_eq!(table.to_csv(), "a,tall\r\nb,\r\nc,d\r\n");
+    }
+
+    #[test]
+    fn a_cells_paragraphs_stay_on_their_own_lines_and_tsv_uses_tabs() {
+        let mut cell = TableCell::text("first");
+        cell.content
+            .push(crate::model::Paragraph::with_text("second"));
+        let mut table = Table::new();
+        table.add_row(TableRow::new(vec![cell, TableCell::text("x\ty")]));
+        assert_eq!(table.to_csv(), "\"first\nsecond\",x\ty\r\n");
+        assert_eq!(table.to_delimited('\t'), "\"first\nsecond\"\t\"x\ty\"\r\n");
     }
 }

@@ -4,6 +4,11 @@
 
 ### Added
 
+- **Tables as CSV.** `unpdf tables <file>` writes every table as CSV (RFC 4180) — to standard
+  output, or one file per table with `-o DIR` (`p3-t1.csv`, …), tab-separated with `--tsv`,
+  limited to `--pages`. A merged cell's text is in its top-left position and the positions it
+  covers are empty, so every row has the same number of fields. The library side is
+  `Table::to_csv()` and `Table::to_delimited(delimiter)`.
 - **Tables ruled across but not down are read as tables.** A table with rules above, under
   its header and under its last row and no vertical rules (the usual way papers and reports
   set tables), or with a rule between every row, used to come out as running text. Rules that
