@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Requires `unparser-shared` 0.6.
+
 ## 0.35.1 — 2026-10-09
 
 ### Fixed
