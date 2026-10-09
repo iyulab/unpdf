@@ -646,7 +646,7 @@ impl TableDetector {
                 // End of a potential table region
                 if let Some(start) = current_start {
                     if consecutive_table_rows >= self.config.min_rows {
-                        regions.push((start, i - 1));
+                        regions.extend(self.without_heading_ends(rows, start, i - 1));
                     }
                 }
                 current_start = None;
@@ -657,11 +657,23 @@ impl TableDetector {
         // Check the last region
         if let Some(start) = current_start {
             if consecutive_table_rows >= self.config.min_rows {
-                regions.push((start, rows.len() - 1));
+                regions.extend(self.without_heading_ends(rows, start, rows.len() - 1));
             }
         }
 
         regions
+    }
+
+    /// The region `start..=end` without a section heading at either end (see
+    /// [`without_heading_ends`]). `None` when what is left is too short to be a table.
+    fn without_heading_ends(
+        &self,
+        rows: &[TableRowData],
+        start: usize,
+        end: usize,
+    ) -> Option<(usize, usize)> {
+        let kept = without_heading_ends(&rows[start..=end]);
+        (kept.len() >= self.config.min_rows).then_some((start + kept.start, start + kept.end - 1))
     }
 
     /// Runs of at least `min_rows` consecutive rows that each hold two or more spans —
@@ -1341,8 +1353,48 @@ fn separated_runs(row: &TableRowData) -> usize {
     runs
 }
 
+/// The rows of a table region that are its rows, not the headings at its ends: a line of one
+/// cell set larger than the table's text, or set out to the left of where its rows start, lines
+/// up with the table's first column as well as any row does, and is read as its first or last
+/// row (`LANGUAGES` closing a skills table, under a rule its section draws like the one before).
+pub(crate) fn without_heading_ends(rows: &[TableRowData]) -> std::ops::Range<usize> {
+    let mut sizes: Vec<f32> = rows
+        .iter()
+        .flat_map(|r| r.spans.iter().map(|s| s.font_size))
+        .collect();
+    sizes.sort_by(f32::total_cmp);
+    let body = sizes.get(sizes.len() / 2).copied().unwrap_or(0.0);
+    // Where the rows start, typically: a heading is set out to the left of it.
+    let mut starts: Vec<f32> = rows
+        .iter()
+        .filter_map(|r| r.spans.iter().map(|s| s.x).reduce(f32::min))
+        .collect();
+    starts.sort_by(f32::total_cmp);
+    let left = starts.get(starts.len() / 2).copied().unwrap_or(0.0);
+    let heading = |row: &TableRowData| {
+        let larger = row
+            .spans
+            .iter()
+            .all(|s| s.font_size >= body * HEADING_SIZE_RATIO);
+        let outdented = row.spans.iter().all(|s| s.x + s.font_size <= left);
+        separated_runs(row) == 1 && (larger || outdented)
+    };
+    let mut start = 0;
+    let mut end = rows.len();
+    while start + 1 < end && heading(&rows[start]) {
+        start += 1;
+    }
+    while end > start + 1 && heading(&rows[end - 1]) {
+        end -= 1;
+    }
+    start..end
+}
+
 /// The gap, in multiples of the font size, beyond which two spans are separate cells.
 const CELL_GAP_EM: f32 = 0.5;
+
+/// A line of one cell this much larger than a table's text is a heading, not its row.
+const HEADING_SIZE_RATIO: f32 = 1.15;
 
 /// Whether a row is a line of running text: every space in it is a word space.
 ///
@@ -1355,7 +1407,7 @@ const CELL_GAP_EM: f32 = 0.5;
 /// more than [`WORD_SPACE_SPREAD`] times the typical one, and its words are words rather
 /// than figures. The line is measured where its main-size text runs: a footnote mark or a
 /// superscript inside it belongs to it, a margin tab's letter beyond its end does not.
-fn is_running_text_row(row: &TableRowData) -> bool {
+pub(crate) fn is_running_text_row(row: &TableRowData) -> bool {
     let mut sizes: Vec<f32> = row.spans.iter().map(|s| s.font_size).collect();
     sizes.sort_by(f32::total_cmp);
     let Some(&size) = sizes.get(sizes.len() / 2) else {

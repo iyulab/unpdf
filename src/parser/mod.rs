@@ -30,6 +30,7 @@ pub mod raster;
 #[cfg(feature = "raster")]
 mod raster_text;
 pub mod raw;
+mod ruled_rows;
 pub(crate) mod sanitize;
 #[cfg(feature = "standard-fonts")]
 mod standard_fonts;

@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Added
+
+- **Tables ruled across but not down are read as tables.** A table with rules above, under
+  its header and under its last row and no vertical rules (the usual way papers and reports
+  set tables), or with a rule between every row, used to come out as running text. Rules that
+  share one width now bound a table, the text inside divides it into columns, and a caption or
+  paragraph between two such tables ends the first. A chart's gridlines, prose between two
+  rules and a section heading under its own rule are not taken for tables.
+
+### Fixed
+
+- **Cells drawn in one text-showing operation are separate.** Producers that set a table
+  row as a single `TJ` array, with the space between cells as one large adjustment, had the
+  whole row read as one run of text with a space in it, so no column could be found. An
+  adjustment of 0.8 em or more now ends the run, and the next part starts where it is drawn.
+- **A section heading is not a table's first or last row.** A line of one cell set larger
+  than the table's text, or set out to the left of where its rows start, is no longer taken
+  into a table it lines up with.
+
 ### Changed
 
 - **Escaping can be turned off from C, C# and Python.** Escaping special Markdown characters

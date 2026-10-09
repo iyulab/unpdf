@@ -764,7 +764,7 @@ fn extract_page_with_tables_fn(
     analyzer: &mut super::layout::LayoutAnalyzer,
     page_num: u32,
 ) -> Result<Vec<Block>> {
-    let (mut spans, lattice_grids) = analyzer.extract_page_spans_and_lattice_grids(page_num)?;
+    let (mut spans, rulings) = analyzer.extract_page_spans_and_lattice_grids(page_num)?;
 
     // Apply header/footer filter before table detection so page numbers
     // in margins don't end up as spurious table rows or body paragraphs.
@@ -777,6 +777,15 @@ fn extract_page_with_tables_fn(
     // Both table detectors reason about where text starts and ends, so they must see
     // runs, not the fragments a producer happened to draw them in.
     let spans = super::layout::coalesce_runs(spans);
+
+    // Tables ruled across but not down: the rules bound them, the text's columns divide them.
+    // Built after the spans are final, the same way a ruled grid's cells are filled.
+    let mut lattice_grids = rulings.grids;
+    lattice_grids.extend(super::ruled_rows::grids(
+        &rulings.rule_stacks,
+        &spans,
+        &lattice_grids,
+    ));
 
     // Lattice mode first: explicit ruling lines are direct structural
     // evidence, so a confirmed grid is accepted outright — it doesn't need
