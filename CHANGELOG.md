@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.35.1 — 2026-10-09
+
+### Fixed
+
+- **Image descriptions, links and their targets can no longer break the Markdown.** An image's
+  alt text was written verbatim into `![alt](...)`: a description with a blank line ended the
+  paragraph and left the image as literal text plus a stray paragraph, and a `]` ended the alt
+  text early. Link text was written verbatim too, so a `]` ended the link and `*` or `_` styled
+  text the document did not style; a `"` in a link title ended the title. Alt text is now one
+  line with link-text syntax escaped; link text gets the same escaping as other text, and its
+  brackets and line breaks stay escaped even with `escape_special_chars` off; titles are
+  escaped. A link or image target with a parenthesis that does not balance, a trailing
+  backslash, a character reference or a line break now reads back as written. The batch and
+  streaming writers share the same code, from `unparser-shared` 0.5.
+
 ## 0.35.0 — 2026-10-09
 
 ### Added
