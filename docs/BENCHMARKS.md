@@ -15,19 +15,21 @@ Measured on **unpdf 0.36.0** (the published package) on 2026-10-09. Scores come 
 | TEDS | 0.755 | 42 |
 | MHS | 0.767 | 107 |
 
-### Compared with other engines (rank 7 of 18)
+### Compared with other engines (rank 9 of 20)
 
 Other engines' scores are the runs the benchmark repository itself publishes, cited as-is with their version and date, except the rows marked "measured here". Several of them run vision models on a GPU; this library reads the PDF text layer on a CPU.
 
-Rows marked "measured here" were converted with each engine's default Python API on a CPU (docling `DocumentConverter().convert(path).document.export_to_markdown()`, pymupdf4llm `pymupdf4llm.to_markdown(path)`, markitdown `MarkItDown().convert(path).text_content`; a document that fails to convert is scored as empty output) and scored with the same evaluator and dataset revision as this page.
+Rows marked "measured here" were converted on a CPU with each engine's Python API, as called here (docling `DocumentConverter().convert(path).document.export_to_markdown()`, liteparse `LiteParse(output_format="markdown", ocr_enabled=False).parse(path).text`, pdf-inspector `pdf_inspector.process_pdf(path).markdown`, pymupdf4llm `pymupdf4llm.to_markdown(path)`, markitdown `MarkItDown().convert(path).text_content`; default options except OCR, which is off, since this page compares reading the text layer; a document that fails to convert is scored as empty output) and scored with the same evaluator and dataset revision as this page.
 
 | Engine | Version | Overall | NID | TEDS | MHS | Measured |
 |---|---|---|---|---|---|---|
 | opendataloader-hybrid | 2.2.1 | 0.907 | 0.934 | 0.928 | 0.821 | 2026-04-06 |
 | docling | 2.135.0 | 0.891 | 0.905 | 0.925 | 0.830 | 2026-10-08 (measured here) |
 | nutrient | 1.0.1 | 0.885 | 0.925 | 0.708 | 0.819 | 2026-04-30 |
+| liteparse | 2.15.1 | 0.883 | 0.912 | 0.818 | 0.821 | 2026-10-09 (measured here) |
 | docling | 2.84.0 | 0.882 | 0.898 | 0.887 | 0.824 | 2026-04-06 |
 | opendataloader-hybrid-hydrogen | 2.2.1 | 0.877 | 0.926 | 0.796 | 0.769 | 2026-04-08 |
+| pdf-inspector | 1.25.2 | 0.870 | 0.911 | 0.800 | 0.777 | 2026-10-09 (measured here) |
 | pymupdf4llm * | 1.28.2 | 0.869 | 0.907 | 0.790 | 0.783 | 2026-10-08 (measured here) |
 | **unpdf** | 0.36.0 | 0.863 | 0.910 | 0.755 | 0.767 | 2026-10-09 |
 | marker | 1.10.1 | 0.861 | 0.890 | 0.808 | 0.796 | 2026-01-06 |
@@ -104,4 +106,4 @@ EOF
 python -m olmocr.bench.benchmark --dir olmOCR-bench/bench_data --candidate unpdf --bootstrap_samples 200
 ```
 
-<!-- benchmark-data {"benchmarks": ["odl", "olmocr"], "odl": {"mhs": 0.767, "nid": 0.91, "overall": 0.863, "teds": 0.755}, "olmocr": {"categories": {"arxiv_math": 0.6, "baseline": 87.3, "headers_footers": 45.5, "long_tiny_text": 26.2, "multi_column": 61.0, "old_scans": 13.3, "old_scans_math": 0.0, "table_tests": 43.7}, "mean": 34.7}, "rank": [7, 18], "version": "0.36.0"} -->
+<!-- benchmark-data {"benchmarks": ["odl", "olmocr"], "odl": {"mhs": 0.767, "nid": 0.91, "overall": 0.863, "teds": 0.755}, "olmocr": {"categories": {"arxiv_math": 0.6, "baseline": 87.3, "headers_footers": 45.5, "long_tiny_text": 26.2, "multi_column": 61.0, "old_scans": 13.3, "old_scans_math": 0.0, "table_tests": 43.7}, "mean": 34.7}, "rank": [9, 20], "version": "0.36.0"} -->
