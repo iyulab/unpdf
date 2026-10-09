@@ -1262,10 +1262,12 @@ cargo add unpdf --features ffi,async
 ## Benchmarks
 
 <!-- benchmarks:start -->
-On [opendataloader-bench](https://github.com/opendataloader-project/opendataloader-bench) (200 PDFs, official evaluator), unpdf 0.36.0 scores **0.863** overall (NID 0.910 · TEDS 0.755 · MHS 0.767), rank 9 of 20 engine runs compared (the benchmark's own runs plus engines re-measured here). Details, olmOCR-Bench results and how to reproduce: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+On [opendataloader-bench](https://github.com/opendataloader-project/opendataloader-bench) (200 PDFs, official evaluator), unpdf 0.36.0 scores **0.863** overall (NID 0.910 · TEDS 0.755 · MHS 0.767), rank 9 of 20 engine runs compared (the benchmark's own runs plus engines re-measured here), at 18.8 ms per page (AMD Ryzen 5 3500U with Radeon Vega Mobile Gfx (8 threads)). Details, speed against the engines measured on the same machine, olmOCR-Bench results and how to reproduce: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 <!-- benchmarks:end -->
 
 ## Performance
+
+Measured speed (ms per page, on a named machine, next to the engines measured on the same machine) is in [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
 - Custom zero-dependency PDF parser (no external C libraries)
 - Parallel page processing with Rayon
