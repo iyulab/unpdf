@@ -31,11 +31,12 @@ typedef struct UnpdfDocument UnpdfDocument;
 
 /* Flags for unpdf_to_markdown / unpdf_page_to_markdown. */
 #define UNPDF_FLAG_FRONTMATTER       1u
-#define UNPDF_FLAG_ESCAPE_SPECIAL    2u
+#define UNPDF_FLAG_ESCAPE_SPECIAL    2u  /* Accepted, no effect: escaping is the default (see NO_ESCAPE) */
 /* Bit 4 is retired: it named a paragraph-spacing option that never reached the
    renderer. Retired bits are not reused; passing it yields the default rendering. */
 #define UNPDF_FLAG_PAGE_MARKERS      8u
 #define UNPDF_FLAG_REFINE           16u  /* Apply the shape-refinement pass */
+#define UNPDF_FLAG_NO_ESCAPE        32u  /* Do not escape special Markdown characters */
 
 /* Format selector for unpdf_to_json. */
 #define UNPDF_JSON_PRETTY  0

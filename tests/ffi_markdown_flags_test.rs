@@ -11,10 +11,11 @@ mod common;
 use std::ffi::CStr;
 use std::os::raw::c_char;
 
-use common::{mixed_pdf, text_pdf};
+use common::{mixed_pdf, standard_fonts_line_pdf, text_pdf};
 use unpdf::ffi::{
     unpdf_free_document, unpdf_free_string, unpdf_page_to_markdown, unpdf_parse_bytes,
-    unpdf_to_markdown, UNPDF_FLAG_ESCAPE_SPECIAL, UNPDF_FLAG_FRONTMATTER, UNPDF_FLAG_PAGE_MARKERS,
+    unpdf_to_markdown, UNPDF_FLAG_ESCAPE_SPECIAL, UNPDF_FLAG_FRONTMATTER, UNPDF_FLAG_NO_ESCAPE,
+    UNPDF_FLAG_PAGE_MARKERS,
 };
 
 unsafe fn take_string(ptr: *mut c_char) -> String {
@@ -85,6 +86,25 @@ fn flags_do_not_interfere_with_each_other() {
         assert!(both.starts_with("---"), "got {both:?}");
         assert!(both.contains("<!-- page 1 -->"), "got {both:?}");
     }
+}
+
+/// No flags means the library's defaults, and escaping is one of them; only
+/// `UNPDF_FLAG_NO_ESCAPE` turns it off. The old escape bit is accepted and changes nothing —
+/// it used to be the only knob, and it could not turn escaping off.
+#[test]
+fn escaping_is_the_default_and_no_escape_turns_it_off() {
+    let bytes = standard_fonts_line_pdf(&[("Helvetica", "see [x] and a*b*c")]);
+    unsafe {
+        let default = markdown(&bytes, 0);
+        assert!(default.contains(r"see \[x\] and a\*b\*c"), "{default}");
+        assert_eq!(markdown(&bytes, UNPDF_FLAG_ESCAPE_SPECIAL), default);
+        let plain = markdown(&bytes, UNPDF_FLAG_NO_ESCAPE);
+        assert!(plain.contains("see [x] and a*b*c"), "{plain}");
+    }
+    assert_eq!(
+        UNPDF_FLAG_NO_ESCAPE, 32,
+        "flag values are part of the C ABI"
+    );
 }
 
 /// Bit 4 named a paragraph-spacing option that never reached the renderer. It is retired

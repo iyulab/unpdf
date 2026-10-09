@@ -4,6 +4,13 @@
 
 ### Changed
 
+- **Escaping can be turned off from C, C# and Python.** Escaping special Markdown characters
+  is the default, and `UNPDF_FLAG_ESCAPE_SPECIAL` only ever asked for what was already on —
+  so C#'s `EscapeSpecialChars = false` (its default) changed nothing. A new
+  `UNPDF_FLAG_NO_ESCAPE` (32) turns escaping off; no flags means the library's defaults.
+  `UNPDF_FLAG_ESCAPE_SPECIAL` is accepted and has no effect, and its bit is not reused.
+  C#'s `EscapeSpecialChars` now defaults to `true`; Python takes the flag in `to_markdown(flags=...)`; setting it to `false` sends the new flag.
+
 - Requires `unparser-shared` 0.6.
 
 ## 0.35.1 — 2026-10-09

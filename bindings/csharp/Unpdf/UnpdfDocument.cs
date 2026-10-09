@@ -16,9 +16,10 @@ public class MarkdownOptions
     public bool IncludeFrontmatter { get; set; } = false;
 
     /// <summary>
-    /// Escape special markdown characters.
+    /// Escape special markdown characters, so text that reads as Markdown syntax stays text.
+    /// Default: <see langword="true"/>, as in the Rust API.
     /// </summary>
-    public bool EscapeSpecialChars { get; set; } = false;
+    public bool EscapeSpecialChars { get; set; } = true;
 
     /// <summary>
     /// Mark each page boundary with an HTML comment (<c>&lt;!-- page N --&gt;</c>).
@@ -36,7 +37,7 @@ public class MarkdownOptions
     {
         int flags = 0;
         if (IncludeFrontmatter) flags |= NativeMethods.UNPDF_FLAG_FRONTMATTER;
-        if (EscapeSpecialChars) flags |= NativeMethods.UNPDF_FLAG_ESCAPE_SPECIAL;
+        if (!EscapeSpecialChars) flags |= NativeMethods.UNPDF_FLAG_NO_ESCAPE;
         if (PageMarkers) flags |= NativeMethods.UNPDF_FLAG_PAGE_MARKERS;
         if (Refine) flags |= NativeMethods.UNPDF_FLAG_REFINE;
         return flags;

@@ -47,11 +47,13 @@ internal static class NativeMethods
 
     // Flags for markdown rendering
     public const int UNPDF_FLAG_FRONTMATTER = 1;
+    // Accepted, no effect: escaping is the default. Turn it off with UNPDF_FLAG_NO_ESCAPE.
     public const int UNPDF_FLAG_ESCAPE_SPECIAL = 2;
     // Bit 4 is retired: it named a paragraph-spacing option that never reached the
     // renderer. Retired bits are not reused.
     public const int UNPDF_FLAG_PAGE_MARKERS = 8;
     public const int UNPDF_FLAG_REFINE = 16;
+    public const int UNPDF_FLAG_NO_ESCAPE = 32;
 
     // JSON format options
     public const int UNPDF_JSON_PRETTY = 0;

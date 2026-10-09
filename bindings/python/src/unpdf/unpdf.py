@@ -13,6 +13,7 @@ from ._native import (
     get_library,
     UNPDF_FLAG_ESCAPE_SPECIAL,
     UNPDF_FLAG_FRONTMATTER,
+    UNPDF_FLAG_NO_ESCAPE,
     UNPDF_FLAG_PAGE_MARKERS,
     UNPDF_FLAG_REFINE,
     UNPDF_JSON_COMPACT,
@@ -169,9 +170,11 @@ def to_markdown(
         source: Path to the PDF file (``str`` or ``os.PathLike``), or the
             PDF's own bytes.
         flags: Bitwise OR of ``UNPDF_FLAG_FRONTMATTER``,
-            ``UNPDF_FLAG_ESCAPE_SPECIAL``, ``UNPDF_FLAG_PAGE_MARKERS`` and
-            ``UNPDF_FLAG_REFINE`` (optional). All are importable from
-            ``unpdf``.
+            ``UNPDF_FLAG_PAGE_MARKERS``, ``UNPDF_FLAG_REFINE`` and
+            ``UNPDF_FLAG_NO_ESCAPE`` (optional). All are importable from
+            ``unpdf``. Special Markdown characters are escaped unless
+            ``UNPDF_FLAG_NO_ESCAPE`` is set; ``UNPDF_FLAG_ESCAPE_SPECIAL`` is
+            accepted and has no effect.
         options: Parsing options — see :data:`ParseOptions`. ``None`` (the
             default) uses unpdf's own defaults.
 

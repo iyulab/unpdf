@@ -67,7 +67,7 @@ Convert a PDF file to Markdown format. `flags` is a bitwise OR of:
 | Constant | Effect |
 |---|---|
 | `UNPDF_FLAG_FRONTMATTER` | Emit YAML frontmatter with document metadata |
-| `UNPDF_FLAG_ESCAPE_SPECIAL` | Escape Markdown special characters |
+| `UNPDF_FLAG_NO_ESCAPE` | Write text without escaping Markdown special characters (escaping is the default) |
 | `UNPDF_FLAG_PAGE_MARKERS` | Mark each page boundary with `<!-- page N -->` |
 
 ```python

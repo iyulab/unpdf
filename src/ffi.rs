@@ -114,12 +114,17 @@ unparser_shared::export_handle! {
 
 /// Flags for markdown rendering.
 pub const UNPDF_FLAG_FRONTMATTER: u32 = 1;
+/// Accepted and without effect: escaping special Markdown characters is the default, as it
+/// is for the Rust API. Turn it off with `UNPDF_FLAG_NO_ESCAPE`. The bit is not reused.
 pub const UNPDF_FLAG_ESCAPE_SPECIAL: u32 = 2;
 /// Bit `4` is retired. It named a paragraph-spacing option that never reached the
 /// renderer, so setting it did nothing. Retired bits are not reused: a caller still
 /// passing it gets the default rendering, which is what it always produced.
 pub const UNPDF_FLAG_PAGE_MARKERS: u32 = 8;
 pub const UNPDF_FLAG_REFINE: u32 = 16;
+/// Write text without escaping special Markdown characters. No flags means the library's
+/// defaults, and escaping is one of them.
+pub const UNPDF_FLAG_NO_ESCAPE: u32 = 32;
 
 /// Build render options from the flag bitmask.
 ///
@@ -130,8 +135,8 @@ fn render_options_from_flags(flags: u32) -> RenderOptions {
     if flags & UNPDF_FLAG_FRONTMATTER != 0 {
         options.include_frontmatter = true;
     }
-    if flags & UNPDF_FLAG_ESCAPE_SPECIAL != 0 {
-        options.escape_special_chars = true;
+    if flags & UNPDF_FLAG_NO_ESCAPE != 0 {
+        options.escape_special_chars = false;
     }
     if flags & UNPDF_FLAG_PAGE_MARKERS != 0 {
         options.page_markers = PageMarkerStyle::Comment;
