@@ -676,6 +676,48 @@ fn number_sits_over(number: &TextLine, title: &TextLine) -> bool {
     gap > 0.0 && gap <= number.font_size * 2.5 && aligned
 }
 
+/// Whether `lower` carries on the text of `upper` as the next line of one wrapped title, both
+/// set at `size`: stacked one line apart, short (the second line no longer than the first), and joined mid-phrase — the lower
+/// line opens in lowercase or with a bracket, or the upper one breaks after a comma, a hyphen
+/// or a word that cannot end a title ("of", "and", "the" …). Lines that each open a phrase of
+/// their own ("Cell one of a row" | "Cell two of a row") are siblings, not one title.
+fn wraps_into(upper: &str, upper_y: f32, lower: &str, lower_y: f32, size: f32) -> bool {
+    const OPEN_ENDED: [&str; 16] = [
+        "a", "an", "and", "as", "at", "by", "for", "from", "in", "of", "on", "or", "the", "to",
+        "with", "&",
+    ];
+    let gap = upper_y - lower_y;
+    let stacked = gap >= size * 0.6 && gap <= size * 1.8;
+    let visible = |s: &str| s.chars().filter(|c| !c.is_whitespace()).count();
+    // A title wraps short and its second line runs no longer than its first; a body line that
+    // happens to start in lowercase under a long line is a paragraph going on.
+    let short = visible(upper) <= 70 && visible(lower) <= visible(upper);
+    let lower_continues = lower
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_lowercase() || c == '(');
+    let upper_open = upper.ends_with(',')
+        || upper.ends_with('-')
+        || upper
+            .rsplit(char::is_whitespace)
+            .next()
+            .is_some_and(|w| OPEN_ENDED.contains(&w.to_lowercase().as_str()));
+    stacked && short && (lower_continues || upper_open)
+}
+
+/// Whether a section number set as a line of its own sits beside `title`, on the same
+/// baseline and just to its left ("3." | "RECOLLECTION OF NATIONAL INITIATIVES").
+fn number_sits_beside(number: &TextLine, title: &TextLine) -> bool {
+    let right = number
+        .spans
+        .iter()
+        .map(|s| s.x + s.width)
+        .fold(number.x, f32::max);
+    (number.y - title.y).abs() <= number.font_size * 0.5
+        && number.x < title.x
+        && title.x - right <= number.font_size * 3.0
+}
+
 fn section_number_depth(text: &str) -> Option<usize> {
     let text = text.trim();
     let (number, rest) = text.split_once(char::is_whitespace)?;
@@ -1586,6 +1628,9 @@ impl<'a> LayoutAnalyzer<'a> {
         let sizes: Vec<f32> = lines.iter().map(|l| l.font_size).collect();
         // Whether each line is mostly bold.
         let has_bold: Vec<bool> = lines.iter().map(TextLine::is_bold).collect();
+        // Each line's text and baseline, for telling a wrapped title from a run of siblings.
+        let texts: Vec<String> = lines.iter().map(|l| l.text().trim().to_string()).collect();
+        let ys: Vec<f32> = lines.iter().map(|l| l.y).collect();
         let body_size = font_stats.body_size;
 
         for (i, line) in lines.iter_mut().enumerate() {
@@ -1652,16 +1697,23 @@ impl<'a> LayoutAnalyzer<'a> {
             // keeps genuinely large headings that happen to be adjacent to another. Only
             // applies to size-based headings: a style-based header shares the body size with
             // its neighbours by definition, so the check would always suppress it.
+            // Two kinds of same-size neighbour are not siblings: a section number set as a line
+            // of its own beside or above its title ("3." | "RECOLLECTION OF …"), and the other
+            // half of a title wrapped over two lines ("… balance of wood pellets and" |
+            // "structure in Japan").
             if from_size {
-                let prev_size = if i > 0 { Some(sizes[i - 1]) } else { None };
-                let next_size = if i + 1 < sizes.len() {
-                    Some(sizes[i + 1])
-                } else {
-                    None
-                };
                 let same = |a: f32, b: f32| (a - b).abs() < 0.5;
-                let matches_prev = prev_size.is_some_and(|p| same(p, line.font_size));
-                let matches_next = next_size.is_some_and(|n| same(n, line.font_size));
+                let sibling = |j: usize| {
+                    same(sizes[j], line.font_size)
+                        && !is_bare_section_number(&texts[j])
+                        && !(if j < i {
+                            wraps_into(&texts[j], ys[j], trimmed, line.y, line.font_size)
+                        } else {
+                            wraps_into(trimmed, line.y, &texts[j], ys[j], line.font_size)
+                        })
+                };
+                let matches_prev = i > 0 && sibling(i - 1);
+                let matches_next = i + 1 < sizes.len() && sibling(i + 1);
                 if (matches_prev || matches_next) && line.font_size < body_size + 6.0 {
                     continue;
                 }
@@ -1682,7 +1734,7 @@ impl<'a> LayoutAnalyzer<'a> {
                 && title.is_heading
                 && is_bare_section_number(&number.text())
                 && number.font_size >= title.font_size - 0.5
-                && number_sits_over(number, title)
+                && (number_sits_over(number, title) || number_sits_beside(number, title))
             {
                 let own = font_stats.get_heading_level(number.font_size, number.is_bold());
                 number.is_heading = true;
@@ -3254,6 +3306,70 @@ mod tests {
             !result[1].is_heading && !result[2].is_heading,
             "16pt is under body + 6.0, so a same-size neighbour suppresses both"
         );
+    }
+
+    /// A title wrapped over two lines is one heading, not two siblings: the second line opens
+    /// in lowercase or a bracket, or the first breaks after a word no title ends on.
+    #[test]
+    fn test_detect_headings_keeps_a_title_wrapped_over_two_lines() {
+        let stats = body_12pt_stats(&[16.0]);
+        for (first, second) in [
+            ("Observations from the Spitzer Space Telescope", "(SST)."),
+            ("Balance of wood pellets and", "Cost Structure"),
+            ("Supply and demand of wood", "pellets in Japan"),
+        ] {
+            let lines = vec![
+                line_at("Body text before.", 120.0, 12.0, "Helvetica"),
+                line_at(first, 100.0, 16.0, "Helvetica"),
+                line_at(second, 82.0, 16.0, "Helvetica"),
+                line_at("Body text after.", 60.0, 12.0, "Helvetica"),
+            ];
+            let result = LayoutAnalyzer::detect_headings(&stats, lines);
+            assert!(
+                result[1].is_heading && result[2].is_heading,
+                "{first} / {second}"
+            );
+        }
+    }
+
+    /// A long line over a lowercase one is a paragraph going on, not a wrapped title — and a
+    /// second line longer than the first is not how a title wraps.
+    #[test]
+    fn test_detect_headings_still_suppresses_lines_that_do_not_wrap_like_a_title() {
+        let stats = body_12pt_stats(&[16.0]);
+        for (first, second) in [
+            (
+                // Two columns read as one line: a heading on the left, body text on the right.
+                "6.2. Expectations for Re-Hiring Employees they had no plans to re-hire and another 36% said",
+                "they did not know whether they would re-hire",
+            ),
+            ("Short and", "a second line that runs on much longer than the first"),
+        ] {
+            let lines = vec![
+                line_at(first, 100.0, 16.0, "Helvetica"),
+                line_at(second, 82.0, 16.0, "Helvetica"),
+            ];
+            let result = LayoutAnalyzer::detect_headings(&stats, lines);
+            assert!(!result[0].is_heading && !result[1].is_heading, "{first} / {second}");
+        }
+    }
+
+    /// A section number set as a line of its own is not a same-size sibling of its title.
+    #[test]
+    fn test_detect_headings_does_not_let_a_bare_section_number_suppress_its_title() {
+        let stats = body_12pt_stats(&[16.0]);
+        let lines = vec![
+            line_at("3.", 101.0, 16.0, "Helvetica"),
+            line_at(
+                "RECOLLECTION OF NATIONAL INITIATIVES",
+                100.0,
+                16.0,
+                "Helvetica",
+            ),
+            line_at("Body text.", 80.0, 12.0, "Helvetica"),
+        ];
+        let result = LayoutAnalyzer::detect_headings(&stats, lines);
+        assert!(result[1].is_heading);
     }
 
     /// The suppression above has an escape hatch: a line far enough above body size is a

@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A heading wrapped over two lines stays a heading.** A line set larger than the body was not
+  taken for a heading when a line of the same size sat next to it — the rule that keeps table
+  cells and lists set large from becoming headings. A title broken across two lines ("… balance
+  of wood pellets and" / "structure in Japan", "… Space Telescope" / "(SST).") and a title with
+  its section number set as a separate line therefore came out as plain text. Lines that
+  continue one another like a wrapped title — the second opening in lowercase or a bracket, or
+  the first breaking after a word such as "and" or "of", the second no longer than the first —
+  are no longer counted as siblings, and a section number set beside its title joins it.
+
 ## 0.36.0 — 2026-10-09
 
 ### Added
