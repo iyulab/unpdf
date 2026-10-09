@@ -22,8 +22,6 @@ jobs:
     with:
       package-name: unpdf
       version: ${{ inputs.version }}
-      cli-musl: true
-      ffi-archives: true
       npm-readme: bindings/wasm/README.md
       csharp-project-name: Unpdf
       nuget-staging-mode: flat
