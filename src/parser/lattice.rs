@@ -632,12 +632,10 @@ mod tests {
             v(150.0, 240.0, 300.0),
             v(250.0, 240.0, 300.0),
         ];
-        for edge in [h(270.0, 50.0, 250.0)] {
-            lines.push(GraphicsLine {
-                ruled: false,
-                ..edge
-            });
-        }
+        lines.push(GraphicsLine {
+            ruled: false,
+            ..h(270.0, 50.0, 250.0)
+        });
         let grids = infer_grids(&lines, &LatticeConfig::default());
         assert_eq!(grids[0].row_count(), 2, "{:?}", grids[0].row_bounds);
     }
