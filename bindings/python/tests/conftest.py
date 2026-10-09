@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import platform
 import sys
@@ -30,12 +31,14 @@ def _built_native_library_path() -> Path:
 
 
 def _configure_python_path() -> None:
-    # Only prepend the source tree to sys.path for local development where
-    # the caller has also built the native library at target/release. In
-    # CI's test-python job, the installed wheel bundles the native library
-    # under its own package dir and must not be shadowed by a bare source
-    # tree (which has no `lib/` populated in a fresh checkout).
-    if not _built_native_library_path().exists():
+    # Prepend the source tree to sys.path for local development: the caller has
+    # built the native library at target/release, or points UNPDF_LIB_PATH at one
+    # built elsewhere. Without the second signal, a machine that also has a
+    # published unpdf wheel installed tests that wheel's Python code against the new
+    # native. In CI's test-python job neither holds: the installed wheel bundles the
+    # native library under its own package dir and must not be shadowed by a bare
+    # source tree (which has no `lib/` populated in a fresh checkout).
+    if not (_built_native_library_path().exists() or os.environ.get("UNPDF_LIB_PATH")):
         return
     python_src = str(_python_src_dir())
     if python_src not in sys.path:
@@ -56,8 +59,13 @@ def pytest_configure() -> None:
     _configure_native_library_path()
 
 
-def pytest_report_header() -> str:
+def pytest_report_header() -> list[str]:
     configured_path = os.environ.get("UNPDF_LIB_PATH")
     if configured_path:
-        return f"UNPDF_LIB_PATH={configured_path}"
-    return f"UNPDF_LIB_PATH not set (expected build output: {_built_native_library_path()})"
+        native = f"UNPDF_LIB_PATH={configured_path}"
+    else:
+        native = f"UNPDF_LIB_PATH not set (expected build output: {_built_native_library_path()})"
+    # Which Python code is under test: the source tree, or an installed wheel.
+    spec = importlib.util.find_spec("unpdf")
+    package = f"unpdf package: {spec.origin if spec else 'not importable'}"
+    return [native, package]
