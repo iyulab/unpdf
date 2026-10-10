@@ -886,7 +886,7 @@ fn extract_page_with_tables_fn(
         if !remaining_spans.is_empty() {
             let a = &mut *analyzer;
             for span in &remaining_spans {
-                a.font_stats_mut().add_size(span.font_size);
+                a.font_stats_mut().add_text(span.font_size, &span.text);
             }
             a.font_stats_mut().analyze();
 

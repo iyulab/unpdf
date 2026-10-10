@@ -16,6 +16,16 @@
   headings; with a table taken out of the text, the titles above and below it became
   neighbours and both lost their heading. Lines on either side of a table are no longer taken
   for neighbours.
+- **A table whose cells wrap is one table, a row per row.** Without rules, two columns of
+  wrapped cells side by side (an explanation and a benefit, each several lines) were read as two
+  columns of running text: the table was split between them, or dropped as a two-column page,
+  and each text line became a row of its own. When a header puts a short label over every column
+  and the columns begin their cells on shared rows, the region is now one table, and the lines
+  of each row are joined into its cells.
+- **The body size is the size most text is set in.** Headings are measured against the body
+  size, which was the size the most text pieces were set in — so a chart's many small labels,
+  or the one or two titles left beside a table that holds the rest of the page, passed for the
+  body. Sizes are now counted by characters.
 
 ## 0.37.0 — 2026-10-10
 

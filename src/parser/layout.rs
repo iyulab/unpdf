@@ -982,8 +982,23 @@ pub struct FontStatistics {
 impl FontStatistics {
     /// Add a font size observation.
     pub fn add_size(&mut self, size: f32) {
+        self.add_weighted(size, 1);
+    }
+
+    /// Add `text` set at `size`, counted by its characters: the body size is the size most
+    /// of the text is set in. Counted by span, it would be whatever size a producer drew in
+    /// the most pieces — and on a page whose running text sits in a table, a heading or two
+    /// left outside it would pass for the body.
+    pub fn add_text(&mut self, size: f32, text: &str) {
+        let chars = text.chars().filter(|c| !c.is_whitespace()).count();
+        if chars > 0 {
+            self.add_weighted(size, chars);
+        }
+    }
+
+    fn add_weighted(&mut self, size: f32, weight: usize) {
         let key = (size * 10.0) as i32; // Round to 0.1 precision
-        *self.size_histogram.entry(key).or_insert(0) += 1;
+        *self.size_histogram.entry(key).or_insert(0) += weight;
     }
 
     /// Calculate body size and heading sizes.
@@ -1238,7 +1253,7 @@ impl<'a> LayoutAnalyzer<'a> {
 
         // Update font statistics
         for span in &spans {
-            self.font_stats.add_size(span.font_size);
+            self.font_stats.add_text(span.font_size, &span.text);
         }
         self.font_stats.analyze();
 

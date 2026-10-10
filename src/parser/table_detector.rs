@@ -275,8 +275,15 @@ impl TableDetector {
             // up — the lines of one column fall between those of the other, a margin tab's
             // letters fall beside them, and a justified line's widened word gaps pass for cell
             // boundaries. When the region reaches across a boundary reading order splits flows
-            // at, each side is searched for tables of its own.
-            if let Some(boundary) = column_context.boundary_straddled_by(&table_rows, &spans) {
+            // at, each side is searched for tables of its own — unless its columns begin their
+            // cells on shared rows ([`wrapped_row_starts`]): a table whose cells wrap reads as
+            // two flows where two of its columns of wrapped text meet, but it is one grid.
+            let table_columns = self.detect_columns(&table_rows);
+            let wrapped = wrapped_row_starts(&table_rows, &table_columns);
+            if let Some(boundary) = column_context
+                .boundary_straddled_by(&table_rows, &spans)
+                .filter(|_| wrapped.is_none())
+            {
                 log::debug!(
                     "TableDetector: region [{start_row}..{end_row}] reaches across a reading boundary at x={boundary:.0} — detecting each side on its own"
                 );
@@ -321,8 +328,11 @@ impl TableDetector {
                 .max_by(|a, b| a.partial_cmp(b).unwrap())
                 .unwrap_or(0.0);
 
-            // Re-detect columns for this specific table region
-            let table_columns = self.detect_columns(&table_rows);
+            // The rows of wrapped cells, each one table row rather than one line.
+            let table_rows = match &wrapped {
+                Some(starts) => join_wrapped_rows(table_rows, starts),
+                None => table_rows,
+            };
 
             if table_columns.len() >= self.config.min_columns {
                 // Reject tables with too many columns (likely word-level splitting)
@@ -345,7 +355,9 @@ impl TableDetector {
                 // A 2-column document layout has many rows and each row's text
                 // approaches the full column width, whereas a 2-column table
                 // has shorter cell content.
-                if Self::is_multicolumn_layout(&table_rows, &table_columns, right_x) {
+                if wrapped.is_none()
+                    && Self::is_multicolumn_layout(&table_rows, &table_columns, right_x)
+                {
                     log::debug!("TableDetector: skipping region — looks like 2-column page layout");
                     continue;
                 }
@@ -1324,6 +1336,206 @@ pub(crate) fn group_into_rows(spans: &[TextSpan], y_tolerance_factor: f32) -> Ve
     }
 
     attach_script_rows(rows)
+}
+
+/// How much wider than a column's line pitch the step to a line must be for the line to
+/// begin a new cell rather than continue the one above.
+const CELL_BREAK_PITCH: f32 = 1.25;
+/// Fewest cell starts a column needs before its starts say anything.
+const MIN_CELL_STARTS: usize = 3;
+/// Most words a column's label in a header row holds.
+const HEADER_MAX_WORDS: usize = 4;
+
+/// A column's lines — the indices of the rows holding text in it — and where it begins its
+/// cells: the lines that stand clear of the line above them.
+struct ColumnLines {
+    lines: Vec<usize>,
+    starts: Vec<usize>,
+    pitch: f32,
+}
+
+/// The lines of the column whose spans start from `lo` up to `hi`, and its cell starts.
+///
+/// The pitch is the lower quartile of the steps between the column's lines — its line
+/// spacing, which the lines within a cell keep; the steps between cells are wider, and a
+/// column whose cells span several rows has few of them. A line further than
+/// [`CELL_BREAK_PITCH`] pitches below the one above starts a cell, and so does the first.
+fn cell_starts(rows: &[TableRowData], lo: f32, hi: f32) -> ColumnLines {
+    let lines: Vec<usize> = (0..rows.len())
+        .filter(|&i| rows[i].spans.iter().any(|s| s.x >= lo && s.x < hi))
+        .collect();
+    let mut steps: Vec<f32> = lines
+        .windows(2)
+        .map(|w| (rows[w[0]].y - rows[w[1]].y).abs())
+        .collect();
+    steps.sort_by(f32::total_cmp);
+    let pitch = steps.get(steps.len() / 4).copied().unwrap_or(0.0);
+    let starts = lines
+        .iter()
+        .enumerate()
+        .filter(|&(k, &i)| {
+            k == 0 || (rows[lines[k - 1]].y - rows[i].y).abs() > pitch * CELL_BREAK_PITCH
+        })
+        .map(|(_, &i)| i)
+        .collect();
+    ColumnLines {
+        lines,
+        starts,
+        pitch,
+    }
+}
+
+/// Where the rows of a table whose cells wrap begin, as indices into `rows` (one per text
+/// line): `None` when the region shows no such rows.
+///
+/// A table's cells can hold wrapped text, and a stream of text lines then holds each table
+/// row as several lines — with the label columns' few words on the first and the wrapped
+/// cells running on below. Two columns of such cells look like two columns of running text
+/// set side by side, each filling its width line after line; what tells them apart is that a
+/// table row begins a cell in every column on its line. Where a cell starts in one column,
+/// after the space that parts it from the cell above, a cell starts beside it in another —
+/// paragraphs of two text columns start wherever each column's text runs out.
+///
+/// So the region's rows begin where at least two columns start cells within a line pitch of
+/// each other, given that two columns each show at least [`MIN_CELL_STARTS`] starts and two
+/// thirds of each one's starts are shared with the other. And the lines in between must be
+/// what wrapped cells leave — most of them hold text in only some of the columns. A table
+/// whose rows are one line each, set in groups with a space between, fills every column on
+/// every line; its groups are not rows. Columns whose lines are evenly spaced — prose set
+/// solid, a list of one-line entries — show no starts and say nothing.
+///
+/// Starts line up by chance too, where they come every line or two: two columns of
+/// references, an entry's few lines apart from the next, share most of theirs. So the
+/// region must also open as a table of wrapped cells does — with a header: its first line
+/// sets a short label (at most [`HEADER_MAX_WORDS`] words) over every column, apart from
+/// the cells below. Two flows of text open with lines of it.
+fn wrapped_row_starts(rows: &[TableRowData], columns: &[f32]) -> Option<Vec<usize>> {
+    const EDGE_SLACK: f32 = 5.0;
+    let per_column: Vec<ColumnLines> = (0..columns.len())
+        .map(|k| {
+            let lo = columns[k] - EDGE_SLACK;
+            let hi = columns.get(k + 1).map_or(f32::MAX, |&c| c - EDGE_SLACK);
+            cell_starts(rows, lo, hi)
+        })
+        .collect();
+    let telling: Vec<usize> = (0..columns.len())
+        .filter(|&k| per_column[k].starts.len() >= MIN_CELL_STARTS)
+        .collect();
+    if telling.is_empty() {
+        return None;
+    }
+    // Starts of one row stand within a line of each other (a cell may be centred in its
+    // row). The line is the tightest column's: a column that never wraps steps a row at a
+    // time, and its step would reach from one row to the next.
+    let reach = telling
+        .iter()
+        .map(|&k| per_column[k].pitch)
+        .fold(f32::MAX, f32::min);
+
+    // The header: a short label over every column on the first line, a line and more above
+    // the column's next.
+    let header = &rows[0];
+    let labels_every_column = per_column.iter().enumerate().all(|(k, column)| {
+        let lo = columns[k] - EDGE_SLACK;
+        let hi = columns.get(k + 1).map_or(f32::MAX, |&c| c - EDGE_SLACK);
+        let words: usize = header
+            .spans
+            .iter()
+            .filter(|s| s.x >= lo && s.x < hi)
+            .map(|s| s.text.split_whitespace().count())
+            .sum();
+        let apart = column
+            .lines
+            .get(1)
+            .is_none_or(|&next| (header.y - rows[next].y).abs() > reach * CELL_BREAK_PITCH);
+        column.lines.first() == Some(&0) && apart && words <= HEADER_MAX_WORDS
+    });
+    if !labels_every_column {
+        return None;
+    }
+    let near = |a: usize, b: usize| (rows[a].y - rows[b].y).abs() <= reach;
+    let shared = |from: &[usize], to: &[usize]| {
+        let matched = from
+            .iter()
+            .filter(|&&i| to.iter().any(|&j| near(i, j)))
+            .count();
+        matched * 3 >= from.len() * 2
+    };
+    let evidence = telling.iter().enumerate().any(|(n, &a)| {
+        telling[n + 1..].iter().any(|&b| {
+            shared(&per_column[a].starts, &per_column[b].starts)
+                && shared(&per_column[b].starts, &per_column[a].starts)
+        })
+    });
+    if !evidence {
+        return None;
+    }
+
+    // Cluster every column's starts top to bottom; a cluster two columns share begins a row.
+    let mut all: Vec<(usize, usize)> = per_column
+        .iter()
+        .enumerate()
+        .flat_map(|(k, column)| column.starts.iter().map(move |&i| (i, k)))
+        .collect();
+    all.sort_unstable();
+    let mut row_starts = vec![0];
+    let mut cluster: Vec<(usize, usize)> = Vec::new();
+    let close = |cluster: &mut Vec<(usize, usize)>, row_starts: &mut Vec<usize>| {
+        let mut cols: Vec<usize> = cluster.iter().map(|&(_, k)| k).collect();
+        cols.sort_unstable();
+        cols.dedup();
+        if cols.len() >= 2 && cluster[0].0 > *row_starts.last().unwrap_or(&0) {
+            row_starts.push(cluster[0].0);
+        }
+        cluster.clear();
+    };
+    for start in all {
+        if let Some(&(first, _)) = cluster.first() {
+            if !near(first, start.0) {
+                close(&mut cluster, &mut row_starts);
+            }
+        }
+        cluster.push(start);
+    }
+    if !cluster.is_empty() {
+        close(&mut cluster, &mut row_starts);
+    }
+
+    let occupied = |row: &TableRowData| {
+        let mut cols: Vec<usize> = row
+            .spans
+            .iter()
+            .filter_map(|s| columns.iter().rposition(|&c| s.x >= c - EDGE_SLACK))
+            .collect();
+        cols.sort_unstable();
+        cols.dedup();
+        cols.len()
+    };
+    let continuations: Vec<&TableRowData> = (0..rows.len())
+        .filter(|i| !row_starts.contains(i))
+        .map(|i| &rows[i])
+        .collect();
+    let partial = continuations
+        .iter()
+        .filter(|r| occupied(r) < columns.len())
+        .count();
+    (!continuations.is_empty() && partial * 3 >= continuations.len() * 2).then_some(row_starts)
+}
+
+/// `rows` (one per text line) joined into the table rows that begin at `starts`: each holds
+/// its lines' spans line by line, so a cell's text reads down its lines in order.
+fn join_wrapped_rows(rows: Vec<TableRowData>, starts: &[usize]) -> Vec<TableRowData> {
+    let mut joined: Vec<TableRowData> = Vec::with_capacity(starts.len());
+    for (i, row) in rows.into_iter().enumerate() {
+        match joined.last_mut() {
+            Some(last) if !starts.contains(&i) => {
+                last.spans.extend(row.spans);
+                last.sources.extend(row.sources);
+            }
+            _ => joined.push(row),
+        }
+    }
+    joined
 }
 
 /// How many runs of text a row holds once spans set a word space apart are joined.
@@ -2417,6 +2629,184 @@ mod tests {
         }
         let (tables, _) = detector.detect(spans);
         assert!(tables.is_empty(), "{tables:?}");
+    }
+
+    /// A table whose last two columns hold wrapped sentences: line by line they look like two
+    /// columns of running text side by side, but every row begins a cell in each column on
+    /// one line, so it is one grid — and each row is one table row, not one per line.
+    #[test]
+    fn a_table_of_wrapped_cells_is_one_grid_of_whole_rows() {
+        let detector = TableDetector::new();
+        let header = ["Stage", "Function", "Explanation", "Benefit"];
+        let xs = [72.0, 160.0, 250.0, 460.0];
+        let mut spans: Vec<TextSpan> = header
+            .iter()
+            .zip(xs)
+            .map(|(text, x)| measured(text, x, 700.0, 50.0))
+            .collect();
+        let body: [(&str, &str, &[&str], &[&str]); 4] = [
+            (
+                "1. Create",
+                "Projects",
+                &[
+                    "Select a document type to run the",
+                    "whole project setup at once.",
+                ],
+                &[
+                    "The person in charge proceeds from",
+                    "creation to deployment quickly.",
+                ],
+            ),
+            (
+                "2. Label",
+                "Storage",
+                &[
+                    "Upload raw data, browse it in a viewer",
+                    "and search it by image metadata and",
+                    "tags set on the image data.",
+                ],
+                &["Raw data for the pack is managed", "in one place."],
+            ),
+            (
+                "3. Train",
+                "Models",
+                &[
+                    "Compare the basic models chosen for",
+                    "each document and train them.",
+                ],
+                &[
+                    "Customers build and upgrade their",
+                    "own models suited to their needs",
+                    "without outside help.",
+                ],
+            ),
+            (
+                "4. Watch",
+                "Monitoring",
+                &[
+                    "Deployed pipelines are watched and",
+                    "issues reported to the customer.",
+                ],
+                &["Issues are found and answered early", "for each project."],
+            ),
+        ];
+        let mut y = 678.0;
+        for (stage, function, explanation, benefit) in body {
+            spans.push(measured(stage, xs[0], y, 50.0));
+            spans.push(measured(function, xs[1], y, 60.0));
+            for (k, line) in explanation.iter().enumerate() {
+                spans.push(measured(line, xs[2], y - k as f32 * 14.0, 190.0));
+            }
+            for (k, line) in benefit.iter().enumerate() {
+                spans.push(measured(line, xs[3], y - k as f32 * 14.0, 190.0));
+            }
+            let lines = explanation.len().max(benefit.len());
+            y -= (lines - 1) as f32 * 14.0 + 24.0;
+        }
+        let total = spans.len();
+        let (tables, remaining) = detector.detect(spans);
+        assert_eq!(tables.len(), 1, "{tables:?}");
+        assert!(remaining.is_empty(), "{remaining:?}");
+        let table = detector.to_table_model(&tables[0]);
+        assert_eq!(table.rows.len(), 5, "{table:?}");
+        assert_eq!(table.rows[0].cells.len(), 4);
+        assert_eq!(
+            table.rows[2].cells[2].plain_text(),
+            "Upload raw data, browse it in a viewer and search it by image metadata and tags set on the image data."
+        );
+        assert_eq!(
+            table.rows[3].cells[3].plain_text(),
+            "Customers build and upgrade their own models suited to their needs without outside help."
+        );
+        assert_eq!(
+            tables[0]
+                .rows
+                .iter()
+                .map(|r| r.sources.len())
+                .sum::<usize>(),
+            total
+        );
+    }
+
+    /// Two columns of references, an entry's lines and a space before the next: entries start
+    /// beside one another as a table's cells do, and their first line stands apart like a
+    /// header row — but it is no row of labels, and the two flows are not joined into one
+    /// grid.
+    #[test]
+    fn spaced_reference_columns_are_not_a_table_of_wrapped_cells() {
+        let detector = TableDetector::new();
+        let mut spans = Vec::new();
+        let mut y = 700.0;
+        for i in 0..9 {
+            spans.push(measured(
+                &format!("[{i}] Author A, Author B (2020) A study of the matter"),
+                72.0,
+                y,
+                210.0,
+            ));
+            // The first entries are one line each; the left ones after them run to two lines,
+            // some to three.
+            if i > 0 {
+                spans.push(measured(
+                    "in question. Journal of Things 12: 3-4.",
+                    72.0,
+                    y - 12.0,
+                    170.0,
+                ));
+            }
+            if i == 2 || i == 6 {
+                spans.push(measured("Second edition.", 72.0, y - 24.0, 80.0));
+            }
+            spans.push(measured(
+                &format!("[{}] Author C (2021) Another look, Proc. 7.", i + 9),
+                300.0,
+                y,
+                210.0,
+            ));
+            if i % 3 == 1 {
+                spans.push(measured(
+                    "and the same question again, pp. 1-9.",
+                    300.0,
+                    y - 12.0,
+                    170.0,
+                ));
+            }
+            y -= 40.0;
+        }
+        let rows = group_into_rows(&spans, 0.4);
+        let columns = detector.detect_columns(&rows);
+        assert_eq!(columns.len(), 2, "{columns:?}");
+        assert_eq!(wrapped_row_starts(&rows, &columns), None);
+    }
+
+    /// One-line rows set in groups with a space between them fill every column on every
+    /// line: the groups are spacing, not rows of wrapped cells, so no lines are joined.
+    #[test]
+    fn grouped_one_line_rows_are_not_joined() {
+        let detector = TableDetector::new();
+        let mut spans = vec![
+            measured("Region", 72.0, 700.0, 40.0),
+            measured("Sales", 200.0, 700.0, 30.0),
+            measured("Units", 320.0, 700.0, 30.0),
+        ];
+        let mut y = 680.0;
+        for group in 0..3 {
+            for row in 0..3 {
+                spans.push(measured(&format!("Area {group}{row}"), 72.0, y, 40.0));
+                spans.push(measured(
+                    &format!("{}", 100 + group * 10 + row),
+                    200.0,
+                    y,
+                    18.0,
+                ));
+                spans.push(measured(&format!("{}", 7 + row), 320.0, y, 6.0));
+                y -= 14.0;
+            }
+            y -= 10.0;
+        }
+        let (tables, _) = detector.detect(spans);
+        assert_eq!(tables.len(), 1, "{tables:?}");
+        assert_eq!(tables[0].rows.len(), 10);
     }
 
     /// A count column that happens to be sorted is still data when it descends.
