@@ -2,6 +2,7 @@
 
 use super::{Alignment, Paragraph};
 use serde::{Deserialize, Serialize};
+use unparser_shared::csv;
 
 /// A table structure.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -108,82 +109,18 @@ impl Table {
     /// The table as delimited text, like [`Table::to_csv`] with `delimiter` between fields
     /// (`'\t'` for TSV).
     pub fn to_delimited(&self, delimiter: char) -> String {
-        let mut out = String::new();
-        for record in self.grid() {
-            for (i, field) in record.iter().enumerate() {
-                if i > 0 {
-                    out.push(delimiter);
-                }
-                let quote = field.contains(delimiter)
-                    || field.contains('"')
-                    || field.contains('\n')
-                    || field.contains('\r');
-                if quote {
-                    out.push('"');
-                    out.push_str(&field.replace('"', "\"\""));
-                    out.push('"');
-                } else {
-                    out.push_str(field);
-                }
-            }
-            out.push_str("\r\n");
-        }
-        out
-    }
-
-    /// The table laid out on its grid: each merged cell's text at its top-left position, the
-    /// positions it covers empty, every row as wide as the widest.
-    fn grid(&self) -> Vec<Vec<String>> {
-        // Rows still covered, per column, by a cell merged down from a row above.
-        let mut covered: Vec<usize> = Vec::new();
-        let mut grid: Vec<Vec<String>> = Vec::new();
-        for row in &self.rows {
-            let mut record: Vec<String> = Vec::new();
-            let mut col = 0;
-            for cell in &row.cells {
-                skip_covered(&mut covered, &mut record, &mut col);
+        let rows = self.rows.iter().map(|row| {
+            row.cells.iter().map(|cell| {
                 let text = cell
                     .content
                     .iter()
                     .map(|p| p.plain_text())
                     .collect::<Vec<_>>()
                     .join("\n");
-                record.push(text);
-                let span = usize::from(cell.colspan.max(1));
-                record.extend(std::iter::repeat_n(String::new(), span - 1));
-                if covered.len() < col + span {
-                    covered.resize(col + span, 0);
-                }
-                for c in &mut covered[col..col + span] {
-                    *c = usize::from(cell.rowspan.max(1)) - 1;
-                }
-                col += span;
-            }
-            // Columns past the row's last cell that a cell above still covers.
-            while col < covered.len() {
-                if covered[col] > 0 {
-                    covered[col] -= 1;
-                }
-                record.push(String::new());
-                col += 1;
-            }
-            grid.push(record);
-        }
-        let width = grid.iter().map(Vec::len).max().unwrap_or(0);
-        for record in &mut grid {
-            record.resize(width, String::new());
-        }
-        grid
-    }
-}
-
-/// Pass the columns, from `col` on, that a cell merged down from a row above still covers,
-/// leaving each one empty in `record`.
-fn skip_covered(covered: &mut [usize], record: &mut Vec<String>, col: &mut usize) {
-    while covered.get(*col).is_some_and(|&n| n > 0) {
-        covered[*col] -= 1;
-        record.push(String::new());
-        *col += 1;
+                csv::Cell::new(text, u32::from(cell.rowspan), u32::from(cell.colspan))
+            })
+        });
+        csv::to_delimited(rows, delimiter)
     }
 }
 
