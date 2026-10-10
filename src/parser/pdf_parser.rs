@@ -760,6 +760,62 @@ fn low_confidence_row_text(row: &super::table_detector::TableRowData) -> String 
         .join("  ")
 }
 
+/// Each span's size and the characters it counts for in the body-size histogram.
+fn text_sizes(spans: &[super::layout::TextSpan]) -> Vec<(f32, usize)> {
+    spans
+        .iter()
+        .map(|s| {
+            (
+                s.font_size,
+                super::layout::FontStatistics::weight_of(&s.text),
+            )
+        })
+        .collect()
+}
+
+/// The fewest lines the text of one size must run to before it is a page's body.
+const BODY_MIN_LINES: usize = 3;
+
+/// The text a page with tables measures its body size by: the text beside the tables, when it
+/// has a body — its most used size runs to [`BODY_MIN_LINES`] lines or more — and otherwise
+/// the whole page's (`page_text`).
+///
+/// The body is running text, and a table's cells are not that: a paper's table set smaller
+/// than its paragraphs, with its notes and the figure captions around it, can hold more
+/// characters than the paragraphs do, and counted in it would make the paragraphs headings.
+/// But where tables hold all of a page's running text — a slide of one table under its title —
+/// what is left beside them is the title, and taken for the body it would be no heading; the
+/// tables' text is then the page's ordinary text.
+fn body_text_sizes(
+    beside: &[super::layout::TextSpan],
+    page_text: Vec<(f32, usize)>,
+) -> Vec<(f32, usize)> {
+    let key = |size: f32| (size * 10.0) as i32;
+    let mut chars: std::collections::BTreeMap<i32, usize> = std::collections::BTreeMap::new();
+    for s in beside {
+        *chars.entry(key(s.font_size)).or_insert(0) +=
+            super::layout::FontStatistics::weight_of(&s.text);
+    }
+    let lines = chars
+        .iter()
+        .max_by_key(|&(_, &n)| n)
+        .map_or(0, |(&body, _)| {
+            let mut baselines: Vec<i32> = beside
+                .iter()
+                .filter(|s| key(s.font_size) == body)
+                .map(|s| s.y.round() as i32)
+                .collect();
+            baselines.sort_unstable();
+            baselines.dedup();
+            baselines.len()
+        });
+    if lines >= BODY_MIN_LINES {
+        text_sizes(beside)
+    } else {
+        page_text
+    }
+}
+
 fn extract_page_with_tables_fn(
     analyzer: &mut super::layout::LayoutAnalyzer,
     page_num: u32,
@@ -773,6 +829,10 @@ fn extract_page_with_tables_fn(
     if spans.is_empty() {
         return Ok(vec![]);
     }
+
+    // The page's text, for the body size when the text beside its tables has no body of its
+    // own (see `body_text_sizes`).
+    let page_text: Vec<(f32, usize)> = text_sizes(&spans);
 
     // Both table detectors reason about where text starts and ends, so they must see
     // runs, not the fragments a producer happened to draw them in.
@@ -796,6 +856,7 @@ fn extract_page_with_tables_fn(
     let mut lattice_tables: Vec<(Extent, crate::model::Table)> = Vec::new();
     let mut lattice_consumed = std::collections::HashSet::new();
     for grid in &lattice_grids {
+        let grid = &super::lattice::with_header_above(grid, &spans);
         if let Some((table, consumed)) = super::lattice::build_table(grid, &spans) {
             let extent = Extent {
                 top: grid.top_y,
@@ -883,13 +944,12 @@ fn extract_page_with_tables_fn(
 
         // The text around the tables, in the reading order XY-Cut gave it.
         let mut text: Vec<(Extent, Element)> = Vec::new();
+        for (size, chars) in body_text_sizes(&remaining_spans, page_text) {
+            analyzer.font_stats_mut().add_chars(size, chars);
+        }
+        analyzer.font_stats_mut().analyze();
         if !remaining_spans.is_empty() {
             let a = &mut *analyzer;
-            for span in &remaining_spans {
-                a.font_stats_mut().add_text(span.font_size, &span.text);
-            }
-            a.font_stats_mut().analyze();
-
             let lines = a.group_spans_into_lines_pub(remaining_spans);
             let lines = a.detect_headings_around_pub(lines, &tables_at);
             let text_blocks = a.group_lines_into_blocks_pub(lines);

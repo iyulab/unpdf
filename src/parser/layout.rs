@@ -990,10 +990,19 @@ impl FontStatistics {
     /// the most pieces — and on a page whose running text sits in a table, a heading or two
     /// left outside it would pass for the body.
     pub fn add_text(&mut self, size: f32, text: &str) {
-        let chars = text.chars().filter(|c| !c.is_whitespace()).count();
+        self.add_chars(size, Self::weight_of(text));
+    }
+
+    /// Add `chars` characters set at `size` — see [`Self::add_text`].
+    pub fn add_chars(&mut self, size: f32, chars: usize) {
         if chars > 0 {
             self.add_weighted(size, chars);
         }
+    }
+
+    /// What `text` counts for in the histogram: its characters other than whitespace.
+    pub fn weight_of(text: &str) -> usize {
+        text.chars().filter(|c| !c.is_whitespace()).count()
     }
 
     fn add_weighted(&mut self, size: f32, weight: usize) {

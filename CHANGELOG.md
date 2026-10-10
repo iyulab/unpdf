@@ -25,7 +25,16 @@
 - **The body size is the size most text is set in.** Headings are measured against the body
   size, which was the size the most text pieces were set in — so a chart's many small labels,
   or the one or two titles left beside a table that holds the rest of the page, passed for the
-  body. Sizes are now counted by characters.
+  body. Sizes are now counted by characters, and a page whose tables hold all of its running
+  text — nothing beside them runs to three lines — measures its body by the tables' text.
+- **A table ruled only between its cells keeps its outer rows and columns.** Rules under the
+  header, between rows and between columns, with no frame around them, made a grid of the inner
+  cells only: the first column, the last column and the last row were left out of the table.
+  Where every rule runs past the outermost rule across it, the rules' ends now bound the table.
+- **A header standing above a table's top rule is its header row.** A table ruled under its
+  header but not above it left the header line out. The line just above the top rule is now the
+  table's first row when it is short labels over two columns or more, each within one column;
+  a caption or title running across the columns stays out.
 
 ## 0.37.0 — 2026-10-10
 

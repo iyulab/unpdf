@@ -106,9 +106,14 @@ fn grid_from_component(component: &[AxisSegment], config: &LatticeConfig) -> Opt
     let x_rules = ruled_positions(component, Axis::Vertical, config);
     let y_rules = ruled_positions(component, Axis::Horizontal, config);
     let mut row_positions = boundaries(component, Axis::Horizontal, &x_rules, config)?;
+    let mut col_positions = boundaries(component, Axis::Vertical, &y_rules, config)?;
+    // A table ruled only between its cells, with no frame, ends where its rules do.
+    let open_rows = open_sides(component, Axis::Vertical, &row_positions);
+    let open_columns = open_sides(component, Axis::Horizontal, &col_positions);
+    row_positions.extend(open_rows);
+    col_positions.extend(open_columns);
     // Descending: PDF y increases upward, and reading order is top (high y) to bottom.
     row_positions.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
-    let mut col_positions = boundaries(component, Axis::Vertical, &y_rules, config)?;
     col_positions.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
     let columns = col_positions.len().saturating_sub(1);
@@ -219,6 +224,44 @@ const FILL_GAP: f32 = 3.0;
 /// How close a filled stretch must come to a rule to meet it. Highlights behind a cell's text
 /// are inset several points from the cell's rules; a shaded cell meets them.
 const FILL_TOUCH: f32 = 2.0;
+
+/// How far past a grid's outermost boundary every rule across it must run for the grid to have
+/// a row or column there that no rule closes (points) — room for a line of text.
+const OPEN_SIDE_MIN: f32 = 12.0;
+
+/// The outer boundaries of a grid drawn without a frame: where the rules of `across` — the
+/// axis whose rules run across the `positions` — all run on past the outermost of those
+/// positions, the grid's last row or column lies between that position and the rules' ends.
+///
+/// Rules set only between the cells of a table (booktabs-style rules under the header and
+/// between rows, column rules between columns) leave its outer rows and columns open: the
+/// first column has no rule on its left, the last row none below it. Each rule still spans the
+/// whole table, so their ends bound it. Taken by the rules' own ends — the nearest of them, so
+/// every rule reaches the boundary — a side is added only when every rule across it overhangs
+/// by at least [`OPEN_SIDE_MIN`]: a framed table's rules stop at the frame.
+fn open_sides(component: &[AxisSegment], across: Axis, positions: &[f32]) -> Vec<f32> {
+    let rules: Vec<&AxisSegment> = component
+        .iter()
+        .filter(|s| s.axis == across && s.ruled)
+        .collect();
+    let (Some(first), Some(last)) = (
+        positions.iter().copied().reduce(f32::min),
+        positions.iter().copied().reduce(f32::max),
+    ) else {
+        return Vec::new();
+    };
+    if rules.is_empty() {
+        return Vec::new();
+    }
+    let mut sides = Vec::new();
+    if rules.iter().all(|s| s.lo <= first - OPEN_SIDE_MIN) {
+        sides.push(rules.iter().map(|s| s.lo).fold(f32::MIN, f32::max));
+    }
+    if rules.iter().all(|s| s.hi >= last + OPEN_SIDE_MIN) {
+        sides.push(rules.iter().map(|s| s.hi).fold(f32::MAX, f32::min));
+    }
+    sides
+}
 
 /// The positions of the ruled segments of `axis`.
 fn ruled_positions(component: &[AxisSegment], axis: Axis, config: &LatticeConfig) -> Vec<f32> {
@@ -379,6 +422,75 @@ pub(crate) fn build_table(grid: &LatticeGrid, spans: &[TextSpan]) -> Option<(Tab
     );
 
     Some((table, consumed))
+}
+
+/// Most words a column label of a header row standing above a grid holds.
+const HEADER_LABEL_MAX_WORDS: usize = 4;
+
+/// How far above a grid's top rule a header row may stand, in multiples of its font size.
+const HEADER_ABOVE_MAX_GAP: f32 = 2.0;
+
+/// `grid` with a header row added above its top rule, when the line just above it is one.
+///
+/// A table ruled under its header but not above it — the rule under the header is its top
+/// rule — leaves the header outside the grid. The line nearest above that rule is the header
+/// when it stands within [`HEADER_ABOVE_MAX_GAP`] of its font size of the rule and is made of
+/// short labels (at most [`HEADER_LABEL_MAX_WORDS`] words) over two columns or more, each
+/// label inside one column and all of them inside the grid's width. A caption or a title
+/// above a table runs across its columns, or is one piece of text.
+pub(crate) fn with_header_above(grid: &LatticeGrid, spans: &[TextSpan]) -> LatticeGrid {
+    let within_width = |s: &TextSpan| {
+        s.x >= grid.left_x - CELL_BOUNDARY_TOLERANCE
+            && s.x + s.width <= grid.right_x + CELL_BOUNDARY_TOLERANCE
+    };
+    let above: Vec<TextSpan> = spans
+        .iter()
+        .filter(|s| s.y > grid.top_y + CELL_BOUNDARY_TOLERANCE && !s.text.trim().is_empty())
+        .filter(|s| s.x < grid.right_x && s.x + s.width > grid.left_x)
+        .cloned()
+        .collect();
+    let Some(line) = group_into_rows(&above, CELL_LINE_TOLERANCE)
+        .into_iter()
+        .min_by(|a, b| a.y.total_cmp(&b.y))
+    else {
+        return grid.clone();
+    };
+    let size = line
+        .spans
+        .iter()
+        .map(|s| s.font_size)
+        .fold(0.0_f32, f32::max);
+    let column_of = |s: &TextSpan| {
+        let c = bin_index(&grid.col_bounds, s.x)?;
+        (s.x + s.width <= grid.col_bounds[c + 1] + CELL_BOUNDARY_TOLERANCE).then_some(c)
+    };
+    let columns: Option<Vec<usize>> = line.spans.iter().map(column_of).collect();
+    let is_header = line.y - grid.top_y <= size * HEADER_ABOVE_MAX_GAP
+        && line.spans.iter().all(within_width)
+        && columns.is_some_and(|mut cs| {
+            let words_fit = (0..grid.column_count()).all(|c| {
+                line.spans
+                    .iter()
+                    .filter(|s| column_of(s) == Some(c))
+                    .map(|s| s.text.split_whitespace().count())
+                    .sum::<usize>()
+                    <= HEADER_LABEL_MAX_WORDS
+            });
+            cs.sort_unstable();
+            cs.dedup();
+            cs.len() >= 2 && words_fit
+        });
+    if !is_header {
+        return grid.clone();
+    }
+    let top = line.y + size;
+    let mut row_bounds = vec![top];
+    row_bounds.extend(grid.row_bounds.iter().copied());
+    LatticeGrid {
+        top_y: top,
+        row_bounds,
+        ..grid.clone()
+    }
 }
 
 /// Boundary-tolerance for assigning a span to a grid cell (points). Grid
@@ -1009,5 +1121,54 @@ mod tests {
         let descending = [20.0, 10.0, 0.0];
         assert_eq!(bin_index(&descending, 15.0), Some(0));
         assert_eq!(bin_index(&descending, 5.0), Some(1));
+    }
+
+    /// Rules only between the cells — under the header, between rows, between columns —
+    /// and no frame: the outer columns and the last row are bounded by the rules' ends.
+    fn open_border_lines() -> Vec<GraphicsLine> {
+        vec![
+            h(300.0, 20.0, 420.0),
+            h(260.0, 20.0, 420.0),
+            v(120.0, 210.0, 300.0),
+            v(270.0, 210.0, 300.0),
+        ]
+    }
+
+    #[test]
+    fn a_table_ruled_only_between_its_cells_ends_where_its_rules_do() {
+        let grids = infer_grids(&open_border_lines(), &LatticeConfig::default());
+        assert_eq!(grids.len(), 1);
+        assert_eq!(grids[0].row_bounds, vec![300.0, 260.0, 210.0]);
+        assert_eq!(grids[0].col_bounds, vec![20.0, 120.0, 270.0, 420.0]);
+    }
+
+    /// The labels over a table ruled under its header but not above it are its header row.
+    #[test]
+    fn labels_just_above_the_top_rule_are_the_header_row() {
+        let grid = &infer_grids(&open_border_lines(), &LatticeConfig::default())[0];
+        let spans = vec![
+            span("Name", 130.0, 306.0),
+            span("Value", 280.0, 306.0),
+            span("Alpha", 30.0, 280.0),
+            span("one", 130.0, 280.0),
+            span("two", 280.0, 280.0),
+        ];
+        let grid = with_header_above(grid, &spans);
+        assert_eq!(grid.row_count(), 3);
+        let (table, consumed) = build_table(&grid, &spans).unwrap();
+        assert_eq!(consumed.len(), 5);
+        assert_eq!(table.rows[0].cells[1].plain_text(), "Name");
+        assert_eq!(table.rows[0].cells[2].plain_text(), "Value");
+    }
+
+    /// A caption above a table runs across its columns: it stays out of the table.
+    #[test]
+    fn a_caption_above_the_top_rule_is_not_a_header_row() {
+        let grid = &infer_grids(&open_border_lines(), &LatticeConfig::default())[0];
+        let spans = vec![
+            span("Table 1. Results of the trial", 30.0, 306.0),
+            span("Alpha", 30.0, 280.0),
+        ];
+        assert_eq!(with_header_above(grid, &spans), *grid);
     }
 }
