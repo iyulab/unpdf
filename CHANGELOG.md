@@ -4,6 +4,11 @@
 
 ### Fixed
 
+- **A ruled list of one column is a table.** A grid needed two columns, so a single ruled
+  column of items ("#1: Recycle-Reuse-Reduce", "#2: …", each in a cell of its own) ran together
+  as one paragraph. One column ruled into at least three rows, with one line in every cell, is
+  now a table; two rows (a box with a title bar) and cells holding paragraphs still read as text.
+
 - **A title set off by space is its own paragraph.** Whether a gap between two lines starts a
   new paragraph was judged against the page's average line spacing, and the largest spacings on
   a page — the jump over a figure, from the body to the footnotes — pulled that average so high

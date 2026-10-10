@@ -111,7 +111,15 @@ fn grid_from_component(component: &[AxisSegment], config: &LatticeConfig) -> Opt
     let mut col_positions = boundaries(component, Axis::Vertical, &y_rules, config)?;
     col_positions.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
-    if row_positions.len() < config.min_rows + 1 || col_positions.len() < config.min_columns + 1 {
+    let columns = col_positions.len().saturating_sub(1);
+    let rows = row_positions.len().saturating_sub(1);
+    // A single ruled column is a table when it is a stack of at least three ruled rows (a boxed
+    // list of items) as wide as text runs; `build_table` then holds it to one line per cell. Two
+    // rows in one column are a box with a title bar.
+    let single_column = columns == 1
+        && rows >= SINGLE_COLUMN_MIN_ROWS
+        && (col_positions[1] - col_positions[0]).abs() >= SINGLE_COLUMN_MIN_WIDTH;
+    if rows < config.min_rows || (columns < config.min_columns && !single_column) {
         return None;
     }
 
@@ -124,6 +132,14 @@ fn grid_from_component(component: &[AxisSegment], config: &LatticeConfig) -> Opt
         col_bounds: col_positions,
     })
 }
+
+/// The fewest ruled rows a grid of one column needs to be a table.
+const SINGLE_COLUMN_MIN_ROWS: usize = 3;
+
+/// The narrowest a grid of one column may be and still be a table (points). A chart's legend is
+/// a small ruled box of short entries -- three rows of one column, like a list of items; the
+/// lists that are tables run the width of a text column.
+const SINGLE_COLUMN_MIN_WIDTH: f32 = 120.0;
 
 /// How far from a rule a filled area's edge still belongs to that rule: cell shading
 /// is commonly inset a few points from the rules around it.
@@ -334,6 +350,11 @@ pub(crate) fn build_table(grid: &LatticeGrid, spans: &[TextSpan]) -> Option<(Tab
     let non_empty = cell_text.iter().flatten().filter(|c| !c.is_empty()).count();
     let occupancy = non_empty as f32 / (rows * cols) as f32;
     if occupancy < MIN_OCCUPANCY {
+        return None;
+    }
+    // One column is a table only as a list of items: every cell one line. A column whose
+    // cells hold paragraphs is text drawn in boxes, and reads as text.
+    if cols == 1 && !cell_text.iter().all(|row| row[0].len() == 1) {
         return None;
     }
 
@@ -662,6 +683,55 @@ mod tests {
             v(100.0, 80.0, 100.0),
         ];
         assert!(infer_grids(&lines, &LatticeConfig::default()).is_empty());
+    }
+
+    /// A boxed list: one column ruled into `rows` rows, 20 pt each, from y = 300 down.
+    fn one_column(rows: usize) -> Vec<GraphicsLine> {
+        let bottom = 300.0 - 20.0 * rows as f32;
+        let mut lines: Vec<GraphicsLine> = (0..=rows)
+            .map(|r| h(300.0 - 20.0 * r as f32, 100.0, 400.0))
+            .collect();
+        lines.push(v(100.0, bottom, 300.0));
+        lines.push(v(400.0, bottom, 300.0));
+        lines
+    }
+
+    #[test]
+    fn one_ruled_column_of_three_rows_is_a_grid_but_of_two_is_a_box() {
+        let grids = infer_grids(&one_column(3), &LatticeConfig::default());
+        assert_eq!(grids.len(), 1);
+        assert_eq!((grids[0].row_count(), grids[0].column_count()), (3, 1));
+        // A title bar over a body: a box, not a table.
+        assert!(infer_grids(&one_column(2), &LatticeConfig::default()).is_empty());
+        // A chart legend: three rows, but a narrow box.
+        let mut legend = vec![
+            h(300.0, 100.0, 160.0),
+            h(280.0, 100.0, 160.0),
+            h(260.0, 100.0, 160.0),
+        ];
+        legend.extend([
+            h(240.0, 100.0, 160.0),
+            v(100.0, 240.0, 300.0),
+            v(160.0, 240.0, 300.0),
+        ]);
+        assert!(infer_grids(&legend, &LatticeConfig::default()).is_empty());
+    }
+
+    #[test]
+    fn one_column_is_a_table_only_when_every_cell_is_one_line() {
+        let grid = &infer_grids(&one_column(3), &LatticeConfig::default())[0];
+        let items = vec![
+            span("#1: Recycle", 110.0, 285.0),
+            span("#2: Reuse", 110.0, 265.0),
+            span("#3: Reduce", 110.0, 245.0),
+        ];
+        let (table, _) = build_table(grid, &items).expect("a boxed list of items is a table");
+        assert_eq!(table.to_csv(), "#1: Recycle\r\n#2: Reuse\r\n#3: Reduce\r\n");
+
+        // The same box with a paragraph in a cell is text drawn in boxes.
+        let mut prose = items.clone();
+        prose.push(span("and a second line of the same cell", 110.0, 274.0));
+        assert!(build_table(grid, &prose).is_none());
     }
 
     #[test]
