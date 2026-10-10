@@ -163,6 +163,24 @@ pub(crate) fn normalize_dot_leaders(spans: Vec<TextSpan>) -> Vec<TextSpan> {
     out
 }
 
+/// The pitch of the lines around the gap above line `i`: the smallest of the two spacings before
+/// that gap and the two after it (`spacings[j]` is the distance from line `j - 1` to line `j`),
+/// or `None` when there are none.
+///
+/// A spacing under 0.8 of the type size is not a line pitch -- a superscript set on a line of
+/// its own, a run nudged off its baseline -- and is passed over.
+fn local_line_pitch(spacings: &[f32], sizes: &[f32], i: usize) -> Option<f32> {
+    let floor = sizes[i] * 0.8;
+    let neighbours = [i.checked_sub(2), i.checked_sub(1), Some(i + 1), Some(i + 2)];
+    neighbours
+        .into_iter()
+        .flatten()
+        .filter(|&j| j >= 1 && j != i)
+        .filter_map(|j| spacings.get(j).copied())
+        .filter(|&s| s >= floor)
+        .min_by(f32::total_cmp)
+}
+
 /// The size a line of faux small capitals is set at, or `None` for any other line.
 ///
 /// A word processor without a small-caps face fakes one: each word's initial at the type size
@@ -1138,7 +1156,7 @@ impl<'a> LayoutAnalyzer<'a> {
 
     /// Public wrapper for group_lines_into_blocks.
     pub fn group_lines_into_blocks_pub(&self, lines: Vec<TextLine>) -> Vec<TextBlock> {
-        self.group_lines_into_blocks(lines)
+        Self::group_lines_into_blocks(lines)
     }
 
     /// Filter header/footer spans in-place using page dimensions.
@@ -1222,7 +1240,7 @@ impl<'a> LayoutAnalyzer<'a> {
         let lines = Self::detect_headings(&self.font_stats, lines);
 
         // Group lines into blocks (paragraphs)
-        let blocks = self.group_lines_into_blocks(lines);
+        let blocks = Self::group_lines_into_blocks(lines);
 
         Ok(blocks)
     }
@@ -1798,7 +1816,7 @@ impl<'a> LayoutAnalyzer<'a> {
     }
 
     /// Group lines into blocks (paragraphs) based on spacing.
-    fn group_lines_into_blocks(&self, lines: Vec<TextLine>) -> Vec<TextBlock> {
+    fn group_lines_into_blocks(lines: Vec<TextLine>) -> Vec<TextBlock> {
         if lines.is_empty() {
             return vec![];
         }
@@ -1807,7 +1825,12 @@ impl<'a> LayoutAnalyzer<'a> {
         let mut current_block_lines: Vec<TextLine> = Vec::new();
 
         // Calculate average line spacing
-        let avg_spacing = self.calculate_avg_line_spacing(&lines);
+        let avg_spacing = Self::calculate_avg_line_spacing(&lines);
+        // The distance from each line to the one before it (0 for the first).
+        let spacings: Vec<f32> = std::iter::once(0.0)
+            .chain(lines.windows(2).map(|w| (w[0].y - w[1].y).abs()))
+            .collect();
+        let sizes: Vec<f32> = lines.iter().map(|l| l.font_size).collect();
 
         for (i, line) in lines.into_iter().enumerate() {
             if i == 0 {
@@ -1818,7 +1841,8 @@ impl<'a> LayoutAnalyzer<'a> {
             let prev_line = current_block_lines.last().unwrap();
 
             // Check if this should start a new block
-            let should_break = self.should_break_block(prev_line, &line, avg_spacing);
+            let local_pitch = local_line_pitch(&spacings, &sizes, i);
+            let should_break = Self::should_break_block(prev_line, &line, avg_spacing, local_pitch);
 
             if should_break {
                 // Create block from current lines
@@ -1883,6 +1907,26 @@ impl<'a> LayoutAnalyzer<'a> {
     /// ("1. Introduction") is common and must stay a heading when the
     /// font-size heuristic already caught it.
     fn finish_block(lines: Vec<TextLine>) -> TextBlock {
+        // A line of bold capitals that is a block of its own titles what follows, however long
+        // it runs. (Within running text `detect_headings` caps such a line at 40 characters: a
+        // bold capital sentence inside a paragraph is emphasis. Set off on its own, it is not.)
+        if let [line] = lines.as_slice() {
+            let visible = line
+                .text()
+                .chars()
+                .filter(|c| !c.is_whitespace() && !c.is_ascii_punctuation())
+                .count();
+            if !line.is_heading
+                && line.is_all_bold()
+                && line.is_uppercase()
+                && (3..=100).contains(&visible)
+                && !opens_a_list_item(line.text().trim_start())
+            {
+                let mut block = TextBlock::new(lines, BlockType::Heading);
+                block.heading_level = 2;
+                return block;
+            }
+        }
         if lines.iter().any(|l| l.is_heading) {
             let heading_level = lines
                 .iter()
@@ -1911,30 +1955,37 @@ impl<'a> LayoutAnalyzer<'a> {
     }
 
     /// Calculate average line spacing.
-    fn calculate_avg_line_spacing(&self, lines: &[TextLine]) -> f32 {
-        if lines.len() < 2 {
-            return 12.0; // Default
-        }
-
-        let spacings: Vec<f32> = lines
+    /// The typical distance from one line to the next: the median of the spacings between
+    /// consecutive lines.
+    ///
+    /// Not the mean. The spacings that matter least -- the jump over a figure, from the body to
+    /// the footnotes, from one column to the next -- are the largest, and a few of them pulled a
+    /// mean so far up that a title set off by twice the line pitch no longer counted as set off
+    /// at all, and ran into the paragraph after it.
+    fn calculate_avg_line_spacing(lines: &[TextLine]) -> f32 {
+        let mut spacings: Vec<f32> = lines
             .windows(2)
             .map(|w| (w[0].y - w[1].y).abs())
             .filter(|s| *s > 0.1) // Filter out very small spacings
             .collect();
-
         if spacings.is_empty() {
-            return 12.0;
+            return 12.0; // Default
         }
-
-        spacings.iter().sum::<f32>() / spacings.len() as f32
+        spacings.sort_by(f32::total_cmp);
+        let mid = spacings.len() / 2;
+        if spacings.len() % 2 == 1 {
+            spacings[mid]
+        } else {
+            (spacings[mid - 1] + spacings[mid]) / 2.0
+        }
     }
 
     /// Determine if a new block should start.
     fn should_break_block(
-        &self,
         prev_line: &TextLine,
         curr_line: &TextLine,
         avg_spacing: f32,
+        local_pitch: Option<f32>,
     ) -> bool {
         // Heading always starts a new block, UNLESS the previous line is
         // also a heading of the same level sitting close by (within ~2x
@@ -1983,6 +2034,14 @@ impl<'a> LayoutAnalyzer<'a> {
         // Large spacing indicates new paragraph
         let spacing = (prev_line.y - curr_line.y).abs();
         if spacing > avg_spacing * 1.5 {
+            return true;
+        }
+        // Set off from the lines around it: half as far again as the pitch of the neighbouring
+        // lines, and at least twice the type size -- more than any leading, double spacing
+        // included. A page with few lines has no typical spacing to compare against (a title, two
+        // lines of text, a figure), and its lines are still set off from one another.
+        let size = prev_line.font_size.max(curr_line.font_size);
+        if local_pitch.is_some_and(|pitch| spacing > pitch * 1.5 && spacing > size * 2.0) {
             return true;
         }
 
@@ -3365,6 +3424,74 @@ mod tests {
     }
 
     /// A lone number far below the block before is not its continuation.
+    /// A page with a title, two lines of text and a figure: the gap under the title is almost
+    /// twice the text's pitch, but the jump over the figure makes the page's spacings no guide.
+    #[test]
+    fn a_title_set_off_from_the_lines_around_it_is_a_block_of_its_own() {
+        let lines = vec![
+            line_at("Print vs. Digital", 727.0, 11.5, "Montserrat"),
+            line_at(
+                "Why do some researchers abhor digital and favor print,",
+                694.6,
+                11.5,
+                "Montserrat",
+            ),
+            line_at(
+                "or vice-versa? The classic debate was necessary.",
+                677.3,
+                11.5,
+                "Montserrat",
+            ),
+            line_at("format.", 402.8, 11.5, "Montserrat"),
+        ];
+        let blocks = LayoutAnalyzer::group_lines_into_blocks(lines);
+        let texts: Vec<String> = blocks.iter().map(TextBlock::text).collect();
+        assert_eq!(texts.len(), 3, "{texts:?}");
+        assert_eq!(texts[0], "Print vs. Digital");
+    }
+
+    /// Double spacing is a pitch, not a paragraph break, however wide it is.
+    #[test]
+    fn evenly_double_spaced_lines_stay_one_block() {
+        let lines: Vec<TextLine> = (0..6)
+            .map(|i| {
+                line_at(
+                    "a line of double-spaced text",
+                    700.0 - 26.0 * i as f32,
+                    12.0,
+                    "Times",
+                )
+            })
+            .collect();
+        assert_eq!(LayoutAnalyzer::group_lines_into_blocks(lines).len(), 1);
+    }
+
+    #[test]
+    fn the_typical_line_spacing_is_not_pulled_up_by_a_jump_over_a_figure() {
+        let lines = vec![
+            line_at("one", 700.0, 11.0, "Times"),
+            line_at("two", 685.0, 11.0, "Times"),
+            line_at("three", 670.0, 11.0, "Times"),
+            line_at("four", 400.0, 11.0, "Times"),
+        ];
+        assert_eq!(LayoutAnalyzer::calculate_avg_line_spacing(&lines), 15.0);
+    }
+
+    #[test]
+    fn a_block_of_one_line_of_bold_capitals_is_a_heading_however_long() {
+        let title = "ARE CIGARETTE SMOKERS HYPERBOLIC TIME DISCOUNTERS?";
+        let block = LayoutAnalyzer::finish_block(vec![line_at(title, 500.0, 11.0, "Lato-Bold")]);
+        assert_eq!(block.block_type, BlockType::Heading);
+        // Not bold, or not all capitals: a line of its own, not a title.
+        for (text, font) in [
+            (title, "Lato"),
+            ("Are Cigarette Smokers Discounters?", "Lato-Bold"),
+        ] {
+            let block = LayoutAnalyzer::finish_block(vec![line_at(text, 500.0, 11.0, font)]);
+            assert_eq!(block.block_type, BlockType::Paragraph, "{text} in {font}");
+        }
+    }
+
     #[test]
     fn test_push_block_does_not_reach_across_a_paragraph_gap() {
         let mut blocks = Vec::new();

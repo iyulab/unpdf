@@ -4,6 +4,17 @@
 
 ### Fixed
 
+- **A title set off by space is its own paragraph.** Whether a gap between two lines starts a
+  new paragraph was judged against the page's average line spacing, and the largest spacings on
+  a page — the jump over a figure, from the body to the footnotes — pulled that average so high
+  that a title with twice the line pitch under it ran into the paragraph below. The typical
+  spacing is now the median, and a gap half as wide again as the pitch of the lines around it
+  (and at least twice the type size, so double spacing stays a pitch) starts a paragraph.
+- **A line of bold capitals standing on its own is a heading at any length.** Bold capitals
+  titled what follows only up to 40 characters, so that a bold capital sentence inside running
+  text stays emphasis; set off as a paragraph of its own, a longer one
+  ("ARE CIGARETTE SMOKERS HYPERBOLIC TIME DISCOUNTERS?") is now a heading too.
+
 - **A title set in faux small capitals is a heading.** A word processor without a small-caps
   face sets each word's initial at the type size and the rest of the word as smaller capitals
   ("R" at 14 pt, "ECOLLECTION" at 11 pt). Averaged over its characters such a line measured as
