@@ -2,7 +2,7 @@
 
 # Benchmarks
 
-Measured on **unpdf 0.37.0** (the published package) on 2026-10-10. Scores come from each benchmark's own evaluator; nothing here is re-implemented.
+Measured on **unpdf 0.38.0** (the published package) on 2026-10-10. Scores come from each benchmark's own evaluator; nothing here is re-implemented.
 
 ## opendataloader-bench
 
@@ -10,12 +10,12 @@ Measured on **unpdf 0.37.0** (the published package) on 2026-10-10. Scores come 
 
 | Metric | Score | Documents scored |
 |---|---|---|
-| Overall | **0.875** | 200 |
-| NID | 0.910 | 200 |
-| TEDS | 0.779 | 42 |
-| MHS | 0.804 | 107 |
+| Overall | **0.883** | 200 |
+| NID | 0.914 | 200 |
+| TEDS | 0.859 | 42 |
+| MHS | 0.807 | 107 |
 
-### Compared with other engines (rank 7 of 20)
+### Compared with other engines (rank 5 of 20)
 
 Other engines' scores are the runs the benchmark repository itself publishes, cited as-is with their version and date, except the rows marked "measured here". Several of them run vision models on a GPU; this library reads the PDF text layer on a CPU.
 
@@ -29,9 +29,9 @@ ms/page is conversion time per page on one machine (AMD Ryzen 5 3500U with Radeo
 | docling | 2.135.0 | 0.891 | 0.905 | 0.925 | 0.830 | -- | 2026-10-08 (measured here) |
 | nutrient | 1.0.1 | 0.885 | 0.925 | 0.708 | 0.819 | -- | 2026-04-30 |
 | liteparse | 2.15.1 | 0.883 | 0.912 | 0.818 | 0.821 | 8.6 | 2026-10-09 (measured here) |
+| **unpdf** | 0.38.0 | 0.883 | 0.914 | 0.859 | 0.807 | 19.1 | 2026-10-10 |
 | docling | 2.84.0 | 0.882 | 0.898 | 0.887 | 0.824 | -- | 2026-04-06 |
 | opendataloader-hybrid-hydrogen | 2.2.1 | 0.877 | 0.926 | 0.796 | 0.769 | -- | 2026-04-08 |
-| **unpdf** | 0.37.0 | 0.875 | 0.910 | 0.779 | 0.804 | 19.0 | 2026-10-10 |
 | pdf-inspector | 1.25.2 | 0.870 | 0.911 | 0.800 | 0.777 | 11.6 | 2026-10-09 (measured here) |
 | pymupdf4llm * | 1.28.2 | 0.869 | 0.907 | 0.790 | 0.783 | 497.3 | 2026-10-08 (measured here) |
 | marker | 1.10.1 | 0.861 | 0.890 | 0.808 | 0.796 | -- | 2026-01-06 |
@@ -48,12 +48,14 @@ ms/page is conversion time per page on one machine (AMD Ryzen 5 3500U with Radeo
 
 \* Runs a learned layout model on the CPU (pymupdf4llm 1.28 with pymupdf_layout, an ONNX model), not the text layer alone.
 
+Engines with the same overall score as this library are listed before it and count ahead of it in the rank.
+
 Reproduce:
 
 ```bash
 # Python 3.13 or newer (what the evaluator declares)
 git clone https://github.com/opendataloader-project/opendataloader-bench && cd opendataloader-bench && git checkout 7af1d8f4d0c09f51ea1a5c6ba5f66e993286d109
-pip install unpdf-markdown==0.37.0 apted rapidfuzz beautifulsoup4 lxml
+pip install unpdf-markdown==0.38.0 apted rapidfuzz beautifulsoup4 lxml
 python - <<'EOF'
 import pathlib, unpdf
 out = pathlib.Path('prediction/unpdf/markdown')
@@ -69,7 +71,7 @@ python src/evaluator.py --prediction-root prediction --engine unpdf
 
 [olmOCR-Bench](https://huggingface.co/datasets/allenai/olmOCR-bench) (ODC-BY): 1,403 PDF pages checked by unit tests (text present/absent, reading order, tables). Scored with the official [`olmocr.bench`](https://github.com/allenai/olmocr) scorer.
 
-Average of the 8 per-file scores below, as the official scorer reports it: **34.7%**. Read it by file: `arxiv_math` and `old_scans_math` require LaTeX math output, and `old_scans` requires OCR of scanned pages -- both outside what a text-layer extractor does. `baseline` is the benchmark's sanity check that each page's output is not blank, not endlessly repeating, and in the expected character sets.
+Average of the 8 per-file scores below, as the official scorer reports it: **35.0%**. Read it by file: `arxiv_math` and `old_scans_math` require LaTeX math output, and `old_scans` requires OCR of scanned pages -- both outside what a text-layer extractor does. `baseline` is the benchmark's sanity check that each page's output is not blank, not endlessly repeating, and in the expected character sets.
 
 | Test file | Pass rate | Tests |
 |---|---|---|
@@ -79,7 +81,7 @@ Average of the 8 per-file scores below, as the official scorer reports it: **34.
 | multi_column | 60.9% | 538/884 |
 | old_scans | 13.3% | 70/526 |
 | old_scans_math | 0.0% | 0/458 |
-| table_tests | 43.8% | 448/1022 |
+| table_tests | 46.2% | 472/1022 |
 | baseline (the benchmark's sanity check) | 87.3% | 1217/1394 |
 
 Dataset revision `54a96a6fb6a2bd3b297e59869491db4d3625b711`, scorer revision `f7cfe4c22098b154c76b6ec950d1c0a464eecf8d`.
@@ -90,7 +92,7 @@ Reproduce:
 # Python 3.11 or newer, on Linux or macOS: the scorer looks outputs up by forward-slash paths,
 # so on Windows it finds none and every test fails
 git clone https://github.com/allenai/olmocr && git -C olmocr checkout f7cfe4c22098b154c76b6ec950d1c0a464eecf8d
-pip install -e "./olmocr[bench]" unpdf-markdown==0.37.0 huggingface_hub
+pip install -e "./olmocr[bench]" unpdf-markdown==0.38.0 huggingface_hub
 playwright install chromium
 python - <<'EOF'
 import pathlib, unpdf
@@ -106,4 +108,4 @@ EOF
 python -m olmocr.bench.benchmark --dir olmOCR-bench/bench_data --candidate unpdf --bootstrap_samples 200
 ```
 
-<!-- benchmark-data {"benchmarks": ["odl", "olmocr"], "odl": {"mhs": 0.804, "nid": 0.91, "overall": 0.875, "teds": 0.779}, "olmocr": {"categories": {"arxiv_math": 0.6, "baseline": 87.3, "headers_footers": 45.7, "long_tiny_text": 26.2, "multi_column": 60.9, "old_scans": 13.3, "old_scans_math": 0.0, "table_tests": 43.8}, "mean": 34.7}, "rank": [7, 20], "speed": {"ms_per_page": 19.0}, "version": "0.37.0"} -->
+<!-- benchmark-data {"benchmarks": ["odl", "olmocr"], "odl": {"mhs": 0.807, "nid": 0.914, "overall": 0.883, "teds": 0.859}, "olmocr": {"categories": {"arxiv_math": 0.6, "baseline": 87.3, "headers_footers": 45.7, "long_tiny_text": 26.2, "multi_column": 60.9, "old_scans": 13.3, "old_scans_math": 0.0, "table_tests": 46.2}, "mean": 35.0}, "rank": [5, 20], "speed": {"ms_per_page": 19.1}, "version": "0.38.0"} -->
