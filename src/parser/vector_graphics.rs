@@ -48,9 +48,17 @@ const MAX_FILLED_RULE_THICKNESS: f32 = 3.0;
 ///
 /// Only what the page shows counts: a line outside `visible` (the page's crop box) or the
 /// clipping path in force when it is painted — a printer's crop mark in the slug area, the
-/// frame of a larger page placed onto a smaller one — is dropped.
+/// frame of a larger page placed onto a smaller one — is dropped. So is the outline of a filled
+/// area inside another of the same colour ([`unseen_fills`]): its edges lie on paint of its own
+/// colour and show nothing.
 pub fn extract_lines(ops: &[ContentOp], visible: PageBox) -> Vec<GraphicsLine> {
     let mut lines = Vec::new();
+    // Filled areas (not rules) as painted: where, in what colour, and which of `lines` they gave.
+    let mut areas: Vec<FilledArea> = Vec::new();
+    // The fill colour in force, as its operands; `None` when it is not a plain colour (a
+    // pattern) or not known. Saved and restored with the graphics state.
+    let mut fill: Option<Vec<i32>> = Some(vec![0]);
+    let mut fill_stack: Vec<Option<Vec<i32>>> = Vec::new();
     let mut clip = ClipTracker::new(visible);
     let shows = |clip: &ClipTracker, line: &GraphicsLine| {
         clip.admits(&Bounds::around([(line.x0, line.y0), (line.x1, line.y1)]).expect("two points"))
@@ -71,12 +79,20 @@ pub fn extract_lines(ops: &[ContentOp], visible: PageBox) -> Vec<GraphicsLine> {
 
     for op in ops {
         match op.operator.as_str() {
-            "q" => ctm_stack.push(ctm),
+            "q" => {
+                ctm_stack.push(ctm);
+                fill_stack.push(fill.clone());
+            }
             "Q" => {
                 if let Some(saved) = ctm_stack.pop() {
                     ctm = saved;
                 }
+                if let Some(saved) = fill_stack.pop() {
+                    fill = saved;
+                }
             }
+            "g" | "rg" | "k" | "sc" | "scn" => fill = colour_of(&op.operands),
+            "cs" => fill = None,
             "cm" if op.operands.len() >= 6 => {
                 let cm = [
                     num(&op.operands[0]),
@@ -166,12 +182,22 @@ pub fn extract_lines(ops: &[ContentOp], visible: PageBox) -> Vec<GraphicsLine> {
             "f" | "F" | "f*" => {
                 for subpath in pending.drain(..) {
                     let ruled = is_rule_thin(&subpath);
+                    let bounds =
+                        Bounds::around(subpath.iter().flat_map(|l| [(l.x0, l.y0), (l.x1, l.y1)]));
+                    let start = lines.len();
                     lines.extend(
                         subpath
                             .into_iter()
                             .filter(|line| shows(&clip, line))
                             .map(|line| GraphicsLine { ruled, ..line }),
                     );
+                    if let (false, Some(bounds)) = (ruled, bounds) {
+                        areas.push(FilledArea {
+                            bounds,
+                            colour: fill.clone(),
+                            lines: start..lines.len(),
+                        });
+                    }
                 }
                 current = None;
                 subpath_start = None;
@@ -189,7 +215,66 @@ pub fn extract_lines(ops: &[ContentOp], visible: PageBox) -> Vec<GraphicsLine> {
         clip.observe(op, &ctm);
     }
 
+    let unseen = unseen_fills(&areas);
+    if unseen.is_empty() {
+        return lines;
+    }
+    let dropped: std::collections::HashSet<usize> = unseen
+        .into_iter()
+        .flat_map(|a| areas[a].lines.clone())
+        .collect();
     lines
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| !dropped.contains(i))
+        .map(|(_, line)| line)
+        .collect()
+}
+
+/// A filled area a content stream painted: its extent, its fill colour (see
+/// [`extract_lines`]) and the range of the extracted lines that are its outline.
+struct FilledArea {
+    bounds: Bounds,
+    colour: Option<Vec<i32>>,
+    lines: std::ops::Range<usize>,
+}
+
+/// How far an area may reach past another and still lie within it (points).
+const WITHIN_SLACK: f32 = 0.5;
+
+/// The areas (indices into `areas`) whose outline shows nothing: each lies within another
+/// area filled in the same plain colour — inside it, or over it, its edges are paint on paint
+/// of one colour. A word processor shades a table cell and then shades each line of the cell's
+/// text again over it; those inner edges are no boundaries of the table's rows. Of two areas
+/// that are the same, the later is the unseen one.
+fn unseen_fills(areas: &[FilledArea]) -> Vec<usize> {
+    let within = |a: &Bounds, b: &Bounds| {
+        a.x0 >= b.x0 - WITHIN_SLACK
+            && a.y0 >= b.y0 - WITHIN_SLACK
+            && a.x1 <= b.x1 + WITHIN_SLACK
+            && a.y1 <= b.y1 + WITHIN_SLACK
+    };
+    (0..areas.len())
+        .filter(|&i| {
+            let a = &areas[i];
+            a.colour.is_some()
+                && areas.iter().enumerate().any(|(j, b)| {
+                    j != i
+                        && b.colour == a.colour
+                        && within(&a.bounds, &b.bounds)
+                        && (!within(&b.bounds, &a.bounds) || j < i)
+                })
+        })
+        .collect()
+}
+
+/// A fill colour set by `g`/`rg`/`k`/`sc`/`scn`, as its operands to a thousandth; `None` when
+/// an operand is not a number (a pattern's name).
+fn colour_of(operands: &[PdfValue]) -> Option<Vec<i32>> {
+    operands
+        .iter()
+        .map(|v| get_number_from_value(v).map(|n| (n * 1000.0).round() as i32))
+        .collect()
 }
 
 /// Whether a filled subpath is thin enough to be a rule: its extent along one axis is at
@@ -240,6 +325,36 @@ mod tests {
 
     fn lines_of(ops: &[ContentOp]) -> Vec<GraphicsLine> {
         extract_lines(ops, PAGE)
+    }
+
+    /// A cell shaded, then each line of its text shaded again in the same colour over it, as
+    /// word processors draw it: the inner shading's edges are paint on paint and show nothing.
+    #[test]
+    fn a_fill_within_a_fill_of_its_colour_draws_no_edges() {
+        let ops = [
+            op("rg", &[0.9, 0.95, 1.0]),
+            op("re", &[100.0, 200.0, 170.0, 30.0]),
+            op("f", &[]),
+            op("re", &[100.0, 214.0, 170.0, 16.0]),
+            op("f", &[]),
+        ];
+        let lines = lines_of(&ops);
+        assert_eq!(lines.len(), 4, "{lines:?}");
+        assert!(lines.iter().all(|l| l.y0 != 214.0 && l.y1 != 214.0));
+    }
+
+    /// The same shapes in another colour are a band of their own, edges and all.
+    #[test]
+    fn a_fill_within_a_fill_of_another_colour_keeps_its_edges() {
+        let ops = [
+            op("rg", &[0.9, 0.95, 1.0]),
+            op("re", &[100.0, 200.0, 170.0, 30.0]),
+            op("f", &[]),
+            op("g", &[0.8]),
+            op("re", &[100.0, 214.0, 170.0, 16.0]),
+            op("f", &[]),
+        ];
+        assert_eq!(lines_of(&ops).len(), 8);
     }
 
     #[test]

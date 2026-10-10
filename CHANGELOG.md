@@ -35,6 +35,14 @@
   header but not above it left the header line out. The line just above the top rule is now the
   table's first row when it is short labels over two columns or more, each within one column;
   a caption or title running across the columns stays out.
+- **Shading drawn over shading of the same colour adds no rows.** A word processor shades a
+  table cell and then shades each line of the cell's text again in the same colour; the inner
+  shading's edges were taken for row boundaries, so a cell's second line became a row of its
+  own and empty rows appeared between the real ones. A filled area inside another of the same
+  colour now draws no edges.
+- **A cell's text belongs to the column most of it lies in.** In a row without a rule between
+  two columns, a label starting a few points before the boundary the rows below are ruled at
+  was put in the column to its left, beside the label of that column.
 
 ## 0.37.0 — 2026-10-10
 

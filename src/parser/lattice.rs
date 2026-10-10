@@ -363,7 +363,7 @@ pub(crate) fn build_table(grid: &LatticeGrid, spans: &[TextSpan]) -> Option<(Tab
         let span = &spans[i];
         let (Some(r), Some(c)) = (
             bin_index(&grid.row_bounds, span.y),
-            bin_index(&grid.col_bounds, span.x),
+            column_holding(&grid.col_bounds, span),
         ) else {
             continue;
         };
@@ -422,6 +422,27 @@ pub(crate) fn build_table(grid: &LatticeGrid, spans: &[TextSpan]) -> Option<(Tab
     );
 
     Some((table, consumed))
+}
+
+/// The column (index into the columns `col_bounds` bound) that holds `span`: the one it starts
+/// in — unless it starts just short of that column's right boundary, within a font size of it,
+/// and more of it lies past the boundary than before it. A row without a rule between two
+/// columns (a header band shaded across both) lets a cell's text start a few points before the
+/// boundary the rows below are ruled at. A span starting further into its column stays there
+/// however far it runs on: grids ruled finer than their columns, and estimated widths, run
+/// text past boundaries it was never meant to cross.
+fn column_holding(col_bounds: &[f32], span: &TextSpan) -> Option<usize> {
+    let c = bin_index(col_bounds, span.x)?;
+    let (Some(&edge), Some(&next_end)) = (col_bounds.get(c + 1), col_bounds.get(c + 2)) else {
+        return Some(c);
+    };
+    let before = edge - span.x;
+    let past = (span.x + span.width).min(next_end) - edge;
+    Some(if before <= span.font_size && past > before {
+        c + 1
+    } else {
+        c
+    })
 }
 
 /// Most words a column label of a header row standing above a grid holds.
@@ -1170,5 +1191,28 @@ mod tests {
             span("Alpha", 30.0, 280.0),
         ];
         assert_eq!(with_header_above(grid, &spans), *grid);
+    }
+
+    /// A label starting a few points before a column boundary, in a row without the rule
+    /// there, belongs to the column most of it lies in.
+    #[test]
+    fn a_span_belongs_to_the_column_most_of_it_lies_in() {
+        let bounds = [100.0, 270.0, 446.0, 612.0];
+        let meiosis = TextSpan {
+            width: 46.0,
+            ..span("Meiosis", 442.0, 300.0)
+        };
+        assert_eq!(column_holding(&bounds, &meiosis), Some(2));
+        let mitosis = TextSpan {
+            width: 43.0,
+            ..span("Mitosis", 278.0, 300.0)
+        };
+        assert_eq!(column_holding(&bounds, &mitosis), Some(1));
+        // Starting well inside its column, a span stays there however far it runs on.
+        let long = TextSpan {
+            width: 120.0,
+            ..span("A long label", 410.0, 300.0)
+        };
+        assert_eq!(column_holding(&bounds, &long), Some(1));
     }
 }
