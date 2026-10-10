@@ -163,6 +163,53 @@ pub(crate) fn normalize_dot_leaders(spans: Vec<TextSpan>) -> Vec<TextSpan> {
     out
 }
 
+/// The size a line of faux small capitals is set at, or `None` for any other line.
+///
+/// A word processor without a small-caps face fakes one: each word's initial at the type size
+/// and the rest of the word as capitals a few points smaller ("R" 14 pt + "ECOLLECTION" 11 pt).
+/// Weighted by characters, such a line reads as the smaller size -- on a page whose body is set
+/// at that size, a title that reads as body text. The line is set at the size of its initials.
+///
+/// `spans` are in reading order. The pattern is strict, so that a line merely mixing two sizes
+/// is not taken for it: no lowercase letters, exactly two sizes a capital-to-small-capital ratio
+/// apart, at most one letter per word at the larger size, and every smaller run that opens with
+/// a letter continuing a word whose initial ends the run before it.
+fn faux_small_caps_size(spans: &[TextSpan]) -> Option<f32> {
+    let big = spans.iter().map(|s| s.font_size).fold(f32::MIN, f32::max);
+    let small = spans.iter().map(|s| s.font_size).fold(f32::MAX, f32::min);
+    if !(big * 0.6..=big * 0.9).contains(&small) {
+        return None;
+    }
+    let is_big = |s: &TextSpan| (s.font_size - big).abs() < 0.25;
+    let is_small = |s: &TextSpan| (s.font_size - small).abs() < 0.25;
+    if spans.iter().any(|s| !is_big(s) && !is_small(s))
+        || spans.iter().any(|s| s.text.chars().any(char::is_lowercase))
+    {
+        return None;
+    }
+    let mut continued = 0;
+    for (i, span) in spans.iter().enumerate() {
+        if is_big(span) {
+            let initials_only = span
+                .text
+                .split_whitespace()
+                .all(|word| word.chars().filter(|c| c.is_alphabetic()).count() <= 1);
+            if !initials_only {
+                return None;
+            }
+        } else if span.text.chars().next().is_some_and(char::is_alphabetic) {
+            let previous = &spans[i.checked_sub(1)?];
+            let after_initial =
+                is_big(previous) && previous.text.chars().last().is_some_and(char::is_uppercase);
+            if !after_initial {
+                return None;
+            }
+            continued += 1;
+        }
+    }
+    (continued > 0).then_some(big)
+}
+
 impl TextLine {
     /// Create a new text line from spans.
     pub fn from_spans(mut spans: Vec<TextSpan>) -> Self {
@@ -198,13 +245,16 @@ impl TextLine {
             };
         }
 
-        // Calculate dominant font size (weighted by text length)
+        // Calculate dominant font size (weighted by text length) -- except on a line of faux
+        // small capitals, which is set at the size of its initials.
         let total_chars: usize = spans.iter().map(|s| s.text.len()).sum();
         let weighted_size: f32 = spans
             .iter()
             .map(|s| s.font_size * s.text.len() as f32)
             .sum();
-        let font_size = if total_chars > 0 {
+        let font_size = if let Some(size) = faux_small_caps_size(&spans) {
+            size
+        } else if total_chars > 0 {
             weighted_size / total_chars as f32
         } else {
             spans[0].font_size
@@ -2958,6 +3008,60 @@ mod tests {
                 })
                 .collect(),
         )
+    }
+
+    /// "3. RECOLLECTION OF NATIONAL INITIATIVES" as a word processor fakes small caps: the
+    /// number and each word's initial at 14 pt, the rest of each word as 11 pt capitals.
+    fn faux_small_caps_title() -> Vec<(&'static str, f32, f32, f32)> {
+        let runs = [
+            ("3. ", 102.0, 14.0),
+            ("R", 102.0, 14.0),
+            ("ECOLLECTION OF ", 101.3, 11.0),
+            ("N", 102.0, 14.0),
+            ("ATIONAL ", 101.3, 11.0),
+            ("I", 102.0, 14.0),
+            ("NITIATIVES", 101.3, 11.0),
+        ];
+        // Each run starts where the one before it ends, as the glyphs are set.
+        let mut x = 121.0;
+        runs.iter()
+            .map(|&(text, y, size)| {
+                let at = x;
+                x += estimate_text_width(text, size);
+                (text, at, y, size)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_line_of_faux_small_caps_is_set_at_the_size_of_its_initials() {
+        let line = span_line(&faux_small_caps_title());
+        assert_eq!(line.font_size, 14.0);
+        assert_eq!(line.text(), "3. RECOLLECTION OF NATIONAL INITIATIVES");
+    }
+
+    #[test]
+    fn mixed_sizes_that_are_not_faux_small_caps_keep_the_weighted_size() {
+        // Lowercase anywhere: an ordinary line with a larger word in it.
+        let mut parts = faux_small_caps_title();
+        parts[2].0 = "ecollection of ";
+        assert!(span_line(&parts).font_size < 12.0);
+        // A whole word at the larger size is not an initial.
+        let mut parts = faux_small_caps_title();
+        parts[1].0 = "RE";
+        assert!(span_line(&parts).font_size < 12.0);
+        // A smaller run that opens a word with no initial before it.
+        let mut parts = faux_small_caps_title();
+        parts[3].3 = 11.0;
+        assert!(span_line(&parts).font_size < 12.0);
+        // Sizes too far apart for capitals and small capitals (a 7 pt footnote mark).
+        let mut parts = faux_small_caps_title();
+        for part in &mut parts {
+            if part.3 == 11.0 {
+                part.3 = 7.0;
+            }
+        }
+        assert!(span_line(&parts).font_size < 12.0);
     }
 
     #[test]

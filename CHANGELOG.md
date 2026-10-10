@@ -4,6 +4,13 @@
 
 ### Fixed
 
+- **A title set in faux small capitals is a heading.** A word processor without a small-caps
+  face sets each word's initial at the type size and the rest of the word as smaller capitals
+  ("R" at 14 pt, "ECOLLECTION" at 11 pt). Averaged over its characters such a line measured as
+  the smaller size — the body size, on many pages — so the title ran into the paragraph after
+  it. A line of only capitals whose larger letters are word initials, each continued by the
+  smaller capitals of the same word, is now measured at the size of its initials.
+
 - **A heading wrapped over two lines stays a heading.** A line set larger than the body was not
   taken for a heading when a line of the same size sat next to it — the rule that keeps table
   cells and lists set large from becoming headings. A title broken across two lines ("… balance
