@@ -4,6 +4,11 @@
 
 ### Added
 
+- **Tables as CSV from the bindings and the C ABI.** `unpdf_tables(doc, tsv)` returns every
+  table as CSV (RFC 4180), or tab-separated, with the page it is on and its place there, as a
+  JSON array of `{"page", "index", "text"}`; Python `get_tables()` / `Document.get_tables()` and
+  .NET `UnpdfDocument.GetTables()` wrap it. For library users, `Document::tables()` lists the
+  tables with their place — what `unpdf tables` writes.
 - `Table::cell_columns()` — the grid column each cell starts in, one list per row, parallel to
   the row's cells: a merge is recorded once on the cell that owns it, so a cell's index in its
   row is not its column once a cell merged down from a row above sits to its left.

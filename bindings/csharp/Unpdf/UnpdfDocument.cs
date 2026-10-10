@@ -483,6 +483,44 @@ public class UnpdfDocument : IDisposable
     }
 
     /// <summary>
+    /// Get every table of the document as delimited text, in reading order.
+    /// </summary>
+    /// <remarks>
+    /// Each table is CSV (RFC 4180), or tab-separated when <paramref name="tsv"/> is true: a
+    /// merged cell's text is in its top-left position and the positions it covers are empty,
+    /// so every record has the same number of fields; records end with CRLF.
+    /// </remarks>
+    /// <param name="tsv">Tab-separated instead of comma-separated.</param>
+    /// <returns>The tables with their page and place on it; empty when there are none.</returns>
+    public IReadOnlyList<TableText> GetTables(bool tsv = false)
+    {
+        var json = GetTablesRawJson(tsv);
+        return JsonSerializer.Deserialize(json, UnpdfJsonContext.Default.TableTextArray)
+            ?? throw new UnpdfException("Failed to deserialize tables");
+    }
+
+    /// <summary>
+    /// Raw JSON payload behind <see cref="GetTables"/>. Test-only — see
+    /// <see cref="GetExtractionQualityRawJson"/> for why this exists.
+    /// </summary>
+    internal string GetTablesRawJson(bool tsv = false)
+    {
+        ThrowIfDisposed();
+        var ptr = NativeMethods.unpdf_tables(_handle, tsv ? 1 : 0);
+        if (ptr == IntPtr.Zero)
+            throw Failure("Failed to get tables");
+
+        try
+        {
+            return PtrToStringUtf8(ptr);
+        }
+        finally
+        {
+            NativeMethods.unpdf_free_string(ptr);
+        }
+    }
+
+    /// <summary>
     /// Raw JSON payload behind <see cref="GetExtractionQuality"/>, before it is
     /// deserialized into <see cref="ExtractionQuality"/>.
     /// </summary>

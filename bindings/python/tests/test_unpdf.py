@@ -560,6 +560,42 @@ class TestDtoFieldCoverage:
         assert type(stats) is dict
 
 
+def _bordered_table_pdf() -> bytes:
+    """One page with a ruled 2x2 grid holding Name | Age over Alice | 30."""
+    content = (
+        b"2 w 70 660 m 70 700 l S 170 660 m 170 700 l S 270 660 m 270 700 l S "
+        b"70 700 m 270 700 l S 70 680 m 270 680 l S 70 660 m 270 660 l S "
+        b"BT /F1 12 Tf 80 690 Td (Name) Tj ET BT /F1 12 Tf 180 690 Td (Age) Tj ET "
+        b"BT /F1 12 Tf 80 670 Td (Alice) Tj ET BT /F1 12 Tf 180 670 Td (30) Tj ET\n"
+    )
+    return _assemble([
+        b"<</Type/Catalog/Pages 2 0 R>>",
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>",
+        b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]"
+        b"/Resources<</Font<</F1 5 0 R>>>>/Contents 4 0 R>>",
+        _stream_object(b"<</Length %d>>" % len(content), content),
+        b"<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>",
+    ])
+
+
+class TestGetTables:
+    """Tables as delimited text: ``get_tables`` and ``Document.get_tables``."""
+
+    def test_a_table_comes_as_csv_with_its_place(self, tmp_path):
+        pdf_file = tmp_path / "table.pdf"
+        pdf_file.write_bytes(_bordered_table_pdf())
+        assert unpdf.get_tables(str(pdf_file)) == [
+            {"page": 1, "index": 1, "text": "Name,Age\r\nAlice,30\r\n"}
+        ]
+
+    def test_tsv_separates_fields_with_tabs(self, tmp_path):
+        with unpdf.Document(_bordered_table_pdf()) as doc:
+            assert doc.get_tables(tsv=True)[0]["text"] == "Name\tAge\r\nAlice\t30\r\n"
+
+    def test_a_document_without_tables_has_none(self):
+        assert unpdf.get_tables(_text_pdf()) == []
+
+
 class TestToJson:
     """Tests for to_json function."""
 

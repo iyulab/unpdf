@@ -290,6 +290,17 @@ char* unpdf_get_extraction_quality(const UnpdfDocument* doc);
 char* unpdf_page_stats(const UnpdfDocument* doc, int page_number);
 
 /**
+ * Every table of the document as delimited text, in reading order, as a JSON
+ * array of {"page","index","text"}: the page's number, the table's place among
+ * that page's tables (from 1), and the table as CSV (RFC 4180) — tab-separated
+ * when tsv is non-zero. A merged cell's text is in its top-left position and
+ * the positions it covers are empty; records end with CRLF.
+ * @return JSON string (must be freed with unpdf_free_string), "[]" when the
+ *         document has no tables, or NULL on error.
+ */
+char* unpdf_tables(const UnpdfDocument* doc, int tsv);
+
+/**
  * All resource IDs as a JSON array of strings.
  * @return JSON string (must be freed with unpdf_free_string), or NULL.
  */

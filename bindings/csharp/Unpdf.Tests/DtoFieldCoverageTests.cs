@@ -35,6 +35,14 @@ public class DtoFieldCoverageTests
         AssertDtoCoversNativeFields(doc.GetPageStatsRawJson(1), typeof(PageStats));
     }
 
+    [Fact]
+    public void TableText_CoversEveryNativeField()
+    {
+        using var doc = UnpdfDocument.ParseBytes(PdfFixtures.BorderedTablePdf());
+        using var tables = JsonDocument.Parse(doc.GetTablesRawJson());
+        AssertDtoCoversNativeFields(tables.RootElement[0].GetRawText(), typeof(TableText));
+    }
+
     private static void AssertDtoCoversNativeFields(string nativeJson, Type dtoType)
     {
         var nativeFields = NativeJsonFieldNames(nativeJson);

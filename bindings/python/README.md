@@ -128,6 +128,14 @@ grids drawn vs. tables built from them), `reading_regions`, `column_count` and
 `ambiguous_layout_regions` (regions read across although their text looked like
 two columns — where the reading order guessed).
 
+### `get_tables(source: PdfSource, tsv: bool = False, options: dict | None = None) -> list[dict]`
+Every table as CSV (RFC 4180), or tab-separated with `tsv=True`, in reading
+order: `{"page", "index", "text"}` — the page, the table's place among that
+page's tables (from 1), and the text. A merged cell's text is in its top-left
+position and the positions it covers are empty, so every record has the same
+number of fields: `pandas.read_csv(io.StringIO(t["text"]))` reads one.
+`Document.get_tables(tsv=False)` does the same on an open document.
+
 ### `get_resource_ids(source: PdfSource, options: dict | None = None) -> list[str]`
 ### `get_resource_info(source: PdfSource, resource_id: str, options: dict | None = None) -> dict`
 ### `get_resource_data(source: PdfSource, resource_id: str, options: dict | None = None) -> bytes`

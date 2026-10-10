@@ -435,6 +435,46 @@ def get_page_stats(
         lib.unpdf_free_document(handle)
 
 
+def get_tables(
+    source: PdfSource, tsv: bool = False, options: "dict[str, Any] | None" = None
+) -> "list[dict[str, Any]]":
+    """
+    Every table of the document as delimited text, in reading order.
+
+    Returns:
+        A list of ``{"page", "index", "text"}``: the page's number, the table's
+        place among that page's tables (from 1), and the table as CSV
+        (RFC 4180) — tab-separated when ``tsv`` is true. A merged cell's text is
+        in its top-left position and the positions it covers are empty, so
+        every record has the same number of fields; records end with CRLF.
+        ``pandas.read_csv(io.StringIO(t["text"]))`` reads one. An empty list
+        when the document has no tables.
+
+    Args:
+        source: Path to the PDF file (``str`` or ``os.PathLike``), or the
+            PDF's own bytes.
+        tsv: Tab-separated instead of comma-separated.
+        options: Parsing options — see :data:`ParseOptions`. ``None`` (the
+            default) uses unpdf's own defaults.
+
+    Raises:
+        UnpdfError: If parsing fails.
+    """
+    lib = get_library()
+    handle = _parse_file(lib, source, options)
+    try:
+        return _tables(lib, handle, tsv)
+    finally:
+        lib.unpdf_free_document(handle)
+
+
+def _tables(lib: ctypes.CDLL, handle: Any, tsv: bool) -> "list[dict[str, Any]]":
+    result = lib.unpdf_tables(handle, 1 if tsv else 0)
+    if not result:
+        raise _native_error(lib)
+    return json.loads(_take_string(lib, result))
+
+
 def get_resource_ids(
     source: PdfSource, options: "dict[str, Any] | None" = None
 ) -> "list[str]":
@@ -627,6 +667,10 @@ class Document:
         if not result:
             raise _native_error(self._lib)
         return json.loads(_take_string(self._lib, result))
+
+    def get_tables(self, tsv: bool = False) -> "list[dict[str, Any]]":
+        """Every table as delimited text — see :func:`get_tables`."""
+        return _tables(self._lib, self._live(), tsv)
 
     def close(self) -> None:
         """Release the document. Further calls raise ``ValueError``."""

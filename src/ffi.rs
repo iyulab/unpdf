@@ -959,6 +959,37 @@ unparser_shared::export_string_getter!(
 );
 
 unparser_shared::export_string_getter!(
+    /// Get every table of the document as delimited text, in reading order, as JSON:
+    /// `[{"page","index","text"}]` — the page's number, the table's place among that page's
+    /// tables (from 1), and the table as CSV (RFC 4180), or tab-separated when `tsv` is
+    /// non-zero. A merged cell's text is in its top-left position and the positions it covers
+    /// are empty; records end with CRLF. `[]` when the document has no tables.
+    ///
+    /// # Safety
+    ///
+    /// - `doc` must be a valid document handle.
+    /// - Returns null on error.
+    /// - The returned string must be freed with `unpdf_free_string`.
+    LAST_ERROR,
+    unpdf_tables(doc: UnpdfDocument, tsv: c_int),
+    {
+        let document = &(*doc).inner;
+        let delimiter = if tsv != 0 { '\t' } else { ',' };
+        let tables: Vec<serde_json::Value> = document
+            .tables()
+            .map(|(page, index, table)| {
+                serde_json::json!({
+                    "page": page,
+                    "index": index,
+                    "text": table.to_delimited(delimiter),
+                })
+            })
+            .collect();
+        serde_json::to_string(&tables).map_err(json_err)
+    }
+);
+
+unparser_shared::export_string_getter!(
     /// Get resource metadata as JSON (without binary data).
     ///
     /// Returns `{"id","type","filename","mime_type","size","width","height","page"}`.

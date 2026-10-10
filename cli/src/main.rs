@@ -1143,18 +1143,8 @@ fn cmd_tables(
 
     let (delimiter, extension) = if tsv { ('\t', "tsv") } else { (',', "csv") };
     let tables: Vec<(u32, usize, String)> = doc
-        .pages
-        .iter()
-        .flat_map(|page| {
-            page.elements
-                .iter()
-                .filter_map(|block| match block {
-                    unpdf::Block::Table(table) => Some(table),
-                    _ => None,
-                })
-                .enumerate()
-                .map(move |(i, table)| (page.number, i + 1, table.to_delimited(delimiter)))
-        })
+        .tables()
+        .map(|(page, n, table)| (page, n, table.to_delimited(delimiter)))
         .collect();
 
     match output {

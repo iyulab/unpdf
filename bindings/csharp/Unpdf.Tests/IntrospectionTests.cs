@@ -166,8 +166,54 @@ public class IntrospectionTests
 /// <summary>
 /// Minimal synthetic PDF builders — Rust 통합 테스트(tests/common/mod.rs)와 동일 구조.
 /// </summary>
+public class TableTextTests
+{
+    [Fact]
+    public void GetTables_RuledGrid_ComesAsCsvWithItsPlace()
+    {
+        using var doc = UnpdfDocument.ParseBytes(PdfFixtures.BorderedTablePdf());
+        var table = Assert.Single(doc.GetTables());
+        Assert.Equal(1, table.Page);
+        Assert.Equal(1, table.Index);
+        Assert.Equal("Name,Age\r\nAlice,30\r\n", table.Text);
+    }
+
+    [Fact]
+    public void GetTables_Tsv_SeparatesFieldsWithTabs()
+    {
+        using var doc = UnpdfDocument.ParseBytes(PdfFixtures.BorderedTablePdf());
+        Assert.Equal("Name\tAge\r\nAlice\t30\r\n", doc.GetTables(tsv: true)[0].Text);
+    }
+
+    [Fact]
+    public void GetTables_NoTables_IsEmpty()
+    {
+        using var doc = UnpdfDocument.ParseBytes(PdfFixtures.TextPdf());
+        Assert.Empty(doc.GetTables());
+    }
+}
+
 internal static class PdfFixtures
 {
+    /// <summary>One page with a ruled 2x2 grid holding Name | Age over Alice | 30.</summary>
+    public static byte[] BorderedTablePdf()
+    {
+        var content =
+            "2 w 70 660 m 70 700 l S 170 660 m 170 700 l S 270 660 m 270 700 l S " +
+            "70 700 m 270 700 l S 70 680 m 270 680 l S 70 660 m 270 660 l S " +
+            "BT /F1 12 Tf 80 690 Td (Name) Tj ET BT /F1 12 Tf 180 690 Td (Age) Tj ET " +
+            "BT /F1 12 Tf 80 670 Td (Alice) Tj ET BT /F1 12 Tf 180 670 Td (30) Tj ET\n";
+        return Assemble(new[]
+        {
+            "<</Type/Catalog/Pages 2 0 R>>",
+            "<</Type/Pages/Kids[3 0 R]/Count 1>>",
+            "<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]" +
+                "/Resources<</Font<</F1 5 0 R>>>>/Contents 4 0 R>>",
+            StreamObject($"<</Length {content.Length}>>", content),
+            "<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>",
+        });
+    }
+
     /// <summary>One page with a single line of visible Helvetica text.</summary>
     public static byte[] TextPdf()
     {

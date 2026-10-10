@@ -10,10 +10,10 @@ use std::ffi::CStr;
 use std::os::raw::c_char;
 use std::ptr;
 
-use common::{image_only_pdf, suppressed_text_run_pdf, text_pdf};
+use common::{bordered_table_pdf, image_only_pdf, suppressed_text_run_pdf, text_pdf};
 use unpdf::ffi::{
     unpdf_free_document, unpdf_free_string, unpdf_get_extraction_quality, unpdf_last_error,
-    unpdf_page_stats, unpdf_parse_bytes,
+    unpdf_page_stats, unpdf_parse_bytes, unpdf_tables,
 };
 
 /// Helper: consume an FFI string result into an owned Rust String.
@@ -149,6 +149,39 @@ fn page_stats_names_the_unreadable_font() {
         );
         assert_eq!(v["suppressed_text_runs"], 1, "{json}");
 
+        unpdf_free_document(doc);
+    }
+}
+
+#[test]
+fn tables_come_as_csv_with_their_place() {
+    let bytes = bordered_table_pdf();
+    unsafe {
+        let doc = unpdf_parse_bytes(bytes.as_ptr(), bytes.len());
+        assert!(!doc.is_null());
+
+        let json = take_string(unpdf_tables(doc, 0));
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!([{"page": 1, "index": 1, "text": "Name,Age\r\nAlice,30\r\n"}]),
+            "{json}"
+        );
+        let tsv: serde_json::Value =
+            serde_json::from_str(&take_string(unpdf_tables(doc, 1))).unwrap();
+        assert_eq!(tsv[0]["text"], "Name\tAge\r\nAlice\t30\r\n");
+
+        unpdf_free_document(doc);
+    }
+}
+
+#[test]
+fn a_document_without_tables_has_an_empty_list() {
+    let bytes = text_pdf();
+    unsafe {
+        let doc = unpdf_parse_bytes(bytes.as_ptr(), bytes.len());
+        assert!(!doc.is_null());
+        assert_eq!(take_string(unpdf_tables(doc, 0)), "[]");
         unpdf_free_document(doc);
     }
 }

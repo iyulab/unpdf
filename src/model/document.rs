@@ -1,6 +1,6 @@
 //! Document-level types.
 
-use super::{ExtractionQuality, FormField, Page, Resource};
+use super::{Block, ExtractionQuality, FormField, Page, Resource, Table};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -76,6 +76,22 @@ impl Document {
     pub fn get_resource(&self, id: &str) -> Option<&Resource> {
         self.resources()
             .find_map(|(rid, resource)| (rid == id).then_some(resource))
+    }
+
+    /// Every table of the document in reading order, with where it is: the page's number and
+    /// the table's place among that page's tables (from 1) — the names `unpdf tables` writes
+    /// them under (`p<page>-t<n>`).
+    pub fn tables(&self) -> impl Iterator<Item = (u32, usize, &Table)> {
+        self.pages.iter().flat_map(|page| {
+            page.elements
+                .iter()
+                .filter_map(|block| match block {
+                    Block::Table(table) => Some(table),
+                    _ => None,
+                })
+                .enumerate()
+                .map(move |(i, table)| (page.number, i + 1, table))
+        })
     }
 
     /// Check if the document has any pages.

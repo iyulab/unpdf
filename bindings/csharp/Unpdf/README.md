@@ -175,6 +175,7 @@ for (var n = 1; n <= doc.SectionCount; n++)
 | `int ResourceCount` | Size of the extracted-resource inventory — see above. |
 | `ExtractionQuality GetExtractionQuality()` | Document-level extraction diagnostics. |
 | `PageStats GetPageStats(int pageNumber)` | Per-page content-stream operator counts. |
+| `IReadOnlyList<TableText> GetTables(bool tsv = false)` | Every table as CSV (RFC 4180), or tab-separated — `Page`, `Index` (its place on the page, from 1) and `Text`. A merged cell's text is in its top-left position and the positions it covers are empty. |
 | `string[] GetResourceIds()` | Ids in the resource inventory, in reading order — the same ids the rendered Markdown references (`page1_Im0.jpg`). |
 | `JsonDocument? GetResourceInfo(string resourceId)` | Metadata for one resource. |
 | `byte[]? GetResourceData(string resourceId)` | Raw bytes of one resource. |

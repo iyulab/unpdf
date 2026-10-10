@@ -281,3 +281,24 @@ public sealed class UnreadableFont
     [JsonPropertyName("runs")]
     public long Runs { get; init; }
 }
+
+/// <summary>
+/// One table of the document as delimited text — see <see cref="UnpdfDocument.GetTables"/>.
+/// </summary>
+public sealed class TableText
+{
+    /// <summary>The number of the page the table is on (1-indexed).</summary>
+    [JsonPropertyName("page")]
+    public int Page { get; init; }
+
+    /// <summary>The table's place among that page's tables (from 1).</summary>
+    [JsonPropertyName("index")]
+    public int Index { get; init; }
+
+    /// <summary>
+    /// The table as CSV (RFC 4180), or tab-separated text: a merged cell's text in its
+    /// top-left position and the positions it covers empty, records ended with CRLF.
+    /// </summary>
+    [JsonPropertyName("text")]
+    public string Text { get; init; } = "";
+}

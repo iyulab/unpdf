@@ -180,6 +180,9 @@ _lib.unpdf_get_extraction_quality.restype = ctypes.c_void_p
 _lib.unpdf_page_stats.argtypes = [ctypes.c_void_p, ctypes.c_int]
 _lib.unpdf_page_stats.restype = ctypes.c_void_p
 
+_lib.unpdf_tables.argtypes = [ctypes.c_void_p, ctypes.c_int]
+_lib.unpdf_tables.restype = ctypes.c_void_p
+
 _lib.unpdf_get_resource_ids.argtypes = [ctypes.c_void_p]
 _lib.unpdf_get_resource_ids.restype = ctypes.c_void_p
 

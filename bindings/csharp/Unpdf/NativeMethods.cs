@@ -181,6 +181,12 @@ internal static class NativeMethods
     public static extern IntPtr unpdf_page_stats(IntPtr doc, int pageNum);
 
     /// <summary>
+    /// Get every table as delimited text, with its place, as a JSON array.
+    /// </summary>
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern IntPtr unpdf_tables(IntPtr doc, int tsv);
+
+    /// <summary>
     /// Get all resource IDs as a JSON array.
     /// </summary>
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
