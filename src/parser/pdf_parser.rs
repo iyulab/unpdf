@@ -834,6 +834,13 @@ fn extract_page_with_tables_fn(
         // Tables (and the rows of tables too uncertain to keep, as paragraphs) — each one
         // unit, placed into the text's reading order below.
         let mut tables: Vec<(Extent, Vec<Element>)> = Vec::new();
+        // Where the ruled tables stand: lines above and below one are not neighbours for
+        // heading detection. Only ruled ones -- a table guessed from aligned text (a page of
+        // displayed equations) is not evidence enough to part its neighbours.
+        let tables_at: Vec<f32> = lattice_tables
+            .iter()
+            .map(|(extent, _)| extent.top)
+            .collect();
 
         for (extent, table) in lattice_tables {
             tables.push((extent, vec![Element::table(extent.top, table)]));
@@ -884,7 +891,7 @@ fn extract_page_with_tables_fn(
             a.font_stats_mut().analyze();
 
             let lines = a.group_spans_into_lines_pub(remaining_spans);
-            let lines = a.detect_headings_pub(lines);
+            let lines = a.detect_headings_around_pub(lines, &tables_at);
             let text_blocks = a.group_lines_into_blocks_pub(lines);
 
             for block in text_blocks {

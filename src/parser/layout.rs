@@ -1154,6 +1154,15 @@ impl<'a> LayoutAnalyzer<'a> {
         Self::detect_headings(&self.font_stats, lines)
     }
 
+    /// Public wrapper for detect_headings around tables taken out of the text (their tops).
+    pub fn detect_headings_around_pub(
+        &self,
+        lines: Vec<TextLine>,
+        tables_at: &[f32],
+    ) -> Vec<TextLine> {
+        Self::detect_headings_around(&self.font_stats, lines, tables_at)
+    }
+
     /// Public wrapper for group_lines_into_blocks.
     pub fn group_lines_into_blocks_pub(&self, lines: Vec<TextLine>) -> Vec<TextBlock> {
         Self::group_lines_into_blocks(lines)
@@ -1690,7 +1699,17 @@ impl<'a> LayoutAnalyzer<'a> {
     /// Takes the font statistics explicitly rather than reading `self`: everything this
     /// decision depends on is in there, and a heading rule that can be exercised without a
     /// backend is a heading rule that can be tested.
-    fn detect_headings(font_stats: &FontStatistics, mut lines: Vec<TextLine>) -> Vec<TextLine> {
+    fn detect_headings(font_stats: &FontStatistics, lines: Vec<TextLine>) -> Vec<TextLine> {
+        Self::detect_headings_around(font_stats, lines, &[])
+    }
+
+    /// [`Self::detect_headings`] for text a table was taken out of: `tables_at` holds the top
+    /// of each table, so that the lines above and below one are not taken for neighbours.
+    fn detect_headings_around(
+        font_stats: &FontStatistics,
+        mut lines: Vec<TextLine>,
+        tables_at: &[f32],
+    ) -> Vec<TextLine> {
         // Snapshot each line's font size so neighbour lookups aren't polluted
         // by mutations inside the loop.
         let sizes: Vec<f32> = lines.iter().map(|l| l.font_size).collect();
@@ -1771,8 +1790,14 @@ impl<'a> LayoutAnalyzer<'a> {
             // "structure in Japan").
             if from_size {
                 let same = |a: f32, b: f32| (a - b).abs() < 0.5;
+                // A neighbour in the list is not a sibling across a table taken out of the text
+                // between them: the titles above and below it are next to each other only in
+                // the list.
                 let sibling = |j: usize| {
                     same(sizes[j], line.font_size)
+                        && !tables_at
+                            .iter()
+                            .any(|&t| t > ys[j].min(line.y) && t < ys[j].max(line.y))
                         && !is_bare_section_number(&texts[j])
                         && !(if j < i {
                             wraps_into(&texts[j], ys[j], trimmed, line.y, line.font_size)
@@ -3537,6 +3562,25 @@ mod tests {
             !result[1].is_heading && !result[2].is_heading,
             "16pt is under body + 6.0, so a same-size neighbour suppresses both"
         );
+    }
+
+    /// Two titles of one size with a table taken out between them are next to each other in
+    /// the list of lines, but not on the page: neither is the other's sibling. Without the
+    /// table between them they still are.
+    #[test]
+    fn test_detect_headings_keeps_same_size_titles_a_table_stands_between() {
+        let stats = body_12pt_stats(&[16.0]);
+        let lines = || {
+            vec![
+                line_at("Table 13.2. Effect of cations", 700.0, 16.0, "Helvetica"),
+                line_at("Activity 4. Determining CEC", 560.0, 16.0, "Helvetica"),
+                line_at("Body text follows the title.", 540.0, 12.0, "Helvetica"),
+            ]
+        };
+        let result = LayoutAnalyzer::detect_headings_around(&stats, lines(), &[690.0]);
+        assert!(result[0].is_heading && result[1].is_heading);
+        let result = LayoutAnalyzer::detect_headings(&stats, lines());
+        assert!(!result[0].is_heading && !result[1].is_heading);
     }
 
     /// A title wrapped over two lines is one heading, not two siblings: the second line opens

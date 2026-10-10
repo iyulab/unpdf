@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A table to fill in is a table.** A table ruled only above and below, with a header naming
+  its columns and entries in the first column while the others are left blank to write in
+  (`Added cation | Relative Size …` over `K+`, `Na+`, `Check`), ran together as one bold line:
+  only the header crossed into the blank column, so nothing showed it was a column. A header
+  that divides into cells over rows of short entries that all stay left of that division is now
+  read as the table's columns. Column gaps are also measured to the end of a cell's ink, not
+  to the end of its trailing space.
+- **Two titles of one size are not siblings when a table stands between them.** Lines of one
+  size next to each other are taken for a run (a list, a large table column) and not made
+  headings; with a table taken out of the text, the titles above and below it became
+  neighbours and both lost their heading. Lines on either side of a table are no longer taken
+  for neighbours.
+
 ## 0.37.0 — 2026-10-10
 
 ### Fixed

@@ -201,14 +201,7 @@ fn reads_as_prose(rows: &[&TableRowData]) -> bool {
 /// reason to lose the table. Up to a fifth of the rows may cross, and none in a table of
 /// fewer than five rows; the run that crosses stays in the cell it starts in.
 fn column_gaps(rows: &[&TableRowData]) -> Vec<(f32, f32)> {
-    let extent = |s: &TextSpan| {
-        let width = if s.width > 0.0 {
-            s.width
-        } else {
-            s.text.chars().count() as f32 * s.font_size * 0.5
-        };
-        (s.x, s.x + width)
-    };
+    let extent = span_extent;
     let mut sizes: Vec<f32> = rows
         .iter()
         .flat_map(|r| r.spans.iter())
@@ -277,7 +270,25 @@ fn column_gaps(rows: &[&TableRowData]) -> Vec<(f32, f32)> {
             gaps.push((a, b));
         }
     }
+    if gaps.is_empty() {
+        gaps = worksheet_gaps(rows, min_gap);
+    }
     gaps
+}
+
+/// The gaps between a worksheet's header cells ([`is_worksheet`]). Found from the header alone:
+/// with only one row crossing to the right, the scan above lets that row cross and reads the
+/// whole width beside the entries as one open edge.
+fn worksheet_gaps(rows: &[&TableRowData], min_gap: f32) -> Vec<(f32, f32)> {
+    let Some(header) = rows.first() else {
+        return Vec::new();
+    };
+    header
+        .spans
+        .windows(2)
+        .map(|w| (span_extent(&w[0]).1, w[1].x))
+        .filter(|&(a, b)| b - a >= min_gap && is_worksheet(rows, (a, b)))
+        .collect()
 }
 
 /// Whether rows that line up in columns are a table rather than a chart drawn between rules:
@@ -300,7 +311,43 @@ fn reads_as_table(rows: &[&TableRowData], gaps: &[(f32, f32)]) -> bool {
                 .any(|s| s.text.chars().filter(|c| c.is_alphabetic()).count() >= 2)
         })
         .count();
-    split * 2 >= rows.len() && worded * 2 >= rows.len()
+    let worksheet = gaps.iter().any(|&gap| is_worksheet(rows, gap));
+    (split * 2 >= rows.len() || worksheet) && worded * 2 >= rows.len()
+}
+
+/// Where a run of text ends in ink: its trailing spaces are advance, and a gap measured to them
+/// comes out a space short (a header cell drawn as `Added cation ` stood 5 pt from the next one
+/// instead of 7).
+fn span_extent(s: &TextSpan) -> (f32, f32) {
+    let width = if s.width > 0.0 {
+        s.width
+    } else {
+        s.text.chars().count() as f32 * s.font_size * 0.5
+    };
+    let trailing = s.text.len() - s.text.trim_end().len();
+    let ink = (width - trailing as f32 * s.font_size * SPACE_EM).max(0.0);
+    (s.x, s.x + ink)
+}
+
+/// The advance of a space, in multiples of the font size -- what most text faces draw.
+const SPACE_EM: f32 = 0.25;
+
+/// A table to be filled in: a header row naming its columns, and rows under it that fill only
+/// the columns left of `gap` -- the rest is blank for the reader to write in. Only the header
+/// crosses the gap, so nothing else shows the column; three rows at least, each entry short.
+fn is_worksheet(rows: &[&TableRowData], gap: (f32, f32)) -> bool {
+    let [header, body @ ..] = rows else {
+        return false;
+    };
+    let (a, b) = gap;
+    rows.len() >= 3
+        && header.spans.iter().any(|s| span_extent(s).1 <= a + 0.5)
+        && header.spans.iter().any(|s| s.x >= b - 0.5)
+        && body.iter().all(|r| {
+            r.spans
+                .iter()
+                .all(|s| span_extent(s).1 <= a + 0.5 && s.text.split_whitespace().count() <= 3)
+        })
 }
 
 /// The grid of one ruled table: columns at the body's gaps, a row per line of text.
@@ -416,6 +463,46 @@ mod tests {
             .collect();
         assert_eq!(cells[0], ["Mineral", "CEC"]);
         assert_eq!(cells[3], ["humus", "200"]);
+    }
+
+    /// A table to fill in, ruled above and below: a header naming two columns, entries in the
+    /// first, the second left blank.
+    fn worksheet(header_gap: f32) -> (Vec<GraphicsLine>, Vec<TextSpan>) {
+        let rules = vec![h(500.0, 100.0, 400.0), h(420.0, 100.0, 400.0)];
+        let header = span("Added cation ", 105.0, 488.0);
+        let second_x = 105.0 + header.width - 2.5 + header_gap;
+        let spans = vec![
+            header,
+            span("Settling Rates of Floccules", second_x, 488.0),
+            span("K+", 105.0, 474.0),
+            span("Na+", 105.0, 462.0),
+            span("Ca2+", 105.0, 450.0),
+            span("Check", 105.0, 438.0),
+        ];
+        (rules, spans)
+    }
+
+    #[test]
+    fn a_header_over_a_blank_column_is_a_worksheet_table() {
+        // Nine points of ink-to-ink gap: under one em, over the column threshold -- but only
+        // once the header cell's trailing space is not counted as ink.
+        let (rules, spans) = worksheet(9.0);
+        let grids = grids(&rule_stacks(&rules), &spans, &[]);
+        assert_eq!(grids.len(), 1, "{grids:?}");
+        assert_eq!((grids[0].row_count(), grids[0].column_count()), (5, 2));
+        let (table, _) = super::super::lattice::build_table(&grids[0], &spans).unwrap();
+        assert_eq!(
+            table.to_csv(),
+            "Added cation,Settling Rates of Floccules\r\nK+,\r\nNa+,\r\nCa2+,\r\nCheck,\r\n"
+        );
+    }
+
+    #[test]
+    fn a_header_over_a_column_of_sentences_is_not_a_worksheet() {
+        let (rules, mut spans) = worksheet(9.0);
+        spans[2].text = "Potassium settles slowly in the clay".to_string();
+        spans[2].width = spans[2].text.len() as f32 * 5.0;
+        assert!(grids(&rule_stacks(&rules), &spans, &[]).is_empty());
     }
 
     #[test]
