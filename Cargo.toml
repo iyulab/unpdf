@@ -54,7 +54,7 @@ thiserror = "2.0"
 # Shared plumbing for the un* family: error-kind numbering and C-ABI helpers at
 # the crate root (dependency-free), plus the shape-refinement pass and the VLM/AI
 # capabilities behind the `refine` and `ai` features above.
-unparser-shared = { version = "0.7", default-features = false }
+unparser-shared = { version = "0.8", default-features = false }
 
 # Compression
 flate2 = "1.1"

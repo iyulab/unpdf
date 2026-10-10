@@ -2,7 +2,17 @@
 
 ## Unreleased
 
+### Added
+
+- `Table::cell_columns()` — the grid column each cell starts in, one list per row, parallel to
+  the row's cells: a merge is recorded once on the cell that owns it, so a cell's index in its
+  row is not its column once a cell merged down from a row above sits to its left.
+
 ### Fixed
+
+- **`Table::column_count()` counts every column.** It returned the first row's cell count, so a
+  table whose first row merges across (`Region` beside `Sales` spanning two columns) reported
+  fewer columns than it has. It is now the table's grid width.
 
 - **A table to fill in is a table.** A table ruled only above and below, with a header naming
   its columns and entries in the first column while the others are left blank to write in

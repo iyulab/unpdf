@@ -49,9 +49,28 @@ impl Table {
         self.rows.len()
     }
 
-    /// Get the number of columns (based on first row).
+    /// The number of grid columns the table occupies: the furthest any cell reaches, merged
+    /// cells included ([`unparser_shared::grid::place`]). Not the first row's cell count — a
+    /// first row that merges across has fewer cells than the table has columns.
     pub fn column_count(&self) -> usize {
-        self.rows.first().map(|r| r.cells.len()).unwrap_or(0)
+        self.placement().width
+    }
+
+    /// The grid column each cell starts in, one `Vec` per row, parallel to `row.cells`.
+    ///
+    /// A merge is recorded once, on the cell that owns it: the positions it covers have no
+    /// cell of their own, so a cell's index in its row is not its column once a vertical span
+    /// from a row above sits to its left.
+    pub fn cell_columns(&self) -> Vec<Vec<usize>> {
+        self.placement().columns
+    }
+
+    fn placement(&self) -> unparser_shared::grid::Placement {
+        unparser_shared::grid::place(self.rows.iter().map(|row| {
+            row.cells.iter().map(|cell| {
+                unparser_shared::grid::Span::new(cell.rowspan.into(), cell.colspan.into())
+            })
+        }))
     }
 
     /// Check if the table is empty.
@@ -302,6 +321,20 @@ mod tests {
         assert_eq!(table.column_count(), 2);
         assert_eq!(table.header().len(), 1);
         assert_eq!(table.body().len(), 2);
+    }
+
+    /// `Region` (two rows) beside `Sales` (two columns) over `2024 | 2025`: three columns,
+    /// though the first row holds two cells.
+    #[test]
+    fn a_first_row_that_merges_across_counts_every_column() {
+        let mut table = Table::new();
+        table.add_row(TableRow::new(vec![
+            TableCell::text("Region").rowspan(2),
+            TableCell::text("Sales").colspan(2),
+        ]));
+        table.add_row(TableRow::from_strings(["2024", "2025"]));
+        assert_eq!(table.column_count(), 3);
+        assert_eq!(table.cell_columns(), vec![vec![0, 1], vec![1, 2]]);
     }
 
     #[test]
