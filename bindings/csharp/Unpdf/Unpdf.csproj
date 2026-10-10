@@ -15,7 +15,7 @@
 
     <!-- Package metadata -->
     <PackageId>Unpdf</PackageId>
-    <Version>0.36.0</Version>
+    <Version>0.37.0</Version>
     <Authors>iyulab</Authors>
     <Description>High-performance PDF content extraction to Markdown, text, and JSON</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
