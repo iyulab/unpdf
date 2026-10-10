@@ -526,11 +526,21 @@ impl TableDetector {
             .map(|(bucket, _)| *bucket as f32 * bucket_size)
             .collect();
 
-        column_edges.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-
         // Merge close edges — use a CJK-aware gap threshold
         let all_spans: Vec<TextSpan> = rows.iter().flat_map(|r| r.spans.iter().cloned()).collect();
         let min_gap = self.effective_min_column_gap(&all_spans);
+
+        // Columns set flush right: their cells share a right edge, not a left one, and the
+        // left edges inside such a column are no boundaries of their own.
+        let right_aligned = right_aligned_columns(&multi_span_rows, min_occurrences, min_gap);
+        column_edges.retain(|&edge| {
+            !right_aligned
+                .iter()
+                .any(|&(start, _, right)| edge > start + BUCKET_SLACK && edge <= right)
+        });
+        column_edges.extend(right_aligned.iter().map(|&(start, _, _)| start));
+        column_edges.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
         let mut merged_edges: Vec<f32> = Vec::new();
         for edge in column_edges {
             if merged_edges.is_empty() {
@@ -745,9 +755,19 @@ impl TableDetector {
             for span in &row_data.spans {
                 let span_x = span.x;
 
-                // Find the column this span belongs to
-                // Use the span's left edge to determine column assignment
-                let col_idx = self.find_column_for_span(span_x, columns, detected.right_x);
+                // Find the column this span belongs to: by its left edge — unless it starts
+                // just short of the next column's boundary, within a font size of it, and most
+                // of it lies past the boundary (a header over a column of figures set flush
+                // right starts in the channel before them).
+                let mut col_idx = self.find_column_for_span(span_x, columns, detected.right_x);
+                if let Some(&edge) = columns.get(col_idx + 1) {
+                    let next_end = columns.get(col_idx + 2).copied().unwrap_or(f32::MAX);
+                    let before = edge - span_x;
+                    let past = (span_x + span.width).min(next_end) - edge;
+                    if before > 0.0 && before <= span.font_size && past > before {
+                        col_idx += 1;
+                    }
+                }
 
                 if col_idx < cell_contents.len() {
                     cell_contents[col_idx].push(span.text.trim().to_string());
@@ -1336,6 +1356,68 @@ pub(crate) fn group_into_rows(spans: &[TextSpan], y_tolerance_factor: f32) -> Ve
     }
 
     attach_script_rows(rows)
+}
+
+/// How far a column edge found from left edges may sit from the true edge: they are counted in
+/// 5 pt buckets, so an edge stands up to half a bucket from the text it came from.
+const BUCKET_SLACK: f32 = 2.5;
+
+/// Columns whose cells are set flush right, as `(start, left, right)`: the column's left
+/// boundary, its cells' leftmost start, and the right edge they share.
+///
+/// A column of figures set flush right shares no left edge — `2454` starts left of `958` — so
+/// the left edges that find a left-aligned column find nothing here, or a boundary the wider
+/// figures run across. What its cells share is the right edge. So spans of multi-span rows
+/// whose right edges meet within a point, on at least `min_occurrences` rows, and whose left
+/// edges do not, make such a column. Its boundary is the middle of the whitespace channel left
+/// of the figures, from where the column before it ends — not where the widest figure starts: a
+/// header over the column (`Foreign` over its numbers) starts in that channel, and the column
+/// before may be a narrow one whose own edge stands close by. The channel must be at least
+/// `min_gap` wide; justified prose, whose lines' last runs also end together, has only a word
+/// space before them.
+fn right_aligned_columns(
+    multi_span_rows: &[&TableRowData],
+    min_occurrences: usize,
+    min_gap: f32,
+) -> Vec<(f32, f32, f32)> {
+    const RIGHT_BUCKET: f32 = 1.0;
+    let mut by_right: BTreeMap<i32, Vec<(usize, &TextSpan)>> = BTreeMap::new();
+    for (r, row) in multi_span_rows.iter().enumerate() {
+        for span in row.spans.iter().filter(|s| s.width > 0.0) {
+            let key = ((span.x + span.width) / RIGHT_BUCKET).round() as i32;
+            by_right.entry(key).or_default().push((r, span));
+        }
+    }
+    let mut columns = Vec::new();
+    for group in by_right.values() {
+        let mut row_ids: Vec<usize> = group.iter().map(|&(r, _)| r).collect();
+        row_ids.sort_unstable();
+        row_ids.dedup();
+        let left = group.iter().map(|(_, s)| s.x).fold(f32::MAX, f32::min);
+        let widest_start = group.iter().map(|(_, s)| s.x).fold(f32::MIN, f32::max);
+        let right = group
+            .iter()
+            .map(|(_, s)| s.x + s.width)
+            .fold(f32::MIN, f32::max);
+        if row_ids.len() < min_occurrences || widest_start - left < BUCKET_SLACK {
+            continue;
+        }
+        // Where the column before it ends: the furthest right edge of the text left of it, on
+        // the rows the column has cells on — a header spanning columns above is no cell.
+        let Some(channel) = row_ids
+            .iter()
+            .flat_map(|&r| multi_span_rows[r].spans.iter())
+            .filter(|s| s.width > 0.0 && s.x < left && s.x + s.width <= left + 0.5)
+            .map(|s| s.x + s.width)
+            .reduce(f32::max)
+        else {
+            continue;
+        };
+        if left - channel >= min_gap {
+            columns.push(((channel + left) / 2.0, left, right));
+        }
+    }
+    columns
 }
 
 /// How much wider than a column's line pitch the step to a line must be for the line to
@@ -2777,6 +2859,44 @@ mod tests {
         let columns = detector.detect_columns(&rows);
         assert_eq!(columns.len(), 2, "{columns:?}");
         assert_eq!(wrapped_row_starts(&rows, &columns), None);
+    }
+
+    /// Figures set flush right: `2454` starts left of `958`, so no left edge is shared, and
+    /// the wider figures run across any edge the narrower ones give. Their right edges are the
+    /// column; its boundary is where the names end, so the header over the figures, starting
+    /// left of them, heads that column too.
+    #[test]
+    fn a_column_of_figures_set_flush_right_is_a_column() {
+        let detector = TableDetector::new();
+        let mut spans = vec![
+            measured("Port", 77.0, 700.0, 28.0),
+            measured("Foreign", 178.0, 700.0, 36.0),
+            measured("Domestic", 236.0, 700.0, 45.0),
+        ];
+        let rows = [
+            ("MANILA", 40.0, "2454", "6,125"),
+            ("CEBU", 27.0, "1138", "79,500"),
+            ("BATANGAS", 54.0, "958", "13,196"),
+            ("CAGAYAN DE ORO", 87.0, "137", "3,159"),
+            ("ZAMBOANGA", 65.0, "40", "41,27"),
+            ("LUCENA", 39.0, "74", "4,428"),
+        ];
+        for (i, (name, name_width, foreign, domestic)) in rows.into_iter().enumerate() {
+            let y = 685.0 - i as f32 * 15.0;
+            spans.push(measured(name, 77.0, y, name_width));
+            let fw = foreign.len() as f32 * 6.2;
+            spans.push(measured(foreign, 228.0 - fw, y, fw));
+            let dw = domestic.len() as f32 * 5.5;
+            spans.push(measured(domestic, 300.0 - dw, y, dw));
+        }
+        let (tables, _) = detector.detect(spans);
+        assert_eq!(tables.len(), 1, "{tables:?}");
+        let table = detector.to_table_model(&tables[0]);
+        assert_eq!(table.rows[0].cells.len(), 3, "{:?}", tables[0].columns);
+        let header: Vec<String> = table.rows[0].cells.iter().map(|c| c.plain_text()).collect();
+        assert_eq!(header, ["Port", "Foreign", "Domestic"]);
+        let first: Vec<String> = table.rows[1].cells.iter().map(|c| c.plain_text()).collect();
+        assert_eq!(first, ["MANILA", "2454", "6,125"]);
     }
 
     /// One-line rows set in groups with a space between them fill every column on every

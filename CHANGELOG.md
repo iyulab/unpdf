@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A column of figures set flush right is a column.** In a table without rules, columns were
+  found where text starts on many rows; figures set flush right start wherever their width puts
+  them (`2454` left of `958`), so their column was missed and the figures were run together
+  with the names beside them. Cells whose right edges meet across the rows are now a column,
+  bounded where the column before it ends, so a header starting left of the figures heads them.
+
 ## 0.38.0 — 2026-10-10
 
 ### Added
