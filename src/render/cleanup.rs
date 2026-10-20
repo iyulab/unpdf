@@ -226,7 +226,53 @@ impl CleanupPipeline {
         result
     }
 
+    // Code is literal: punctuation filtering, hyphen repair, and whitespace
+    // normalization would silently change the program. Clean only prose segments.
     fn process_content(&self, text: &str) -> String {
+        let mut result = String::new();
+        let mut prose = String::new();
+        let mut fence: Option<(char, usize)> = None;
+        for line in text.split_inclusive('\n') {
+            let trimmed = line.trim_start_matches(' ');
+            let indent = line.len() - trimmed.len();
+            let marker = trimmed.chars().next().unwrap_or(' ');
+            let count = trimmed.chars().take_while(|ch| *ch == marker).count();
+            if let Some((opening, length)) = fence {
+                result.push_str(line);
+                if indent <= 3
+                    && marker == opening
+                    && count >= length
+                    && trimmed[count..].trim().is_empty()
+                {
+                    fence = None;
+                }
+            } else if indent <= 3
+                && matches!(marker, '`' | '~')
+                && count >= 3
+                && (marker != '`' || !trimmed[count..].contains('`'))
+            {
+                result.push_str(&self.process_prose(&prose));
+                prose.clear();
+                if !result.is_empty() && !result.ends_with("\n\n") {
+                    result.push_str("\n\n");
+                }
+                result.push_str(line);
+                fence = Some((marker, count));
+            } else {
+                prose.push_str(line);
+            }
+        }
+        if !prose.is_empty() {
+            let cleaned = self.process_prose(&prose);
+            if !result.is_empty() && !cleaned.is_empty() && !result.ends_with("\n\n") {
+                result.push_str("\n\n");
+            }
+            result.push_str(&cleaned);
+        }
+        result
+    }
+
+    fn process_prose(&self, text: &str) -> String {
         let mut result = text.to_string();
 
         // Stage 1: Unicode normalization
@@ -851,5 +897,21 @@ mod tests {
             "Expected proper merge, got: {}",
             result
         );
+    }
+}
+
+#[cfg(test)]
+mod preformatted_tests {
+    use super::*;
+
+    #[test]
+    fn cleanup_keeps_fenced_code_literal() {
+        let cleanup = CleanupPipeline::from_preset(CleanupPreset::Aggressive);
+        for fence in ["```", "~~~~"] {
+            let code = format!("{fence}\n{{\n  int x = 1;\n  // word-\n  // next\n}}\n{fence}\n");
+            let cleaned = cleanup.process(&format!("Before\n\n{code}\nAfter"));
+            assert!(cleaned.contains(&code), "{cleaned}");
+            assert!(cleaned.contains("Before") && cleaned.contains("After"));
+        }
     }
 }
