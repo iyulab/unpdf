@@ -158,6 +158,32 @@ pub struct TextLine {
     pub heading_level: u8,
 }
 
+/// A full line in a known monospaced family is preformatted text. A monospace
+/// word inside a proportional line does not change how that paragraph wraps.
+pub(super) fn is_monospaced_line(line: &TextLine) -> bool {
+    let monospaced = |span: &TextSpan| {
+        let name = span.font_name.to_ascii_lowercase();
+        [
+            "courier",
+            "firacode",
+            "consolas",
+            "menlo",
+            "monaco",
+            "sourcecodepro",
+            "dejavusansmono",
+            "liberationmono",
+            "jetbrainsmono",
+        ]
+        .iter()
+        .any(|family| name.contains(family))
+    };
+    let mut spans = line
+        .spans
+        .iter()
+        .filter(|span| !span.text.trim().is_empty());
+    spans.next().is_some_and(monospaced) && spans.all(monospaced)
+}
+
 /// The pitch of the lines around the gap above line `i`: the smallest of the two spacings before
 /// that gap and the two after it (`spacings[j]` is the distance from line `j - 1` to line `j`),
 /// or `None` when there are none.
@@ -2206,6 +2232,16 @@ impl<'a> LayoutAnalyzer<'a> {
         // After a heading, start new block
         if prev_line.is_heading {
             return true;
+        }
+
+        // Physical lines in preformatted text are not prose continuations.
+        // Joining them can put the next declaration inside a preceding // comment.
+        let previous_code = is_monospaced_line(prev_line);
+        let current_code = is_monospaced_line(curr_line);
+        if previous_code || current_code {
+            return previous_code != current_code
+                || (prev_line.y - curr_line.y).abs()
+                    > prev_line.font_size.max(curr_line.font_size) * 2.0;
         }
 
         // A list marker (bullet or "N."/"N)") always opens a new item — never

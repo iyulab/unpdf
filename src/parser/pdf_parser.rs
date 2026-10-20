@@ -487,6 +487,46 @@ fn block_list_marker_len(block: &super::layout::TextBlock) -> usize {
     full.len() - stripped.len()
 }
 
+// Keep preformatted text out of prose joining and Markdown escaping. Raw blocks
+// are already supported by both Markdown renderers; no language is guessed.
+fn text_block(block: &super::layout::TextBlock) -> Block {
+    if !block.lines.is_empty() && block.lines.iter().all(super::layout::is_monospaced_line) {
+        let left = block
+            .lines
+            .iter()
+            .map(|line| line.x)
+            .fold(f32::INFINITY, f32::min);
+        let content = block
+            .lines
+            .iter()
+            .map(|line| {
+                let width = line
+                    .spans
+                    .iter()
+                    .filter(|span| !span.text.is_empty())
+                    .map(|span| span.width / span.text.chars().count() as f32)
+                    .find(|width| *width > 0.0)
+                    .unwrap_or(line.font_size * 0.6);
+                let indent = ((line.x - left) / width).round().max(0.0) as usize;
+                format!("{}{}", " ".repeat(indent.min(256)), line.text())
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        // A source line containing backticks must not close our fence.
+        let longest = content
+            .split(|ch| ch != '`')
+            .map(str::len)
+            .max()
+            .unwrap_or(0);
+        let fence = "`".repeat((longest + 1).max(3));
+        Block::Raw {
+            content: format!("{fence}\n{content}\n{fence}"),
+        }
+    } else {
+        Block::Paragraph(styled_paragraph(block))
+    }
+}
+
 /// Build a `Paragraph` whose inline content preserves per-span bold/italic
 /// styling, joining spans and lines with the same spacing the plain-text
 /// `TextBlock::text` path would produce. Adjacent runs sharing a style are
@@ -980,7 +1020,7 @@ fn extract_page_with_tables_fn(
                             Block::Paragraph(Paragraph::heading(text_of_block, level))
                         }
                         super::layout::BlockType::Paragraph | super::layout::BlockType::Unknown => {
-                            Block::Paragraph(styled_paragraph(&block))
+                            text_block(&block)
                         }
                         super::layout::BlockType::ListItem => {
                             Block::Paragraph(list_item_paragraph(&block))
@@ -1024,7 +1064,7 @@ fn extract_page_with_tables_fn(
                         Block::Paragraph(Paragraph::heading(text, level))
                     }
                     super::layout::BlockType::Paragraph | super::layout::BlockType::Unknown => {
-                        Block::Paragraph(styled_paragraph(&block))
+                        text_block(&block)
                     }
                     super::layout::BlockType::ListItem => {
                         Block::Paragraph(list_item_paragraph(&block))
