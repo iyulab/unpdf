@@ -14,7 +14,8 @@ fn page(content: &[u8], code_font: &str) -> Vec<u8> {
             .to_vec(),
         common::stream_object(&format!("<</Length {}>>", content.len()), content),
         b"<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>".to_vec(),
-        format!("<</Type/Font/Subtype/Type1/BaseFont/{code_font}/Encoding/WinAnsiEncoding>>").into_bytes(),
+        format!("<</Type/Font/Subtype/Type1/BaseFont/{code_font}/Encoding/WinAnsiEncoding>>")
+            .into_bytes(),
     ])
 }
 
@@ -91,4 +92,39 @@ fn backticks_in_code_do_not_close_the_generated_fence() {
         BT /F2 11 Tf 72 686 Td (int count = 0;) Tj ET\n";
     let md = markdown(&page(content, "Courier"));
     assert!(md.contains("````\n```\nint count = 0;\n````"), "{md}");
+}
+
+#[test]
+fn blank_lines_keep_a_chained_listing_and_its_indentation() {
+    let content = b"BT /F2 10 Tf 72 700 Td (int main\\(\\) {) Tj ET \
+        BT /F2 10 Tf 84 686 Td (int a; // test) Tj ET \
+        BT /F2 10 Tf 84 672 Td (int b;) Tj ET \
+        BT /F2 10 Tf 84 644 Td (int c;) Tj ET \
+        BT /F2 10 Tf 84 616 Td (return 0;) Tj ET \
+        BT /F2 10 Tf 72 602 Td (}) Tj ET\n";
+    let md = markdown(&page(content, "Courier"));
+    assert!(
+        md.contains(
+            "```\nint main() {\n  int a; // test\n  int b;\n\n  int c;\n\n  return 0;\n}\n```"
+        ),
+        "{md}"
+    );
+    assert_eq!(md.matches("```").count(), 2, "{md}");
+}
+
+#[test]
+fn separated_listings_stay_separate() {
+    for middle in [
+        "BT /F1 10 Tf 72 672 Td (Explanation between examples.) Tj ET",
+        "",
+    ] {
+        let content = format!(
+            "BT /F2 10 Tf 72 700 Td (int a;) Tj ET \
+            BT /F2 10 Tf 72 686 Td (int b;) Tj ET {middle} \
+            BT /F2 10 Tf 72 602 Td (int c;) Tj ET \
+            BT /F2 10 Tf 72 588 Td (int d;) Tj ET"
+        );
+        let md = markdown(&page(content.as_bytes(), "Courier"));
+        assert_eq!(md.matches("```").count(), 4, "{md}");
+    }
 }

@@ -496,10 +496,19 @@ fn text_block(block: &super::layout::TextBlock) -> Block {
             .iter()
             .map(|line| line.x)
             .fold(f32::INFINITY, f32::min);
+        let pitch = block
+            .lines
+            .windows(2)
+            .map(|pair| (pair[0].y - pair[1].y).abs())
+            .filter(|gap| *gap > 0.0)
+            .min_by(f32::total_cmp)
+            .unwrap_or(block.lines[0].font_size * 1.4)
+            .clamp(block.lines[0].font_size, block.lines[0].font_size * 1.5);
         let content = block
             .lines
             .iter()
-            .map(|line| {
+            .enumerate()
+            .map(|(i, line)| {
                 let width = line
                     .spans
                     .iter()
@@ -508,7 +517,19 @@ fn text_block(block: &super::layout::TextBlock) -> Block {
                     .find(|width| *width > 0.0)
                     .unwrap_or(line.font_size * 0.6);
                 let indent = ((line.x - left) / width).round().max(0.0) as usize;
-                format!("{}{}", " ".repeat(indent.min(256)), line.text())
+                let blank_lines = if i == 0 {
+                    0
+                } else {
+                    (((block.lines[i - 1].y - line.y).abs() / pitch).round() as usize)
+                        .saturating_sub(1)
+                        .min(2)
+                };
+                format!(
+                    "{}{}{}",
+                    "\n".repeat(blank_lines),
+                    " ".repeat(indent.min(256)),
+                    line.text()
+                )
             })
             .collect::<Vec<_>>()
             .join("\n");

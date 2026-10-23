@@ -2239,9 +2239,15 @@ impl<'a> LayoutAnalyzer<'a> {
         let previous_code = is_monospaced_line(prev_line);
         let current_code = is_monospaced_line(curr_line);
         if previous_code || current_code {
+            // One blank source line is still part of the same listing. Bound
+            // the pitch by the type size so a large page gap cannot inflate it.
+            let size = prev_line.font_size.max(curr_line.font_size);
+            let pitch = local_pitch.unwrap_or(avg_spacing).clamp(size, size * 1.5);
             return previous_code != current_code
-                || (prev_line.y - curr_line.y).abs()
-                    > prev_line.font_size.max(curr_line.font_size) * 2.0;
+                || (prev_line.font_size - curr_line.font_size).abs() >= 2.0
+                || (prev_line.x - curr_line.x).abs() > size * 12.0
+                || prev_line.y - curr_line.y <= 0.0
+                || prev_line.y - curr_line.y > pitch * 2.25;
         }
 
         // A list marker (bullet or "N."/"N)") always opens a new item — never
