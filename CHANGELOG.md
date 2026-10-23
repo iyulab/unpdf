@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A number set against its item's first word opens a list item.** A line reading `1.First item`,
+  with no space between the number and the word (as LibreOffice prints a list whose number is
+  followed by nothing), was not taken for a list item, so the items ran together into one
+  paragraph. Such a number now opens an item when the word after it starts with a letter that
+  is not lowercase (uppercase, or a caseless script such as Hangul) and runs on for at least
+  one more letter; a number followed by a digit (`1.5cm`), a lowercase letter (`2.x`) or a
+  single letter (`3.B`) still does not, so a wrapped line of prose stays in its paragraph.
+
 ## 0.48.0 — 2026-10-20
 
 ### Added

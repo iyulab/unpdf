@@ -454,6 +454,41 @@ pub fn list_items_pdf() -> Vec<u8> {
     assemble(objects)
 }
 
+/// One page: three numbered items whose numbers are set against their first word, with no
+/// space between them, at the line spacing of ordinary body text.
+pub fn flush_numbered_items_pdf() -> Vec<u8> {
+    let content = b"BT /F1 12 Tf 72 750 Td (1.First numbered item) Tj ET \
+        BT /F1 12 Tf 72 735 Td (2.Second numbered item) Tj ET \
+        BT /F1 12 Tf 72 720 Td (3.Third numbered item) Tj ET\n";
+    let objects: Vec<Vec<u8>> = vec![
+        b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+        b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]\
+          /Resources<</Font<</F1 5 0 R>>>>/Contents 4 0 R>>"
+            .to_vec(),
+        stream_object(&format!("<</Length {}>>", content.len()), content),
+        HELVETICA.to_vec(),
+    ];
+    assemble(objects)
+}
+
+/// One page: a paragraph whose second line starts with a version number, `2.x`, set
+/// against its first letter, at the line spacing of ordinary body text.
+pub fn wrapped_version_number_pdf() -> Vec<u8> {
+    let content = b"BT /F1 12 Tf 72 750 Td (Support for Python) Tj ET \
+        BT /F1 12 Tf 72 735 Td (2.x is deprecated.) Tj ET\n";
+    let objects: Vec<Vec<u8>> = vec![
+        b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+        b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]\
+          /Resources<</Font<</F1 5 0 R>>>>/Contents 4 0 R>>"
+            .to_vec(),
+        stream_object(&format!("<</Length {}>>", content.len()), content),
+        HELVETICA.to_vec(),
+    ];
+    assemble(objects)
+}
+
 /// One page with two side-by-side single-line text columns, emitted
 /// **right column first** in the content stream and at a **higher y** than
 /// the left column — so a pipeline that merely preserved content-stream/span

@@ -930,7 +930,10 @@ struct ListMarkerMatch {
 /// The unordered case reuses [`opens_a_list_item`]'s bullet/enclosed-enumeration
 /// glyphs, so a dash that signs a number (`-0.2`) is not a marker. The ordered case is a
 /// literal `"<1-3 digits>."` or `"<1-3 digits>)"`
-/// prefix — the number is read off the page as printed, not inferred: unpdf
+/// prefix, followed by a space or by a word set against it with no gap whose first
+/// letter is not lowercase and is followed by another letter (`1.First`, not
+/// `2.x` or `3.B`, which more often wrap prose) — the number is read off the page
+/// as printed, not inferred: unpdf
 /// analyzes one page at a time and has no cross-line state to detect a
 /// *continuing* sequence the way undoc/unhwp's two-pass IR can (see the
 /// umbrella ROADMAP's U-3 notes on why that logic doesn't port). The 3-digit
@@ -963,7 +966,12 @@ fn detect_list_marker(text: &str) -> Option<ListMarkerMatch> {
         return None;
     }
     let after_delim = &after_digits[delim.len_utf8()..];
-    if !after_delim.is_empty() && !after_delim.starts_with(char::is_whitespace) {
+    let mut next = after_delim.chars();
+    let opens_a_word = match (next.next(), next.next()) {
+        (Some(c), Some(d)) => c.is_alphabetic() && !c.is_lowercase() && d.is_alphabetic(),
+        _ => false,
+    };
+    if !after_delim.is_empty() && !after_delim.starts_with(char::is_whitespace) && !opens_a_word {
         return None;
     }
     let number: u32 = trimmed[..digits_len].parse().ok()?;
@@ -4160,6 +4168,32 @@ mod tests {
         let m = detect_list_marker("12) twelfth item").expect("ordered marker should match");
         assert_eq!(m.ordered_number, Some(12));
         assert_eq!(&"12) twelfth item"[m.prefix_len..], "twelfth item");
+    }
+
+    /// A number drawn against its item's first word, with no gap between them, is a marker
+    /// the way a bullet drawn against it is.
+    #[test]
+    fn a_number_against_a_word_is_a_list_marker() {
+        for (item, number, rest) in [
+            ("1.First numbered", 1, "First numbered"),
+            ("12)Twelfth item", 12, "Twelfth item"),
+            ("3.가나다", 3, "가나다"),
+        ] {
+            let m = detect_list_marker(item).unwrap_or_else(|| panic!("{item:?} is an item"));
+            assert_eq!(m.ordered_number, Some(number));
+            assert_eq!(&item[m.prefix_len..], rest);
+        }
+        for text in [
+            "1.5cm gap",
+            "2.0",
+            "3.)",
+            "4.-5",
+            "2.x is deprecated",
+            "3.B for",
+            "12)twelfth item",
+        ] {
+            assert!(detect_list_marker(text).is_none(), "{text:?}");
+        }
     }
 
     #[test]

@@ -56,3 +56,38 @@ fn bullet_and_numbered_items_render_as_separate_markdown_list_lines() {
         "list items must not be merged into one flowing paragraph line: {text:?}"
     );
 }
+
+#[test]
+fn numbers_set_against_their_first_word_render_as_numbered_items() {
+    let doc = PdfParser::from_bytes(&common::flush_numbered_items_pdf())
+        .and_then(|p| p.parse())
+        .expect("fixture must parse");
+
+    let text = to_markdown(&doc, &RenderOptions::default()).expect("markdown render");
+    let lines: Vec<&str> = text.lines().map(str::trim_end).collect();
+
+    for item in [
+        "1. First numbered item",
+        "2. Second numbered item",
+        "3. Third numbered item",
+    ] {
+        assert!(
+            lines.contains(&item),
+            "expected {item:?} on its own ordered-list line, got: {text:?}"
+        );
+    }
+}
+
+#[test]
+fn a_wrapped_line_opening_with_a_version_number_stays_in_its_paragraph() {
+    let doc = PdfParser::from_bytes(&common::wrapped_version_number_pdf())
+        .and_then(|p| p.parse())
+        .expect("fixture must parse");
+
+    let text = to_markdown(&doc, &RenderOptions::default()).expect("markdown render");
+
+    assert!(
+        text.contains("Support for Python 2.x is deprecated."),
+        "expected one paragraph line, got: {text:?}"
+    );
+}
