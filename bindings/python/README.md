@@ -123,10 +123,12 @@ Document-level extraction diagnostics: `char_count`, `word_count`,
 
 ### `get_page_stats(source: PdfSource, page_number: int, options: dict | None = None) -> dict`
 Per-page content-stream operator counts (1-indexed): `page`, `text_op_count`,
-`image_op_count`, `form_op_count`, `ocr_text_suppressed`, `suppressed_text_runs`,
-`undecodable_content_streams`. Text and images a page paints through Form
-XObjects count as the page's own; `form_op_count` counts the form paints. The
-last two are this page's share of the document-level counts of the same name.
+`image_op_count`, `form_op_count`, `fill_op_count`, `ocr_text_suppressed`,
+`suppressed_text_runs`, `undecodable_content_streams`. Text and images a page
+paints through Form XObjects count as the page's own; `form_op_count` counts the
+form paints, `fill_op_count` the path fills (many with no text operator can be
+glyphs drawn as outlines). The last two are this page's share of the
+document-level counts of the same name.
 
 `unreadable_fonts` says which fonts the `suppressed_text_runs` came from: a list
 of `{"name", "reason", "runs"}`, one per font and reason in order of first loss
@@ -138,10 +140,16 @@ sum to `suppressed_text_runs`.
 
 How well the page was read: `rotation` (its `/Rotate`), `image_coverage` (share
 of the page painted by images, 0–1 — a full-page scan is near 1, a logo a few
-hundredths), `rotated_text_runs`, `ruled_grids` / `ruled_tables` (ruling-line
-grids drawn vs. tables built from them), `reading_regions`, `column_count` and
-`ambiguous_layout_regions` (regions read across although their text looked like
-two columns — where the reading order guessed).
+hundredths), `rotated_text_runs`, `invisible_text_chars` / `painted_text_chars`
+(characters drawn in a rendering mode that paints nothing, still counted when
+the OCR layer was dropped, and in one that paints them), `margin_text_chars`
+(painted characters in the top or bottom tenth of the page, where running heads
+and page numbers sit), `clipped_text_runs` (text the clipping path hides),
+`blank_text_runs` (runs that are only whitespace), `ruled_grids` /
+`ruled_tables` (ruling-line grids drawn vs. tables built from them),
+`reading_regions`, `column_count` and `ambiguous_layout_regions` (regions read
+across although their text looked like two columns — where the reading order
+guessed).
 
 ### `get_tables(source: PdfSource, tsv: bool = False, options: dict | None = None) -> list[dict]`
 Every table as CSV (RFC 4180), or tab-separated with `tsv=True`, in reading

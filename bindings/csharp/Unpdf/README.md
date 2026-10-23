@@ -251,9 +251,11 @@ if (quality.PagesIncomplete)
 
 ### `PageStats`
 
-`Page`, `TextOpCount`, `ImageOpCount`, `FormOpCount`, `OcrTextSuppressed`,
+`Page`, `TextOpCount`, `ImageOpCount`, `FormOpCount`, `FillOpCount`, `OcrTextSuppressed`,
 `SuppressedTextRuns`, `UndecodableContentStreams`. Text and images a page paints
 through Form XObjects count as the page's own; `FormOpCount` counts the form paints.
+`FillOpCount` counts path fills: many with no text operator can be glyphs drawn as
+outlines.
 
 `UnreadableFonts` says which fonts `SuppressedTextRuns` came from: a list of
 `UnreadableFont` (`Name`, `Reason`, `Runs`), one per font and reason in order of first
@@ -264,9 +266,14 @@ treat any other value as a generic "unreadable". The `Runs` sum to `SuppressedTe
 
 How well the page was read: `Rotation` (its `/Rotate`), `ImageCoverage` (share of the
 page painted by images, 0–1 — a full-page scan is near 1, a logo a few hundredths),
-`RotatedTextRuns`, `RuledGrids` / `RuledTables` (ruling-line grids drawn vs. tables built
-from them), `ReadingRegions`, `ColumnCount` and `AmbiguousLayoutRegions` (regions read
-across although their text looked like two columns — where the reading order guessed).
+`RotatedTextRuns`, `InvisibleTextChars` / `PaintedTextChars` (characters drawn in a
+rendering mode that paints nothing, still counted when the OCR layer was dropped, and in
+one that paints them), `MarginTextChars` (painted characters in the top or bottom tenth
+of the page, where running heads and page numbers sit), `ClippedTextRuns` (text the
+clipping path hides), `BlankTextRuns` (runs that are only whitespace), `RuledGrids` /
+`RuledTables` (ruling-line grids drawn vs. tables built from them), `ReadingRegions`,
+`ColumnCount` and `AmbiguousLayoutRegions` (regions read across although their text
+looked like two columns — where the reading order guessed).
 
 ### `UnpdfException`
 

@@ -78,6 +78,12 @@ fn page_stats_distinguishes_image_only_page() {
         assert_eq!(v["column_count"], 0);
         for key in [
             "rotated_text_runs",
+            "fill_op_count",
+            "invisible_text_chars",
+            "painted_text_chars",
+            "margin_text_chars",
+            "clipped_text_runs",
+            "blank_text_runs",
             "ruled_grids",
             "ruled_tables",
             "ambiguous_layout_regions",

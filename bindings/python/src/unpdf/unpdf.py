@@ -421,7 +421,9 @@ def get_page_stats(
 
     Returns:
         Dictionary with ``page``, ``text_op_count``, ``image_op_count``,
-        ``form_op_count``, ``ocr_text_suppressed``, ``suppressed_text_runs``,
+        ``form_op_count``, ``fill_op_count`` (path fills: many with no text
+        operator can be glyphs drawn as outlines), ``ocr_text_suppressed``,
+        ``suppressed_text_runs``,
         ``unreadable_fonts``, ``undecodable_content_streams``. Text and images inside the Form XObjects
         the page paints are counted in ``text_op_count`` / ``image_op_count``;
         ``form_op_count`` counts the form paints themselves. The last two are this page's share of the
@@ -441,6 +443,14 @@ def get_page_stats(
         How the page was read: ``rotation`` (the page's ``/Rotate``, degrees
         clockwise), ``image_coverage`` (share of the page painted by images, 0 to
         1), ``rotated_text_runs`` (text not set horizontally left to right),
+        ``invisible_text_chars`` / ``painted_text_chars`` (characters other than
+        whitespace drawn in a rendering mode that paints nothing, extracted
+        although nothing shows it and still counted when the OCR layer was
+        dropped, and in one that paints them), ``margin_text_chars`` (painted
+        characters in the top or bottom tenth of the page box, where running
+        heads and page numbers sit), ``clipped_text_runs`` (text the clipping
+        path or the page box hides entirely, left out), ``blank_text_runs``
+        (runs that are only whitespace),
         ``ruled_grids`` / ``ruled_tables`` (ruling-line grids drawn, tables built
         from them), ``reading_regions`` (text regions read one after another),
         ``column_count`` (the most of them side by side at any height) and

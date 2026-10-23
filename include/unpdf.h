@@ -298,8 +298,10 @@ char* unpdf_get_extraction_quality(const UnpdfDocument* doc);
 /**
  * Per-page statistics as a JSON object:
  * {"page":N,"rotation":N,"text_op_count":N,"image_op_count":N,"form_op_count":N,
- *  "ocr_text_suppressed":bool,"suppressed_text_runs":N,"undecodable_content_streams":N,
- *  "image_coverage":F,"rotated_text_runs":N,"ruled_grids":N,"ruled_tables":N,
+ *  "fill_op_count":N,"ocr_text_suppressed":bool,"suppressed_text_runs":N,
+ *  "undecodable_content_streams":N,"image_coverage":F,"rotated_text_runs":N,
+ *  "invisible_text_chars":N,"painted_text_chars":N,"margin_text_chars":N,
+ *  "clipped_text_runs":N,"blank_text_runs":N,"ruled_grids":N,"ruled_tables":N,
  *  "reading_regions":N,"column_count":N,"ambiguous_layout_regions":N}
  *
  * suppressed_text_runs and undecodable_content_streams are this page's share
@@ -310,7 +312,9 @@ char* unpdf_get_extraction_quality(const UnpdfDocument* doc);
  * counts image paints (Do of anything but a Form XObject, and inline images);
  * form_op_count counts Form XObject paints. All include what the forms a page
  * paints hold. text 0 and image 0 -> genuinely blank page. text 0 with
- * image > 0 -> image-only (scanned) page, OCR required.
+ * image > 0 -> image-only (scanned) page, OCR required. fill_op_count counts
+ * path-filling operators (f/F/f*/B/B*/b/b*): many with no text operator can be
+ * glyphs drawn as filled outlines, text that shows but carries none.
  *
  * Note: a *searchable* scan (page image plus an invisible OCR text layer)
  * reports text_op_count > 0 — combine with ocr_text_suppressed to detect
@@ -319,6 +323,14 @@ char* unpdf_get_extraction_quality(const UnpdfDocument* doc);
  * rotation is the page's /Rotate (0, 90, 180, 270 degrees clockwise).
  * image_coverage is the share of the page painted by images (0 to 1).
  * rotated_text_runs counts text not set horizontally left to right.
+ * invisible_text_chars / painted_text_chars count characters other than
+ * whitespace drawn in a rendering mode that paints nothing (3 or 7) and in one
+ * that paints them. Invisible text is extracted although nothing shows it,
+ * unless ocr_text_suppressed dropped it, which leaves the count as it was.
+ * margin_text_chars counts the painted ones whose baseline is in the top or
+ * bottom tenth of the page box, where running heads and page numbers sit.
+ * clipped_text_runs counts text runs the clipping path or the page box hides
+ * entirely, left out; blank_text_runs, text runs that are only whitespace.
  * ruled_grids / ruled_tables: ruling-line grids drawn, tables built from them.
  * reading_regions: text regions read one after another; column_count: the
  * most of them side by side at any height; ambiguous_layout_regions: regions

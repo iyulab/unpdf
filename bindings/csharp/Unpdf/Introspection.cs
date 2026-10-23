@@ -192,6 +192,14 @@ public sealed class PageStats
     [JsonPropertyName("form_op_count")]
     public uint FormOpCount { get; init; }
 
+    /// <summary>
+    /// Path-filling operators (<c>f</c>, <c>F</c>, <c>f*</c>, <c>B</c>, <c>B*</c>, <c>b</c>,
+    /// <c>b*</c>), inside forms too. Many fills and no text operator can be glyphs drawn as
+    /// filled outlines: text that shows but carries none.
+    /// </summary>
+    [JsonPropertyName("fill_op_count")]
+    public uint FillOpCount { get; init; }
+
     /// <summary>Whether this page's unreadable OCR text layer was dropped.</summary>
     [JsonPropertyName("ocr_text_suppressed")]
     public bool OcrTextSuppressed { get; init; }
@@ -233,6 +241,38 @@ public sealed class PageStats
     /// </summary>
     [JsonPropertyName("rotated_text_runs")]
     public uint RotatedTextRuns { get; init; }
+
+    /// <summary>
+    /// Characters other than whitespace drawn in a rendering mode that paints nothing (3, or
+    /// 7, which only adds to the clipping path), as in the OCR layer of a searchable scan.
+    /// Their text is extracted although nothing shows it, unless the OCR layer was dropped
+    /// (<see cref="OcrTextSuppressed"/>), which leaves this count as it was.
+    /// </summary>
+    [JsonPropertyName("invisible_text_chars")]
+    public uint InvisibleTextChars { get; init; }
+
+    /// <summary>
+    /// Characters other than whitespace drawn in a rendering mode that paints them.
+    /// </summary>
+    [JsonPropertyName("painted_text_chars")]
+    public uint PaintedTextChars { get; init; }
+
+    /// <summary>
+    /// Painted characters whose baseline is in the top or bottom tenth of the page box,
+    /// where running heads and page numbers sit.
+    /// </summary>
+    [JsonPropertyName("margin_text_chars")]
+    public uint MarginTextChars { get; init; }
+
+    /// <summary>
+    /// Text runs the clipping path or the page box hides entirely. Their text is left out.
+    /// </summary>
+    [JsonPropertyName("clipped_text_runs")]
+    public uint ClippedTextRuns { get; init; }
+
+    /// <summary>Text runs whose text is only whitespace.</summary>
+    [JsonPropertyName("blank_text_runs")]
+    public uint BlankTextRuns { get; init; }
 
     /// <summary>Ruling-line grids drawn on the page.</summary>
     [JsonPropertyName("ruled_grids")]

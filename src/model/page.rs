@@ -94,6 +94,12 @@ pub struct Page {
     #[serde(default, skip_serializing_if = "is_zero")]
     pub form_op_count: u32,
 
+    /// Path-filling operators (`f`, `F`, `f*`, `B`, `B*`, `b`, `b*`), including those inside
+    /// the forms the page paints. Glyphs drawn as filled outlines show as text but carry
+    /// none: many fills with no text operator. Omitted from JSON when 0.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub fill_op_count: u32,
+
     /// Image XObjects on this page recognized as images but not extractable in the
     /// current output format (unsupported color space or bit depth), so dropped.
     #[serde(default)]
@@ -111,6 +117,36 @@ pub struct Page {
     /// this way may come out in the wrong order. Omitted from JSON when 0.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub rotated_text_runs: u32,
+
+    /// Characters other than whitespace drawn in a rendering mode that paints nothing (3, or
+    /// 7, which only adds to the clipping path): the OCR layer of a searchable scan, or text
+    /// meant to be found and not seen. Their text is extracted although nothing shows it,
+    /// unless the OCR layer was dropped (`ocr_text_suppressed`), which leaves this count as
+    /// it was. Against `painted_text_chars` it weighs an invisible layer against the text
+    /// that shows. Omitted from JSON when 0.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub invisible_text_chars: u32,
+
+    /// Characters other than whitespace drawn in a rendering mode that paints them, outside
+    /// what the clipping path hides. Omitted from JSON when 0.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub painted_text_chars: u32,
+
+    /// Those of `painted_text_chars` whose baseline is in the top or bottom tenth of the
+    /// page box, where running heads and page numbers sit: a scan whose only text is its
+    /// folio has all its painted text there. Omitted from JSON when 0.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub margin_text_chars: u32,
+
+    /// Text runs the clipping path or the page box hides entirely. Their text is left out,
+    /// as it does not show. Omitted from JSON when 0.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub clipped_text_runs: u32,
+
+    /// Text runs whose text is only whitespace: they space the words around them and show
+    /// nothing of their own. Omitted from JSON when 0.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub blank_text_runs: u32,
 
     /// Ruling-line grids drawn on the page. More grids than `ruled_tables` means a drawn
     /// grid produced no table. Omitted from JSON when 0.
@@ -164,9 +200,15 @@ impl Page {
             text_op_count: 0,
             image_op_count: 0,
             form_op_count: 0,
+            fill_op_count: 0,
             unsupported_image_count: 0,
             image_coverage: 0.0,
             rotated_text_runs: 0,
+            invisible_text_chars: 0,
+            painted_text_chars: 0,
+            margin_text_chars: 0,
+            clipped_text_runs: 0,
+            blank_text_runs: 0,
             ruled_grids: 0,
             ruled_tables: 0,
             reading_regions: 0,

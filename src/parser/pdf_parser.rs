@@ -259,6 +259,12 @@ pub(crate) fn parse_single_page(
         let facts = analyzer.page_facts();
         page.image_coverage = facts.image_coverage;
         page.rotated_text_runs = facts.rotated_text_runs;
+        page.invisible_text_chars = facts.invisible_text_chars;
+        page.painted_text_chars = facts.painted_text_chars;
+        page.margin_text_chars = facts.margin_text_chars;
+        page.clipped_text_runs = facts.clipped_text_runs;
+        page.blank_text_runs = facts.blank_text_runs;
+        page.fill_op_count = facts.fill_op_count;
         page.ruled_grids = facts.ruled_grids;
         page.ruled_tables = facts.ruled_tables;
         page.reading_regions = facts.reading_regions;

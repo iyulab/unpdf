@@ -617,6 +617,20 @@ pub struct PageFacts {
     /// Text runs whose baseline is not horizontal left-to-right — rotated, vertical or
     /// upside-down text, which the reading order treats as horizontal.
     pub rotated_text_runs: u32,
+    /// Characters other than whitespace drawn in a rendering mode that paints nothing: 3,
+    /// or 7, which only adds to the clipping path.
+    pub invisible_text_chars: u32,
+    /// Characters other than whitespace drawn in a rendering mode that paints them.
+    pub painted_text_chars: u32,
+    /// Painted characters other than whitespace whose baseline is in the top or bottom
+    /// tenth of the page box, where running heads and page numbers sit.
+    pub margin_text_chars: u32,
+    /// Text runs the clipping path or the page box hides entirely.
+    pub clipped_text_runs: u32,
+    /// Text runs whose text is only whitespace.
+    pub blank_text_runs: u32,
+    /// Path-filling operators: `f`, `F`, `f*`, `B`, `B*`, `b` and `b*`.
+    pub fill_op_count: u32,
     /// Ruling-line grids drawn on the page.
     pub ruled_grids: u32,
     /// Tables built from those grids.
@@ -1317,9 +1331,14 @@ impl<'a> LayoutAnalyzer<'a> {
         // seen, so they are not page content.
         let visible = self.backend.crop_box(page_id);
         let mut clip = ClipTracker::new(visible);
+        let margin_band = 0.1 * visible.height();
         // Where each image paint shows on the page, in page space.
         let mut image_rects: Vec<Bounds> = Vec::new();
         let mut rotated_text_runs = 0u32;
+        let mut clipped_text_runs = 0u32;
+        let mut blank_text_runs = 0u32;
+        let mut margin_text_chars = 0usize;
+        let mut fill_op_count = 0u32;
         let mut invisible_chars = 0usize;
         let mut total_chars = 0usize;
         let mut suppressed_runs = 0usize;
@@ -1343,6 +1362,7 @@ impl<'a> LayoutAnalyzer<'a> {
             // 무관하게 항상 집계한다 (`Do` arm 은 page_area 가드가 있음).
             match op.operator.as_str() {
                 "Tj" | "TJ" | "'" | "\"" => self.text_op_count.set(self.text_op_count.get() + 1),
+                "f" | "F" | "f*" | "B" | "B*" | "b" | "b*" => fill_op_count += 1,
                 // An image paint maps the unit square through the CTM — an XObject's `Do`
                 // and an inline image (`BI ... EI`) alike. Forms are interpreted in place,
                 // so a `Do` left here is never a form's.
@@ -1605,6 +1625,9 @@ impl<'a> LayoutAnalyzer<'a> {
                         // A run the clip hides entirely shows nothing — the margin text of a
                         // larger page placed onto a smaller one, a form's content beyond its box.
                         if !clip.admits(&run_bounds((x, y), end, effective_size)) {
+                            if !text.trim().is_empty() {
+                                clipped_text_runs += 1;
+                            }
                             if let Some(run) = advance {
                                 text_matrix.advance(run);
                             }
@@ -1614,6 +1637,13 @@ impl<'a> LayoutAnalyzer<'a> {
                         if !text.trim().is_empty() {
                             if !reads_left_to_right(&text_matrix.tm, &ctm) {
                                 rotated_text_runs += 1;
+                            }
+                            if !matches!(text_state.params.render_mode, 3 | 7)
+                                && (y <= visible.lly + margin_band
+                                    || y >= visible.ury - margin_band)
+                            {
+                                margin_text_chars +=
+                                    text.chars().filter(|c| !c.is_whitespace()).count();
                             }
                             count_render_mode(
                                 &text,
@@ -1639,6 +1669,7 @@ impl<'a> LayoutAnalyzer<'a> {
                             }
                             spans.push(span);
                         } else if text.chars().any(char::is_whitespace) {
+                            blank_text_runs += 1;
                             let direction =
                                 if vertical || reads_left_to_right(&text_matrix.tm, &ctm) {
                                     TextSpan::LEFT_TO_RIGHT
@@ -1685,6 +1716,12 @@ impl<'a> LayoutAnalyzer<'a> {
         let mut facts = self.page_facts.get();
         facts.image_coverage = image_coverage;
         facts.rotated_text_runs = rotated_text_runs;
+        facts.invisible_text_chars = invisible_chars as u32;
+        facts.painted_text_chars = (total_chars - invisible_chars) as u32;
+        facts.margin_text_chars = margin_text_chars as u32;
+        facts.clipped_text_runs = clipped_text_runs;
+        facts.blank_text_runs = blank_text_runs;
+        facts.fill_op_count = fill_op_count;
         facts.ruled_grids = lattice_grids.len() as u32;
         facts.ruled_tables = 0;
         self.page_facts.set(facts);

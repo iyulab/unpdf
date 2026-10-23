@@ -1,5 +1,6 @@
 //! What a page record says about how well the page was read: where images cover it, the
-//! page box and rotation, rotated text, ruled grids, and the reading order's regions.
+//! page box and rotation, rotated, invisible, clipped, margin and blank text, path fills,
+//! ruled grids, and the reading order's regions.
 
 mod common;
 
@@ -114,6 +115,96 @@ fn text_not_set_left_to_right_is_counted() {
           BT /F1 12 Tf -1 0 0 -1 400 100 Tm (Upside down) Tj ET",
     ));
     assert_eq!(page.rotated_text_runs, 2);
+}
+
+#[test]
+fn text_that_paints_nothing_is_counted_and_kept() {
+    let page = only_page(&page_pdf(
+        "",
+        A4,
+        b"BT /F1 12 Tf 72 700 Td (Painted on the page.) Tj ET \
+          BT 3 Tr /F1 12 Tf 72 650 Td (Neither filled nor stroked.) Tj ET \
+          BT 7 Tr /F1 12 Tf 72 600 Td (Only added to the clip.) Tj ET \
+          BT 3 Tr /F1 12 Tf 72 550 Td (   ) Tj ET",
+    ));
+    assert_eq!(page.painted_text_chars, 17);
+    assert_eq!(page.invisible_text_chars, 24 + 19);
+    assert_eq!(page.clipped_text_runs, 0);
+    let text = page.plain_text();
+    for line in [
+        "Painted on the page.",
+        "Neither filled nor stroked.",
+        "Only added to the clip.",
+    ] {
+        assert!(text.contains(line), "{line:?} missing from {text:?}");
+    }
+}
+
+#[test]
+fn text_the_clip_hides_is_counted_and_left_out() {
+    let page = only_page(&page_pdf(
+        "",
+        A4,
+        b"q 60 400 300 100 re W n \
+          BT /F1 12 Tf 72 450 Td (Inside the clip) Tj ET \
+          BT /F1 12 Tf 72 600 Td (Clipped away) Tj ( ) Tj ET Q \
+          BT /F1 12 Tf 72 900 Td (Above the page) Tj ET",
+    ));
+    assert_eq!(page.clipped_text_runs, 2);
+    assert_eq!(page.painted_text_chars, 13);
+    assert_eq!(page.invisible_text_chars, 0);
+    let text = page.plain_text();
+    assert!(text.contains("Inside the clip"), "{text:?}");
+    assert!(!text.contains("Clipped away"), "{text:?}");
+    assert!(!text.contains("Above the page"), "{text:?}");
+}
+
+#[test]
+fn painted_text_in_the_top_and_bottom_tenth_is_margin_text() {
+    let page = only_page(&page_pdf(
+        "",
+        A4,
+        b"BT /F1 10 Tf 72 800 Td (Running head) Tj ET \
+          BT /F1 12 Tf 72 400 Td (Body text in the middle.) Tj ET \
+          BT /F1 10 Tf 290 40 Td (12) Tj ET \
+          BT 3 Tr /F1 12 Tf 72 60 Td (Invisible footer) Tj ET",
+    ));
+    assert_eq!(page.margin_text_chars, 11 + 2);
+    assert_eq!(page.painted_text_chars, 11 + 20 + 2);
+    assert_eq!(page.invisible_text_chars, 15);
+
+    let off_origin = only_page(&page_pdf(
+        "",
+        "/MediaBox[100 100 695 942]",
+        b"BT /F1 12 Tf 160 500 Td (Body text) Tj ET \
+          BT /F1 10 Tf 390 110 Td (12) Tj ET",
+    ));
+    assert_eq!(off_origin.margin_text_chars, 2);
+}
+
+#[test]
+fn runs_of_only_whitespace_are_blank() {
+    let page = only_page(&page_pdf(
+        "",
+        A4,
+        b"BT /F1 12 Tf 72 700 Td (   ) Tj ( ) Tj ET BT /F1 12 Tf 72 650 Td (Word) Tj ET",
+    ));
+    assert_eq!(page.text_op_count, 3);
+    assert_eq!(page.blank_text_runs, 2);
+    assert_eq!(page.painted_text_chars, 4);
+}
+
+#[test]
+fn path_fills_are_counted() {
+    let page = only_page(&page_pdf(
+        "",
+        A4,
+        b"0 0 10 10 re f 0 0 10 10 re F 0 0 10 10 re f* 0 0 10 10 re B \
+          0 0 10 10 re B* 0 0 10 10 re b 0 0 10 10 re b* \
+          0 0 m 10 10 l S 0 0 10 10 re n",
+    ));
+    assert_eq!(page.fill_op_count, 7);
+    assert_eq!(page.text_op_count, 0);
 }
 
 #[test]
