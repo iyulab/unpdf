@@ -74,3 +74,64 @@ fn a_word_gap_drawn_as_a_move_still_separates_words() {
         "the word gaps must survive, got {text:?}"
     );
 }
+
+#[test]
+fn a_glyph_drawn_into_a_gap_left_for_it_reads_in_the_gap() {
+    let gap = 72.0 + "the ".chars().map(common::helvetica_advance).sum::<f32>() * 12.0 / 1000.0;
+    let content =
+        format!("BT /F1 12 Tf 72 700 Td [(the ) -500 ( sign)] TJ 1 0 0 1 {gap} 700 Tm (x) Tj ET\n");
+    let text = text_of(&common::page_pdf(
+        "",
+        "/MediaBox[0 0 595 842]",
+        content.as_bytes(),
+    ));
+    assert!(
+        text.contains("the x sign"),
+        "the glyph must read where it is drawn, got {text:?}"
+    );
+}
+
+#[test]
+fn a_glyph_drawn_into_a_gap_between_letters_joins_them() {
+    let gap = 72.0 + "the".chars().map(common::helvetica_advance).sum::<f32>() * 12.0 / 1000.0;
+    let content =
+        format!("BT /F1 12 Tf 72 700 Td [(the) -500 (sign)] TJ 1 0 0 1 {gap} 700 Tm (x) Tj ET\n");
+    let text = text_of(&common::page_pdf(
+        "",
+        "/MediaBox[0 0 595 842]",
+        content.as_bytes(),
+    ));
+    assert!(
+        text.contains("thexsign"),
+        "the blank was the glyph's advance, not a word gap, got {text:?}"
+    );
+}
+
+#[test]
+fn a_gap_left_of_its_run_by_negative_character_spacing_is_not_split_at() {
+    let text = text_of(&common::page_pdf(
+        "",
+        "/MediaBox[0 0 595 842]",
+        b"BT /F1 12 Tf -20 Tc 300 700 Td [(ab) -500 (cd)] TJ 0 Tc 1 0 0 1 274 700 Tm (x) Tj ET\n",
+    ));
+    for part in ["ab", "cd", "x"] {
+        assert!(text.contains(part), "{part:?} must survive, got {text:?}");
+    }
+}
+
+#[test]
+fn a_smaller_glyph_set_below_the_baseline_does_not_fill_its_gap() {
+    let gap = 72.0 + "the ".chars().map(common::helvetica_advance).sum::<f32>() * 12.0 / 1000.0;
+    let content = format!(
+        "BT /F1 12 Tf 72 700 Td [(the ) -500 ( sign)] TJ /F1 8.4 Tf 1 0 0 1 {gap} 695.2 Tm (x) Tj ET\n"
+    );
+    let text = text_of(&common::page_pdf(
+        "",
+        "/MediaBox[0 0 595 842]",
+        content.as_bytes(),
+    ));
+    assert!(
+        text.contains("sign") && !text.contains("the x sign"),
+        "only a glyph on the run's baseline fills its blank, got {text:?}"
+    );
+}

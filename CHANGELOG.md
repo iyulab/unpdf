@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A glyph drawn into a gap a run leaves for it reads where it is drawn.** A producer whose font
+  lacks a glyph (LibreOffice for U+1D11E in Liberation Serif) leaves its advance blank in a TJ
+  array and draws it in another font afterwards; the glyph read after the whole run. A run is split
+  at a blank that a run drawn later on its baseline fills.
+
 ## 0.48.0 — 2026-10-20
 
 ### Added

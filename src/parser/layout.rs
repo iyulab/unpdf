@@ -1327,6 +1327,7 @@ impl<'a> LayoutAnalyzer<'a> {
         let mut signals = PageTextLayerSignals::default();
 
         let mut spans = Vec::new();
+        let mut run_gaps: Vec<RunGap> = Vec::new();
         // Text state (ISO 32000-1 §9.3) is part of the graphics state: `q`/`Q` save and
         // restore it along with the CTM, and it persists across `BT`/`ET`.
         let mut text_state = TextState::default();
@@ -1475,6 +1476,8 @@ impl<'a> LayoutAnalyzer<'a> {
                         let mut origin = Shift::default();
                         let mut cell: f32 = 0.0;
                         let mut first_glyph = true;
+                        let mut gaps: Vec<(usize, usize, Shift, Option<Shift>, Shift)> = Vec::new();
+                        let mut gap_opened: Option<(usize, Shift, Option<Shift>)> = None;
                         for item in items {
                             match item {
                                 PdfValue::Str(bytes) => {
@@ -1492,6 +1495,13 @@ impl<'a> LayoutAnalyzer<'a> {
                                     );
                                     if let Some(room) = room.take() {
                                         maybe_insert_space_tj(&mut text, room - letter_room);
+                                    }
+                                    if let (Some((at, from, ink)), Some(to)) =
+                                        (gap_opened.take(), advance)
+                                    {
+                                        if to.tx > from.tx {
+                                            gaps.push((at, text.len(), from, ink, to));
+                                        }
                                     }
                                     let glyphs = self.backend.glyph_advances(
                                         op.scope(page_id),
@@ -1545,6 +1555,11 @@ impl<'a> LayoutAnalyzer<'a> {
                                     let shift = text_state.params.adjustment(n, vertical);
                                     if !drawn {
                                         lead += shift;
+                                    } else if let (None, Some(sum)) = (gap_opened, advance) {
+                                        let ink = (!text.ends_with(char::is_whitespace)
+                                            || sum != ink_advance)
+                                            .then_some(ink_advance);
+                                        gap_opened = Some((text.len(), sum, ink));
                                     }
                                     room = Some(room.unwrap_or(0.0) - n);
                                     if let Some(sum) = advance.as_mut() {
@@ -1637,6 +1652,26 @@ impl<'a> LayoutAnalyzer<'a> {
                                 span.width_measured = true;
                                 span.ink_width = ink_width.map(|ink| ink.min(width));
                             }
+                            if !vertical
+                                && advance.is_some()
+                                && reads_left_to_right(&text_matrix.tm, &ctm)
+                            {
+                                let place = |at: Shift| {
+                                    let at = at + origin;
+                                    let (tx, ty) = text_matrix.point(at.tx, rise + at.ty);
+                                    apply_ctm(&ctm, tx, ty)
+                                };
+                                for (before_len, after_from, from, ink, to) in gaps {
+                                    run_gaps.push(RunGap {
+                                        span: spans.len(),
+                                        before_len,
+                                        after_from,
+                                        blank_start: place(from).0,
+                                        ink_end: ink.map(|ink| place(ink).0),
+                                        after_origin: place(to),
+                                    });
+                                }
+                            }
                             spans.push(span);
                         } else if text.chars().any(char::is_whitespace) {
                             let direction =
@@ -1690,7 +1725,7 @@ impl<'a> LayoutAnalyzer<'a> {
         self.page_facts.set(facts);
 
         Ok((
-            join_rotated_runs(spans),
+            join_rotated_runs(split_runs_at_filled_gaps(spans, run_gaps)),
             signals,
             PageRulings {
                 grids: lattice_grids,
@@ -2846,6 +2881,77 @@ fn split_at_cell_gaps(items: &[PdfValue]) -> Vec<&[PdfValue]> {
     }
     parts.push(&items[start..]);
     parts
+}
+
+struct RunGap {
+    span: usize,
+    before_len: usize,
+    after_from: usize,
+    blank_start: f32,
+    ink_end: Option<f32>,
+    after_origin: (f32, f32),
+}
+
+fn split_runs_at_filled_gaps(spans: Vec<TextSpan>, gaps: Vec<RunGap>) -> Vec<TextSpan> {
+    if gaps.is_empty() {
+        return spans;
+    }
+    let mut by_height: Vec<usize> = (0..spans.len())
+        .filter(|&i| !spans[i].is_rotated())
+        .collect();
+    by_height.sort_by(|&a, &b| spans[a].y.total_cmp(&spans[b].y));
+    let filled: Vec<RunGap> = gaps
+        .into_iter()
+        .filter(|gap| {
+            let run = &spans[gap.span];
+            let slack = run.font_size / 10.0;
+            let low = by_height.partition_point(|&i| spans[i].y < run.y - slack);
+            by_height[low..]
+                .iter()
+                .take_while(|&&i| spans[i].y <= run.y + slack)
+                .any(|&i| {
+                    let (left, right) = spans[i].ink_extent();
+                    i > gap.span
+                        && left >= gap.blank_start - slack
+                        && right <= gap.after_origin.0 + slack
+                })
+        })
+        .collect();
+    let mut filled = filled.into_iter().peekable();
+
+    let mut out = Vec::with_capacity(spans.len());
+    for (i, span) in spans.into_iter().enumerate() {
+        let mut rest = span;
+        let mut taken = 0;
+        while let Some(gap) = filled.next_if(|gap| gap.span == i) {
+            let (before, after) = (
+                &rest.text[..gap.before_len - taken],
+                &rest.text[gap.after_from - taken..],
+            );
+            if before.trim().is_empty()
+                || after.trim().is_empty()
+                || gap.blank_start.partial_cmp(&rest.x) != Some(std::cmp::Ordering::Greater)
+            {
+                continue;
+            }
+            let (before, after) = (before.to_string(), after.to_string());
+            let right = rest.x + rest.width;
+            let mut left = rest.clone();
+            left.text = before;
+            left.width = gap.blank_start - left.x;
+            left.ink_width = gap.ink_end.map(|ink| (ink - left.x).clamp(0.0, left.width));
+            out.push(left);
+            rest.ink_width = rest
+                .ink_width
+                .map(|ink| (rest.x + ink - gap.after_origin.0).max(0.0));
+            rest.text = after;
+            (rest.x, rest.y) = gap.after_origin;
+            rest.width = right - rest.x;
+            taken = gap.after_from;
+        }
+        out.push(rest);
+    }
+    out
 }
 
 /// The room between two letters of a word in a run's items, in thousandths of an em: the
