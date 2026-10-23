@@ -263,3 +263,76 @@ fn unreadable_font_serialises_with_a_stable_reason_string() {
     let json = serde_json::to_value(&clean.pages[0]).expect("page must serialise");
     assert!(json.get("unreadable_fonts").is_none());
 }
+
+/// A page that draws, in two fonts carrying their own glyphs, codes that have no character:
+/// a Type 3 font whose `ToUnicode` maps code 1 to a whole emoji cluster and leaves out code
+/// 2, the cluster's other glyph, and a symbolic TrueType font that embeds its program and
+/// gives no `/Encoding` or `ToUnicode` at all.
+fn unmapped_codes_pdf() -> Vec<u8> {
+    let content = "BT /F1 12 Tf 72 720 Td [<01> -64 <02>] TJ /F2 12 Tf (\\001) Tj ET";
+    let cmap = "/CIDInit /ProcSet findresource begin 12 dict begin begincmap \
+                1 begincodespacerange <00> <FF> endcodespacerange \
+                1 beginbfchar <01> <D83DDC68200DD83DDC69> endbfchar endcmap end end";
+    let glyph = "0 0 d0";
+    let program: String = include_bytes!("fixtures/square.ttf")
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    assemble(&[
+        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+         /Resources << /Font << /F1 5 0 R /F2 9 0 R >> >> /Contents 4 0 R >>"
+            .to_string(),
+        format!(
+            "<< /Length {} >>\nstream\n{content}\nendstream",
+            content.len()
+        ),
+        "<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] \
+         /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << /g1 6 0 R /g2 7 0 R >> \
+         /Encoding << /Type /Encoding /Differences [1 /g1 /g2] >> \
+         /FirstChar 1 /LastChar 2 /Widths [500 0] /ToUnicode 8 0 R >>"
+            .to_string(),
+        format!("<< /Length {} >>\nstream\n{glyph}\nendstream", glyph.len()),
+        format!("<< /Length {} >>\nstream\n{glyph}\nendstream", glyph.len()),
+        format!("<< /Length {} >>\nstream\n{cmap}\nendstream", cmap.len()),
+        "<< /Type /Font /Subtype /TrueType /BaseFont /UnpdfSquare /FirstChar 1 /LastChar 1 \
+         /Widths [1000] /FontDescriptor 10 0 R >>"
+            .to_string(),
+        "<< /Type /FontDescriptor /FontName /UnpdfSquare /Flags 4 /FontBBox [0 0 1000 800] \
+         /ItalicAngle 0 /Ascent 800 /Descent -200 /CapHeight 800 /StemV 80 /FontFile2 11 0 R >>"
+            .to_string(),
+        format!(
+            "<< /Filter /ASCIIHexDecode /Length {} >>\nstream\n{program}>\nendstream",
+            program.len() + 1
+        ),
+    ])
+}
+
+/// Codes a font draws but gives no character are no misread: they have a reason of their
+/// own, still counted, since the page shows glyphs its text does not carry.
+#[test]
+fn codes_a_font_gives_no_character_are_unmapped_not_binary_noise() {
+    use unpdf::parser::backend::TextSuppression;
+
+    let doc = PdfParser::from_bytes(&unmapped_codes_pdf())
+        .and_then(|p| p.parse())
+        .expect("fixture must parse");
+    assert_eq!(doc.plain_text().trim(), "\u{1f468}\u{200d}\u{1f469}");
+
+    let page = &doc.pages[0];
+    let seen: Vec<(&str, TextSuppression, usize)> = page
+        .unreadable_fonts
+        .iter()
+        .map(|f| (f.name.as_str(), f.reason, f.runs))
+        .collect();
+    assert_eq!(
+        seen,
+        vec![
+            ("F1", TextSuppression::UnmappedCodes, 1),
+            ("UnpdfSquare", TextSuppression::UnmappedCodes, 1),
+        ]
+    );
+    let json = serde_json::to_value(page).expect("page must serialise");
+    assert_eq!(json["unreadable_fonts"][0]["reason"], "unmapped_codes");
+}

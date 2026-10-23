@@ -629,7 +629,7 @@ impl DocumentIntegrity {
 
 /// Why a decoder discarded a text run instead of returning what it decoded.
 ///
-/// Both reasons are deliberate policy: emitting mojibake would be worse than emitting
+/// Each reason is deliberate policy: emitting mojibake would be worse than emitting
 /// nothing. But a discarded run is content the document had and the output does not,
 /// so the reason travels with the (empty) result — see [`DecodedText`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -646,6 +646,13 @@ pub enum TextSuppression {
     /// Judged by control-character density, so unlike [`Self::CompositeUnresolved`]
     /// this one is a heuristic and can in principle be wrong in either direction.
     BinaryDensity,
+    /// A simple font that draws its own glyphs (a Type 3 font, or one that embeds its
+    /// program) for control codes nothing gives a character: no base encoding assigns them
+    /// one, and neither its `/ToUnicode`, its `/Encoding` nor its program does.
+    ///
+    /// Often deliberate, as for a glyph standing for part of a cluster another code's
+    /// mapping already spells out; either way, unlike [`Self::BinaryDensity`], no misread.
+    UnmappedCodes,
 }
 
 /// The outcome of decoding one text run.
@@ -2599,6 +2606,19 @@ impl<'d> FontRef<'d> {
         matches!(self.encoding_name(doc), Some(b"Identity-H" | b"Identity-V"))
     }
 
+    /// Whether the font carries its glyphs: a Type 3 font, or one whose descriptor embeds
+    /// a program.
+    fn has_own_glyphs(&self, doc: &RawDocument) -> bool {
+        raw_dict_get(self.dict, b"Subtype").and_then(|s| s.as_name()) == Some(b"Type3".as_slice())
+            || raw_dict_get(self.dict, b"FontDescriptor")
+                .and_then(|d| raw_resolve_dict(doc, d))
+                .is_some_and(|d| {
+                    [b"FontFile".as_slice(), b"FontFile2", b"FontFile3"]
+                        .iter()
+                        .any(|key| raw_dict_get(d, key).is_some())
+                })
+    }
+
     /// `/BaseFont`.
     fn base_font<'a>(&'a self, doc: &'a RawDocument) -> Option<&'a [u8]> {
         doc.resolve(raw_dict_get(self.dict, b"BaseFont")?).as_name()
@@ -2915,7 +2935,13 @@ impl RawFontResolver {
         //    dropped, turning the very evidence of a mis-decoded run into clean text.
         let simple = decode_text_simple(bytes);
         if is_likely_binary(&simple) {
-            return DecodedText::suppressed(TextSuppression::BinaryDensity);
+            let unmapped =
+                bytes.iter().all(|&b| b < 0x20) && font.is_some_and(|f| f.has_own_glyphs(doc));
+            return DecodedText::suppressed(if unmapped {
+                TextSuppression::UnmappedCodes
+            } else {
+                TextSuppression::BinaryDensity
+            });
         }
         if let Some(standard) = font.and_then(|font| self.standard_font(doc, font)) {
             let decoded = decode_with_encoding_map(bytes, standard.builtin_encoding());

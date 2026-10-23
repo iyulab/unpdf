@@ -1096,10 +1096,11 @@ unparser_shared::export_string_getter!(
     ///   `{"name":S,"reason":S,"runs":N}` -- one entry per font and reason, in the order each
     ///   first lost a run; always present, `[]` when nothing was discarded. `name` is the
     ///   font's `/BaseFont` (its resource name when it has none). `reason` is
-    ///   `"composite_unresolved"` (a Type0/CID font whose codes map to no text) or
-    ///   `"binary_density"` (a simple font whose decode was binary noise); more values may
-    ///   be added, so treat an unknown one as a generic "unreadable". The `runs` of all
-    ///   entries sum to `suppressed_text_runs`.
+    ///   `"composite_unresolved"` (a Type0/CID font whose codes map to no text),
+    ///   `"binary_density"` (a simple font whose decode was binary noise) or
+    ///   `"unmapped_codes"` (a font that draws glyphs for codes it gives no character,
+    ///   often on purpose); more values may be added, so treat an unknown one as a generic
+    ///   "unreadable". The `runs` of all entries sum to `suppressed_text_runs`.
     /// - `text_op_count`: number of text-showing operators (`Tj`/`TJ`/`'`/`"`),
     ///   including those inside the Form XObjects the page paints.
     /// - `image_op_count`: number of image paints (`Do` of anything but a Form XObject,

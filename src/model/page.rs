@@ -16,8 +16,8 @@ pub struct UnreadableFont {
     pub name: String,
 
     /// Why the font's runs were discarded. Serialized as a stable `snake_case` string
-    /// (`composite_unresolved`, `binary_density`); consumers must treat a value they do
-    /// not know as a generic "unreadable".
+    /// (`composite_unresolved`, `binary_density`, `unmapped_codes`); consumers must treat a
+    /// value they do not know as a generic "unreadable".
     pub reason: TextSuppression,
 
     /// Text runs of this font discarded for this reason on the page.

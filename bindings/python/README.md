@@ -132,9 +132,10 @@ last two are this page's share of the document-level counts of the same name.
 of `{"name", "reason", "runs"}`, one per font and reason in order of first loss
 (`[]` when nothing was discarded). `name` is the font's `/BaseFont`, or its
 resource name when it has none. `reason` is `"composite_unresolved"` (a Type0/CID
-font whose codes map to no text) or `"binary_density"` (a simple font whose decode
-was binary noise); treat any other value as a generic "unreadable". The `runs`
-sum to `suppressed_text_runs`.
+font whose codes map to no text), `"binary_density"` (a simple font whose decode
+was binary noise) or `"unmapped_codes"` (a font that draws glyphs for codes it
+gives no character, often on purpose); treat any other value as a generic
+"unreadable". The `runs` sum to `suppressed_text_runs`.
 
 How well the page was read: `rotation` (its `/Rotate`), `image_coverage` (share
 of the page painted by images, 0–1 — a full-page scan is near 1, a logo a few

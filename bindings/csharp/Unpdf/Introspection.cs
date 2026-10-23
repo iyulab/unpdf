@@ -279,9 +279,10 @@ public sealed class UnreadableFont
 
     /// <summary>
     /// Why the font's runs were discarded. Known values: <c>composite_unresolved</c> (a
-    /// Type0/CID font whose codes map to no text) and <c>binary_density</c> (a simple font
-    /// whose decode was binary noise). More values may be added: treat an unknown one as
-    /// a generic "unreadable".
+    /// Type0/CID font whose codes map to no text), <c>binary_density</c> (a simple font
+    /// whose decode was binary noise) and <c>unmapped_codes</c> (a font that draws glyphs
+    /// for codes it gives no character, often on purpose). More values may be added: treat
+    /// an unknown one as a generic "unreadable".
     /// </summary>
     [JsonPropertyName("reason")]
     public string Reason { get; init; } = "";

@@ -740,7 +740,7 @@ To say *which* font could not be read, use the page's `unreadable_fonts`
 (`Page::unreadable_fonts` in Rust, `unreadable_fonts` in `get_page_stats` / the
 `unpdf_page_stats` JSON, `PageStats.UnreadableFonts` in C#): one `{name, reason, runs}` entry
 per font and reason, in the order each first lost a run on the page. `name` is the font's
-`/BaseFont` (its resource name when it has none); `reason` is `composite_unresolved` (a Type0/CID font whose codes map to no text) or `binary_density` (a simple font whose decode was binary noise); and the
+`/BaseFont` (its resource name when it has none); `reason` is `composite_unresolved` (a Type0/CID font whose codes map to no text), `binary_density` (a simple font whose decode was binary noise) or `unmapped_codes` (a font that draws glyphs for codes it gives no character, often on purpose); and the
 `runs` of a page's entries sum to its `suppressed_text_runs`. Treat a `reason` you do not
 recognise as a generic "unreadable" — new values may be added.
 

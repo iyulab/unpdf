@@ -433,10 +433,11 @@ def get_page_stats(
         ``{"name", "reason", "runs"}`` per font and reason, in order of first
         loss (``[]`` when nothing was discarded). ``name`` is the font's
         ``/BaseFont`` (its resource name when it has none); ``reason`` is
-        ``"composite_unresolved"`` (a Type0/CID font whose codes map to no text)
-        or ``"binary_density"`` (a simple font whose decode was binary noise) —
-        treat any other value as a generic "unreadable". The ``runs`` sum to
-        ``suppressed_text_runs``.
+        ``"composite_unresolved"`` (a Type0/CID font whose codes map to no text),
+        ``"binary_density"`` (a simple font whose decode was binary noise) or
+        ``"unmapped_codes"`` (a font that draws glyphs for codes it gives no
+        character, often on purpose) — treat any other value as a generic
+        "unreadable". The ``runs`` sum to ``suppressed_text_runs``.
 
         How the page was read: ``rotation`` (the page's ``/Rotate``, degrees
         clockwise), ``image_coverage`` (share of the page painted by images, 0 to
