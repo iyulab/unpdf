@@ -1548,6 +1548,7 @@ mod tests {
             font_name: "Helvetica".to_string(),
             is_bold: false,
             is_italic: false,
+            is_struck: false,
             direction: TextSpan::LEFT_TO_RIGHT,
             letter_spacing: 0.0,
         }

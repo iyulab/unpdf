@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Superscripts, subscripts and struck text keep their style.** A PDF's text runs carried bold
+  and italic only, so a footnote mark, a citation, `CO2`'s `2` or a struck word came out as plain
+  text. A run set smaller than its line and raised by a seventh of the line's size or lowered by
+  a tenth is a superscript or a subscript; a rule drawn through a run's text a sixth to a half of
+  its size above the baseline, starting with its ink and ending with its ink or its trailing
+  space, strikes it, and a run the rule only touches at an end is not struck. A line of
+  punctuation set in script markup is still dropped as punctuation only.
+
 ## 0.48.0 — 2026-10-20
 
 ### Added

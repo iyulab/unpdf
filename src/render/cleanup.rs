@@ -383,7 +383,11 @@ impl CleanupPipeline {
             }
             // `is_alphanumeric` covers Unicode L*/N* including Hangul,
             // Hiragana, Katakana, and CJK Unified Ideographs.
-            let has_word = trimmed.chars().any(|c| c.is_alphanumeric());
+            let has_word = ["<sup>", "</sup>", "<sub>", "</sub>"]
+                .iter()
+                .fold(trimmed.to_string(), |line, tag| line.replace(tag, ""))
+                .chars()
+                .any(|c| c.is_alphanumeric());
             if has_word {
                 out.push_str(line);
             }
@@ -599,6 +603,17 @@ mod tests {
         let pipeline = CleanupPipeline::from_preset(CleanupPreset::Standard);
         let text = "| No. | Name |\n| --- | :---: |\n| 1 | Alpha |\n";
         assert_eq!(pipeline.process(text), text.trim_end());
+    }
+
+    /// Script markup is not a word: a line of punctuation set as superscripts or subscripts is
+    /// still dropped, and a line whose script holds a letter is kept.
+    #[test]
+    fn standard_cleanup_drops_punctuation_in_script_markup() {
+        let pipeline = CleanupPipeline::from_preset(CleanupPreset::Standard);
+        let text = "Before.\n\n%<sub>!</sub> $<sub>!</sub>\n\nAfter.";
+        assert_eq!(pipeline.process(text), "Before.\n\nAfter.");
+        let text = "Before.\n\n∆<sub>t</sub>\n\nAfter.";
+        assert_eq!(pipeline.process(text), text);
     }
 
     /// Standard keeps a line that holds only a number: by its text alone it may as well be a

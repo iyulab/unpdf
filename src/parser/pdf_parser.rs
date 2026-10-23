@@ -520,9 +520,10 @@ fn styled_paragraph(block: &super::layout::TextBlock) -> Paragraph {
                 in_word[line_idx - 1],
             );
             if !join.is_empty() {
-                push_run(&mut runs, join, false, false);
+                push_run(&mut runs, join, TextStyle::default());
             }
         }
+        let baseline = body_baseline(line);
         for (piece, span_idx) in line.styled_segments() {
             let span = &line.spans[span_idx];
             let piece = if at_line_start {
@@ -534,7 +535,27 @@ fn styled_paragraph(block: &super::layout::TextBlock) -> Paragraph {
                 continue;
             }
             at_line_start = false;
-            push_run(&mut runs, piece, span.is_bold, span.is_italic);
+            let style = TextStyle {
+                bold: span.is_bold,
+                italic: span.is_italic,
+                strikethrough: span.is_struck,
+                ..Default::default()
+            };
+            let (superscript, subscript) = script_of(span, line, baseline);
+            if superscript || subscript {
+                let ink = piece.trim();
+                let start = piece.len() - piece.trim_start().len();
+                push_run(&mut runs, &piece[..start], style.clone());
+                let script = TextStyle {
+                    superscript,
+                    subscript,
+                    ..style.clone()
+                };
+                push_run(&mut runs, ink, script);
+                push_run(&mut runs, &piece[start + ink.len()..], style);
+            } else {
+                push_run(&mut runs, piece, style);
+            }
         }
     }
 
@@ -543,26 +564,57 @@ fn styled_paragraph(block: &super::layout::TextBlock) -> Paragraph {
     para
 }
 
-/// Append `text` as a run with the given emphasis, merging into the previous
+/// The baseline of a line's text at its own size: that of its longest run set at no less
+/// than nine tenths of the line's size, or the line's when it has none (see [`script_of`]).
+fn body_baseline(line: &super::layout::TextLine) -> f32 {
+    line.spans
+        .iter()
+        .filter(|s| !s.is_rotated() && s.font_size > line.font_size * 0.9)
+        .max_by_key(|s| s.text.trim().chars().count())
+        .map_or(line.y, |s| s.y)
+}
+
+/// Whether `span` is set as a superscript or a subscript on `line`, whose text stands on
+/// `baseline`: no larger than nine tenths of the line's size, its baseline raised by at
+/// least a seventh of that size or lowered by at least a tenth.
+fn script_of(
+    span: &super::layout::TextSpan,
+    line: &super::layout::TextLine,
+    baseline: f32,
+) -> (bool, bool) {
+    let size = line.font_size;
+    if size <= 0.0 || span.font_size > size * 0.9 || span.is_rotated() {
+        return (false, false);
+    }
+    let shift = span.y - baseline;
+    (shift >= size / 7.0, shift <= -size / 10.0)
+}
+
+/// Append `text` as a run with the given style, merging into the previous
 /// run when it carries the same style so consecutive same-style spans don't
 /// produce back-to-back `**a****b**` fragments.
-fn push_run(runs: &mut Vec<TextRun>, text: &str, bold: bool, italic: bool) {
+fn push_run(runs: &mut Vec<TextRun>, text: &str, style: TextStyle) {
     if text.is_empty() {
         return;
     }
     if let Some(last) = runs.last_mut() {
-        if last.style.bold == bold && last.style.italic == italic {
+        let decorations = |s: &TextStyle| {
+            (
+                s.bold,
+                s.italic,
+                s.strikethrough,
+                s.superscript,
+                s.subscript,
+            )
+        };
+        if decorations(&last.style) == decorations(&style) {
             last.text.push_str(text);
             return;
         }
     }
     runs.push(TextRun {
         text: text.to_string(),
-        style: TextStyle {
-            bold,
-            italic,
-            ..Default::default()
-        },
+        style,
     });
 }
 

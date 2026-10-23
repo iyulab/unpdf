@@ -7,7 +7,7 @@
 
 mod common;
 
-use unpdf::render::{to_text, RenderOptions};
+use unpdf::render::{to_markdown, to_text, RenderOptions};
 use unpdf::PdfParser;
 
 fn text() -> String {
@@ -73,4 +73,15 @@ fn a_superscript_in_lines_set_over_two_columns_stays_on_its_line() {
         .find("Right column body line number 0")
         .expect("right column");
     assert!(left < right, "columns interleaved: {text:?}");
+}
+
+/// A script folded into its line is still written as one.
+#[test]
+fn a_folded_script_keeps_its_script_style() {
+    let doc = PdfParser::from_bytes(&common::scripted_lines_pdf())
+        .and_then(|p| p.parse())
+        .expect("synthetic PDF should parse");
+    let md = to_markdown(&doc, &RenderOptions::default()).expect("markdown renders");
+    assert!(md.contains("precursor to C<sub>4</sub>"), "{md:?}");
+    assert!(md.contains(r"own right.<sup>\[35\]</sup>"), "{md:?}");
 }
