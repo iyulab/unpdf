@@ -263,7 +263,9 @@ loss (empty when nothing was discarded). `Name` is the font's `/BaseFont`, or it
 name when it has none. `Reason` is `"composite_unresolved"` (a Type0/CID font whose codes
 map to no text), `"binary_density"` (a simple font whose decode was binary noise) or
 `"unmapped_codes"` (a font that draws glyphs for codes it gives no character, its text lost); treat any other value as a generic "unreadable". The `Runs` sum to
-`SuppressedTextRuns`.
+`SuppressedTextRuns`. `UndecodedTextCodes` counts codes a composite font's `ToUnicode`
+and own data give no character although their glyph advances, in runs that give other
+text.
 
 How well the page was read: `Rotation` (its `/Rotate`), `ImageCoverage` (share of the
 page painted by images, 0–1 — a full-page scan is near 1, a logo a few hundredths),

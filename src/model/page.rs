@@ -151,6 +151,11 @@ pub struct Page {
     #[serde(default, skip_serializing_if = "is_zero")]
     pub blank_text_runs: u32,
 
+    /// Codes a composite font's `ToUnicode` and own data give no character although their
+    /// glyph advances, in runs that give other text. Omitted from JSON when 0.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub undecoded_text_codes: u32,
+
     /// Ruling-line grids drawn on the page. More grids than `ruled_tables` means a drawn
     /// grid produced no table. Omitted from JSON when 0.
     #[serde(default, skip_serializing_if = "is_zero")]
@@ -212,6 +217,7 @@ impl Page {
             margin_text_chars: 0,
             clipped_text_runs: 0,
             blank_text_runs: 0,
+            undecoded_text_codes: 0,
             ruled_grids: 0,
             ruled_tables: 0,
             reading_regions: 0,

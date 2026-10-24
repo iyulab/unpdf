@@ -440,6 +440,9 @@ def get_page_stats(
         ``"unmapped_codes"`` (a font that draws glyphs for codes it gives no
         character, its text lost) — treat any other value as a generic
         "unreadable". The ``runs`` sum to ``suppressed_text_runs``.
+        ``undecoded_text_codes`` counts codes a composite font's ``ToUnicode`` and
+        own data give no character although their glyph advances, in runs that
+        give other text.
 
         How the page was read: ``rotation`` (the page's ``/Rotate``, degrees
         clockwise), ``image_coverage`` (share of the page painted by images, 0 to

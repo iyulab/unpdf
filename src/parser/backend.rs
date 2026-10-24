@@ -9,7 +9,7 @@ use std::sync::{Arc, RwLock};
 use crate::error::{Error, Result};
 use crate::model::{FieldType, FieldValue, FormField};
 
-use super::cmap::{CMap, CMapDef, Parent, MAX_USE_CMAP_DEPTH};
+use super::cmap::{code_value, CMap, CMapDef, Parent, MAX_USE_CMAP_DEPTH};
 use super::core14::StandardFont;
 use super::encoding::{
     build_encoding_map, decode_with_encoding_map, glyph_name_to_text, single_char, BaseEncoding,
@@ -673,6 +673,8 @@ pub struct DecodedText {
     pub text: String,
     /// Set when the decoder discarded a run it could not read.
     pub suppressed: Option<TextSuppression>,
+    /// Codes left without a character although their glyph advances.
+    pub undecoded_codes: u32,
 }
 
 impl DecodedText {
@@ -681,6 +683,7 @@ impl DecodedText {
         Self {
             text,
             suppressed: None,
+            undecoded_codes: 0,
         }
     }
 
@@ -689,6 +692,7 @@ impl DecodedText {
         Self {
             text: String::new(),
             suppressed: Some(reason),
+            undecoded_codes: 0,
         }
     }
 }
@@ -1124,7 +1128,7 @@ impl PdfBackend for RawBackend {
             .decode_text(&self.doc, scope, font_name, bytes);
         DecodedText {
             text: sanitize_extracted_text(decoded.text),
-            suppressed: decoded.suppressed,
+            ..decoded
         }
     }
 
@@ -2697,7 +2701,7 @@ struct RawFontResolver {
     cmap_cache: RwLock<HashMap<FontKey, Option<ToUnicodeMap>>>,
     /// The `cmap` table of a composite font's embedded TrueType program, by the Type 0
     /// font: its CIDFont may be written inline, with no identity of its own.
-    embedded_cmap_cache: RwLock<HashMap<FontKey, Option<ToUnicodeMap>>>,
+    embedded_cmap_cache: RwLock<HashMap<FontKey, Option<Arc<ToUnicodeMap>>>>,
     encoding_cache: RwLock<HashMap<FontKey, Option<Arc<EncodingMap>>>>,
     program_encoding_cache: RwLock<HashMap<FontKey, Option<Arc<EncodingMap>>>>,
     style_cache: RwLock<HashMap<FontKey, DeclaredStyle>>,
@@ -2745,7 +2749,15 @@ impl RawFontResolver {
         font_name: &[u8],
         f: impl FnOnce(&FontMetrics) -> R,
     ) -> Option<R> {
-        let font = &self.find_font(doc, scope, font_name)?;
+        self.with_font_metrics(doc, &self.find_font(doc, scope, font_name)?, f)
+    }
+
+    fn with_font_metrics<R>(
+        &self,
+        doc: &RawDocument,
+        font: &FontRef<'_>,
+        f: impl FnOnce(&FontMetrics) -> R,
+    ) -> Option<R> {
         {
             let cache = self.metrics_cache.read().unwrap();
             if let Some(cached) = cache.get(&font.key) {
@@ -2909,6 +2921,11 @@ impl RawFontResolver {
             is_identity_h = font.has_identity_cmap(doc);
             is_composite = font.is_composite();
             if let Some(cmap) = self.get_to_unicode_map(doc, font) {
+                if is_composite {
+                    if let Some(decoded) = self.decode_composite(doc, font, &cmap, bytes) {
+                        return decoded;
+                    }
+                }
                 let encoding = if !is_composite && cmap.code_width == 1 {
                     self.get_encoding_map(doc, font)
                 } else {
@@ -3020,6 +3037,89 @@ impl RawFontResolver {
 
         // 7. Final fallback
         DecodedText::text(simple)
+    }
+
+    fn decode_composite(
+        &self,
+        doc: &RawDocument,
+        font: &FontRef<'_>,
+        to_unicode: &ToUnicodeMap,
+        bytes: &[u8],
+    ) -> Option<DecodedText> {
+        let mut decoded = DecodedText::default();
+        for code in self.composite_codes(doc, font, bytes)? {
+            if let Some(text) = to_unicode.mappings.get(&code_value(code)) {
+                decoded.text.push_str(text);
+            } else if let Some(text) = self.decode_left_out_code(doc, font, code) {
+                decoded.text.push_str(&text);
+            } else if self
+                .with_font_metrics(doc, font, |m| m.advances(code))
+                .is_none_or(|glyphs| {
+                    glyphs
+                        .iter()
+                        .any(|g| g.vertical.map_or(g.width != 0.0, |v| v.advance != 0.0))
+                })
+            {
+                decoded.undecoded_codes += 1;
+            }
+        }
+        if decoded.text.is_empty() && decoded.undecoded_codes > 0 {
+            return Some(DecodedText::suppressed(
+                TextSuppression::CompositeUnresolved,
+            ));
+        }
+        Some(decoded)
+    }
+
+    fn composite_codes<'b>(
+        &self,
+        doc: &RawDocument,
+        font: &FontRef<'_>,
+        bytes: &'b [u8],
+    ) -> Option<Vec<&'b [u8]>> {
+        if font.has_identity_cmap(doc) {
+            return Some(bytes.chunks(2).collect());
+        }
+        let (_, ordering) = self
+            .get_cid_system_info_cached(doc, font)
+            .unwrap_or_default();
+        let mut rest = bytes;
+        let codes = self
+            .code_map(doc, font)?
+            .codes(&ordering, bytes)?
+            .into_iter()
+            .map(|code| {
+                let (code, tail) = rest.split_at(code.len);
+                rest = tail;
+                code
+            })
+            .collect();
+        Some(codes)
+    }
+
+    fn decode_left_out_code(
+        &self,
+        doc: &RawDocument,
+        font: &FontRef<'_>,
+        code: &[u8],
+    ) -> Option<String> {
+        if font.has_identity_cmap(doc) {
+            if let Some(cmap) = self.get_embedded_cmap(doc, font) {
+                let decoded = cmap.decode(code);
+                if !decoded.is_empty() {
+                    return Some(decoded);
+                }
+            }
+            let (registry, ordering) = self.get_cid_system_info_cached(doc, font)?;
+            return crate::parser::cmap_table::decode_with_cid_system_info(
+                &registry, &ordering, code,
+            );
+        }
+        let (registry, ordering) = self
+            .get_cid_system_info_cached(doc, font)
+            .unwrap_or_default();
+        self.code_map(doc, font)?
+            .decode_declared(&registry, &ordering, code)
     }
 
     /// The font `font_name` refers to in `scope`: the innermost resource dictionary that
@@ -3199,7 +3299,11 @@ impl RawFontResolver {
     }
 
     /// Get or parse embedded TrueType cmap for Identity-H fonts.
-    fn get_embedded_cmap(&self, doc: &RawDocument, font: &FontRef<'_>) -> Option<ToUnicodeMap> {
+    fn get_embedded_cmap(
+        &self,
+        doc: &RawDocument,
+        font: &FontRef<'_>,
+    ) -> Option<Arc<ToUnicodeMap>> {
         {
             let cache = self.embedded_cmap_cache.read().unwrap();
             if let Some(cached) = cache.get(&font.key) {
@@ -3207,7 +3311,7 @@ impl RawFontResolver {
             }
         }
 
-        let result = self.parse_embedded_truetype_cmap(doc, font);
+        let result = self.parse_embedded_truetype_cmap(doc, font).map(Arc::new);
         self.embedded_cmap_cache
             .write()
             .unwrap()

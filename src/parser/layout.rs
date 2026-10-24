@@ -643,6 +643,9 @@ pub struct PageFacts {
     pub clipped_text_runs: u32,
     /// Text runs whose text is only whitespace.
     pub blank_text_runs: u32,
+    /// Codes a composite font's `ToUnicode` and own data give no character although their
+    /// glyph advances, in runs that give other text.
+    pub undecoded_text_codes: u32,
     /// Path-filling operators: `f`, `F`, `f*`, `B`, `B*`, `b` and `b*`.
     pub fill_op_count: u32,
     /// Ruling-line grids drawn on the page.
@@ -1390,6 +1393,7 @@ impl<'a> LayoutAnalyzer<'a> {
         let mut rotated_text_runs = 0u32;
         let mut clipped_text_runs = 0u32;
         let mut blank_text_runs = 0u32;
+        let mut undecoded_text_codes = 0u32;
         let mut margin_text_chars = 0usize;
         let mut fill_op_count = 0u32;
         let mut invisible_chars = 0usize;
@@ -1552,6 +1556,7 @@ impl<'a> LayoutAnalyzer<'a> {
                         let mut first_glyph = true;
                         let mut gaps: Vec<(usize, usize, Shift, Option<Shift>, Shift)> = Vec::new();
                         let mut gap_opened: Option<(usize, Shift, Option<Shift>)> = None;
+                        let mut undecoded = 0;
                         for item in items {
                             match item {
                                 PdfValue::Str(bytes) => {
@@ -1567,6 +1572,7 @@ impl<'a> LayoutAnalyzer<'a> {
                                         &mut suppressed_runs,
                                         &mut unreadable_fonts,
                                     );
+                                    undecoded += decoded.undecoded_codes;
                                     if let Some(room) = room.take() {
                                         maybe_insert_space_tj(&mut text, room - letter_room);
                                     }
@@ -1702,6 +1708,7 @@ impl<'a> LayoutAnalyzer<'a> {
                             }
                             continue;
                         }
+                        undecoded_text_codes += undecoded;
 
                         if !text.trim().is_empty() {
                             if !reads_left_to_right(&text_matrix.tm, &ctm) {
@@ -1809,6 +1816,7 @@ impl<'a> LayoutAnalyzer<'a> {
         facts.margin_text_chars = margin_text_chars as u32;
         facts.clipped_text_runs = clipped_text_runs;
         facts.blank_text_runs = blank_text_runs;
+        facts.undecoded_text_codes = undecoded_text_codes;
         facts.fill_op_count = fill_op_count;
         facts.ruled_grids = lattice_grids.len() as u32;
         facts.ruled_tables = 0;

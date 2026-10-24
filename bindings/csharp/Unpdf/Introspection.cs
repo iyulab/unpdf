@@ -220,6 +220,10 @@ public sealed class PageStats
     [JsonPropertyName("unreadable_fonts")]
     public IReadOnlyList<UnreadableFont> UnreadableFonts { get; init; } = System.Array.Empty<UnreadableFont>();
 
+    /// <summary>Codes a composite font's ToUnicode and own data give no character although their glyph advances, in runs that give other text.</summary>
+    [JsonPropertyName("undecoded_text_codes")]
+    public uint UndecodedTextCodes { get; init; }
+
     /// <summary>
     /// Content streams of this page that could not be decoded. This page's share of
     /// <see cref="ExtractionQuality.UndecodableContentStreams"/>.

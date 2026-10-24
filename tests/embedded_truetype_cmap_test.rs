@@ -89,17 +89,22 @@ fn embedded_truetype_font_format12_only() -> Vec<u8> {
     font
 }
 
-/// A one-page PDF whose Identity-H content stream draws GIDs 5, 6, 7 (raw 2-byte
-/// codes, no ToUnicode) through a Type0/CIDFontType2 font backed by a real embedded
-/// `FontFile2` program — the full real-world object graph
+/// A one-page PDF whose Identity-H content stream draws `gids` (raw 2-byte codes, with
+/// the given ToUnicode or none) through a Type0/CIDFontType2 font backed by a real
+/// embedded `FontFile2` program — the full real-world object graph
 /// `Type0 -> DescendantFonts -> CIDFontType2 -> FontDescriptor -> FontFile2`.
-fn embedded_format12_cmap_pdf() -> Vec<u8> {
+fn embedded_format12_cmap_pdf(gids: &[u8], to_unicode: Option<&str>) -> Vec<u8> {
     let font_program = embedded_truetype_font_format12_only();
     let mut content = b"BT /F1 12 Tf 72 720 Td (".to_vec();
-    content.extend_from_slice(&[0x00, 0x05, 0x00, 0x06, 0x00, 0x07]); // GIDs 5, 6, 7
+    content.extend_from_slice(gids);
     content.extend_from_slice(b") Tj ET");
 
-    let objects: Vec<Vec<u8>> = vec![
+    let to_unicode_key = if to_unicode.is_some() {
+        " /ToUnicode 9 0 R"
+    } else {
+        ""
+    };
+    let mut objects: Vec<Vec<u8>> = vec![
         b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
         b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
         b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
@@ -111,9 +116,11 @@ fn embedded_format12_cmap_pdf() -> Vec<u8> {
             b"\nendstream".to_vec(),
         ]
         .concat(),
-        b"<< /Type /Font /Subtype /Type0 /BaseFont /Synthetic /Encoding /Identity-H \
-          /DescendantFonts [6 0 R] >>"
-            .to_vec(),
+        format!(
+            "<< /Type /Font /Subtype /Type0 /BaseFont /Synthetic /Encoding /Identity-H \
+             /DescendantFonts [6 0 R]{to_unicode_key} >>"
+        )
+        .into_bytes(),
         b"<< /Type /Font /Subtype /CIDFontType2 /BaseFont /Synthetic \
           /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> \
           /FontDescriptor 7 0 R >>"
@@ -126,15 +133,25 @@ fn embedded_format12_cmap_pdf() -> Vec<u8> {
         ]
         .concat(),
     ];
+    if let Some(to_unicode) = to_unicode {
+        let cmap = format!(
+            "/CIDInit /ProcSet findresource begin 12 dict begin begincmap {to_unicode} endcmap end end"
+        );
+        objects
+            .push(format!("<< /Length {} >>\nstream\n{cmap}\nendstream", cmap.len()).into_bytes());
+    }
 
     assemble(&objects)
 }
 
 #[test]
 fn embedded_truetype_format12_cmap_is_wired_through_the_real_pdf_object_graph() {
-    let doc = PdfParser::from_bytes(&embedded_format12_cmap_pdf())
-        .and_then(|p| p.parse())
-        .expect("fixture must parse");
+    let doc = PdfParser::from_bytes(&embedded_format12_cmap_pdf(
+        &[0x00, 0x05, 0x00, 0x06, 0x00, 0x07],
+        None,
+    ))
+    .and_then(|p| p.parse())
+    .expect("fixture must parse");
 
     let text = to_markdown(&doc, &RenderOptions::default()).expect("markdown render");
     assert!(
@@ -147,4 +164,27 @@ fn embedded_truetype_format12_cmap_is_wired_through_the_real_pdf_object_graph() 
         doc.extraction_quality.suppressed_text_runs, 0,
         "a resolvable embedded cmap must not report suppression"
     );
+}
+
+#[test]
+fn codes_a_to_unicode_leaves_out_read_through_the_embedded_cmap() {
+    let parse = |gids: &[u8]| {
+        PdfParser::from_bytes(&embedded_format12_cmap_pdf(
+            gids,
+            Some(
+                "1 begincodespacerange <0000> <FFFF> endcodespacerange \
+                 1 beginbfchar <0005> <0041> endbfchar",
+            ),
+        ))
+        .and_then(|p| p.parse())
+        .expect("fixture must parse")
+    };
+
+    let doc = parse(&[0x00, 0x05, 0x00, 0x06, 0x00, 0x07]);
+    assert_eq!(doc.plain_text().trim(), "ABC");
+    assert_eq!(doc.pages[0].undecoded_text_codes, 0);
+
+    let doc = parse(&[0x00, 0x05, 0x00, 0x06, 0x00, 0x07, 0x00, 0x08]);
+    assert_eq!(doc.plain_text().trim(), "ABC");
+    assert_eq!(doc.pages[0].undecoded_text_codes, 1);
 }

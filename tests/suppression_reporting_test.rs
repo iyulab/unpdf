@@ -336,3 +336,252 @@ fn codes_a_font_gives_no_character_are_unmapped_not_binary_noise() {
     let json = serde_json::to_value(page).expect("page must serialise");
     assert_eq!(json["unreadable_fonts"][0]["reason"], "unmapped_codes");
 }
+
+fn composite_pdf(
+    shown: &str,
+    encoding: &str,
+    ordering: &str,
+    to_unicode: &str,
+    extra: &[String],
+) -> Vec<u8> {
+    let content = format!("BT /F1 12 Tf 72 720 Td {shown} ET");
+    let to_unicode = format!(
+        "/CIDInit /ProcSet findresource begin 12 dict begin begincmap {to_unicode} endcmap end end"
+    );
+    let mut objects = vec![
+        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+         /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>"
+            .to_string(),
+        format!(
+            "<< /Length {} >>\nstream\n{content}\nendstream",
+            content.len()
+        ),
+        format!(
+            "<< /Type /Font /Subtype /Type0 /BaseFont /Partial /Encoding {encoding} \
+             /DescendantFonts [6 0 R] /ToUnicode 7 0 R >>"
+        ),
+        format!(
+            "<< /Type /Font /Subtype /CIDFontType2 /BaseFont /Partial \
+             /CIDSystemInfo << /Registry (Adobe) /Ordering ({ordering}) /Supplement 0 >> \
+             /DW 500 /W [6 [0]] /W2 [7 [0 250 880]] >>"
+        ),
+        format!(
+            "<< /Length {} >>\nstream\n{to_unicode}\nendstream",
+            to_unicode.len()
+        ),
+    ];
+    objects.extend_from_slice(extra);
+    assemble(&objects)
+}
+
+fn partially_mapped_composite_pdf(shown: &str) -> Vec<u8> {
+    composite_pdf(
+        shown,
+        "/Identity-H",
+        "Identity",
+        "1 begincodespacerange <0000> <FFFF> endcodespacerange \
+         5 beginbfchar <0001> <0050> <0002> <006C> <0003> <0061> <0004> <006E> \
+         <0005> <D83DDC68200DD83DDC69> endbfchar",
+        &[],
+    )
+}
+
+fn parsed_page(pdf: &[u8]) -> (String, unpdf::model::Page) {
+    let doc = PdfParser::from_bytes(pdf)
+        .and_then(|p| p.parse())
+        .expect("fixture must parse");
+    (doc.plain_text().trim().to_string(), doc.pages[0].clone())
+}
+
+#[test]
+fn an_advancing_code_a_composite_font_leaves_out_is_counted_as_undecoded() {
+    let (text, page) = parsed_page(&partially_mapped_composite_pdf("<00010002000300040200> Tj"));
+    assert_eq!(text, "Plan");
+    assert_eq!(page.undecoded_text_codes, 1);
+    assert_eq!(page.suppressed_text_runs, 0);
+    assert!(page.unreadable_fonts.is_empty());
+    let json = serde_json::to_value(&page).expect("page must serialise");
+    assert_eq!(json["undecoded_text_codes"], 1);
+}
+
+#[test]
+fn a_zero_width_code_a_composite_font_leaves_out_is_not_undecoded() {
+    let (text, page) = parsed_page(&partially_mapped_composite_pdf(
+        "<000100020003000400050006> Tj",
+    ));
+    assert_eq!(text, "Plan\u{1f468}\u{200d}\u{1f469}");
+    assert_eq!(page.undecoded_text_codes, 0);
+    assert_eq!(page.suppressed_text_runs, 0);
+    let json = serde_json::to_value(&page).expect("page must serialise");
+    assert!(json.get("undecoded_text_codes").is_none());
+}
+
+#[test]
+fn a_run_the_clip_hides_counts_no_undecoded_code() {
+    let (text, page) = parsed_page(&partially_mapped_composite_pdf(
+        "<00010002> Tj ET q 0 0 10 10 re W n \
+         BT /F1 12 Tf 300 400 Td <00030200> Tj ET Q BT",
+    ));
+    assert_eq!(text, "Pl");
+    assert_eq!(page.clipped_text_runs, 1);
+    assert_eq!(page.undecoded_text_codes, 0);
+}
+
+#[test]
+fn a_kerned_string_of_codes_left_out_is_judged_by_each_element() {
+    use unpdf::parser::backend::TextSuppression;
+
+    let (text, page) = parsed_page(&partially_mapped_composite_pdf(
+        "[<0001000200030004> -20 <0200>] TJ",
+    ));
+    assert_eq!(text, "Plan");
+    assert_eq!(page.undecoded_text_codes, 0);
+    assert_eq!(page.suppressed_text_runs, 1);
+    assert_eq!(
+        page.unreadable_fonts[0].reason,
+        TextSuppression::CompositeUnresolved
+    );
+
+    let (text, page) = parsed_page(&partially_mapped_composite_pdf(
+        "[<0005> -64 <0006> 777 <0007>] TJ",
+    ));
+    assert_eq!(text, "\u{1f468}\u{200d}\u{1f469}");
+    assert_eq!(page.undecoded_text_codes, 0);
+    assert_eq!(
+        page.suppressed_text_runs, 1,
+        "code 7 advances, code 6 does not"
+    );
+}
+
+#[test]
+fn identity_h_codes_are_two_bytes_whatever_the_to_unicode_declares() {
+    let pdf = |shown: &str| {
+        composite_pdf(
+            shown,
+            "/Identity-H",
+            "Identity",
+            "1 begincodespacerange <00> <FF> endcodespacerange \
+             4 beginbfchar <01> <0050> <02> <006C> <03> <0061> <04> <006E> endbfchar",
+            &[],
+        )
+    };
+    let (text, page) = parsed_page(&pdf("<0001000200030004> Tj"));
+    assert_eq!(text, "Plan");
+    assert_eq!(page.undecoded_text_codes, 0);
+
+    let (text, page) = parsed_page(&pdf("<00010002000300040200> Tj"));
+    assert_eq!(text, "Plan");
+    assert_eq!(page.undecoded_text_codes, 1);
+}
+
+#[test]
+fn a_code_left_out_of_a_vertical_font_advances_down_the_page() {
+    let pdf = |shown: &str| {
+        composite_pdf(
+            shown,
+            "/Identity-V",
+            "Identity",
+            "1 begincodespacerange <0000> <FFFF> endcodespacerange \
+             1 beginbfchar <0001> <0050> endbfchar",
+            &[],
+        )
+    };
+    let (text, page) = parsed_page(&pdf("<00010006> Tj"));
+    assert_eq!(text, "P");
+    assert_eq!(page.undecoded_text_codes, 1);
+
+    let (text, page) = parsed_page(&pdf("<00010007> Tj"));
+    assert_eq!(text, "P");
+    assert_eq!(page.undecoded_text_codes, 0);
+}
+
+fn one_byte_encoding_pdf(shown: &str, to_unicode: &str, dict: &str) -> Vec<u8> {
+    let encoding = "/CIDInit /ProcSet findresource begin 12 dict begin begincmap \
+                    /CMapName /OneByte def 1 begincodespacerange <00> <FF> endcodespacerange \
+                    1 begincidrange <00> <FF> 0 endcidrange endcmap end end";
+    composite_pdf(
+        shown,
+        "8 0 R",
+        "Identity",
+        to_unicode,
+        &[format!(
+            "<< /Type /CMap /CMapName /OneByte {dict} /Length {} >>\nstream\n{encoding}\nendstream",
+            encoding.len()
+        )],
+    )
+}
+
+#[test]
+fn a_one_byte_code_left_out_under_an_embedded_encoding_is_never_its_ascii() {
+    let keyed = |keys: [u8; 4]| {
+        format!(
+            "4 beginbfchar <{:02X}> <0050> <{:02X}> <006C> <{:02X}> <0061> <{:02X}> <006E> endbfchar",
+            keys[0], keys[1], keys[2], keys[3]
+        )
+    };
+    for (shown, keys, undecoded, suppressed) in [
+        ("<4142434445> Tj", [0x41, 0x42, 0x43, 0x44], 1, 0),
+        ("[<41424344> -20 <45>] TJ", [0x41, 0x42, 0x43, 0x44], 0, 1),
+        ("<0102030441> Tj", [0x01, 0x02, 0x03, 0x04], 1, 0),
+    ] {
+        for dict in [
+            "",
+            "/UseCMap /GBK-EUC-H",
+            "/UseCMap /UniJIS-UCS2-H",
+            "/UseCMap /NoSuchCMap-H",
+        ] {
+            for codespace in ["", "1 begincodespacerange <0000> <FFFF> endcodespacerange "] {
+                let to_unicode = format!("{codespace}{}", keyed(keys));
+                let (text, page) = parsed_page(&one_byte_encoding_pdf(shown, &to_unicode, dict));
+                assert_eq!(text, "Plan", "shown: {shown}, {dict}, {to_unicode}");
+                assert_eq!(
+                    page.undecoded_text_codes, undecoded,
+                    "shown: {shown}, {dict}, {to_unicode}"
+                );
+                assert_eq!(page.suppressed_text_runs, suppressed);
+                assert_eq!(page.unreadable_fonts.len(), suppressed);
+            }
+        }
+    }
+}
+
+#[test]
+fn a_code_the_to_unicode_leaves_out_reads_through_the_fonts_own_data() {
+    let pdf = |shown: &str| {
+        composite_pdf(
+            shown,
+            "/Identity-H",
+            "Korea1",
+            "1 begincodespacerange <0000> <FFFF> endcodespacerange \
+             1 beginbfchar <0001> <0050> endbfchar",
+            &[],
+        )
+    };
+    let (text, page) = parsed_page(&pdf("<00010022> Tj"));
+    assert_eq!(text, "PA");
+    assert_eq!(page.undecoded_text_codes, 0);
+
+    let (text, page) = parsed_page(&pdf("<0022> Tj"));
+    assert_eq!(text, "A");
+    assert_eq!(page.undecoded_text_codes, 0);
+
+    let pdf = |shown: &str| {
+        composite_pdf(
+            shown,
+            "/KSC-EUC-H",
+            "Korea1",
+            "1 begincodespacerange <0000> <FFFF> endcodespacerange \
+             1 beginbfchar <B1DB> <D55C> endbfchar",
+            &[],
+        )
+    };
+    let (text, page) = parsed_page(&pdf("<B1DB41> Tj"));
+    assert_eq!(text, "\u{d55c}A");
+    assert_eq!(page.undecoded_text_codes, 0);
+
+    let (text, page) = parsed_page(&pdf("<B0A1> Tj"));
+    assert_eq!(text, "\u{ac00}");
+    assert_eq!(page.undecoded_text_codes, 0);
+}

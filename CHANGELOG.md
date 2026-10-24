@@ -13,6 +13,17 @@
   table cell and a table row written as text joined their runs in the order they stand on the
   page -- visual order, so Arabic and Hebrew came out reversed there while multi-run lines were
   reordered. All of them now go through the same reordering.
+- **A code a composite font's `ToUnicode` leaves out no longer reads as another code.** A
+  `ToUnicode` that declares two-byte codes but maps none above `0xFF` cut the codes to one
+  byte, so `<0200>` under `Identity-H` read as the character of `0x02`. When unpdf can split
+  by its `/Encoding` (Identity, an embedded CMap or a predefined CMap it carries), a
+  composite font's codes are now as long as that `/Encoding` makes them. A code the
+  `ToUnicode` leaves out is read through the font's own data (its CID collection, embedded
+  `cmap` or `/Encoding` CMap). One still without a character whose glyph advances is
+  counted in the new `undecoded_text_codes` of `Page` and the page stats, or, in a run that
+  gives no other text, makes the run `composite_unresolved` as before. A run that gives no
+  text and holds no such code, as an empty string or one of zero-width codes only, is no
+  longer `composite_unresolved`.
 
 ## 0.49.0 — 2026-10-24
 

@@ -84,6 +84,7 @@ fn page_stats_distinguishes_image_only_page() {
             "margin_text_chars",
             "clipped_text_runs",
             "blank_text_runs",
+            "undecoded_text_codes",
             "ruled_grids",
             "ruled_tables",
             "ambiguous_layout_regions",

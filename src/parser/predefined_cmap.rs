@@ -46,6 +46,8 @@ pub(crate) struct PredefinedCode {
     pub cid: u32,
     /// The character a Unicode CMap carries in the code itself.
     pub scalar: Option<char>,
+    /// A one-byte code of the code space, not a truncated unit of a Unicode CMap.
+    pub single_byte: bool,
 }
 
 /// Split `bytes` into the codes of a predefined CMap, the way the CMap's own code space
@@ -67,6 +69,7 @@ pub(crate) fn split(
                         .fold(0u32, |acc, &b| acc << 8 | u32::from(b));
                     at += code.len;
                     PredefinedCode {
+                        single_byte: code.len == 1 && code.scalar.is_some(),
                         value,
                         len: code.len,
                         cid: code
@@ -91,6 +94,7 @@ pub(crate) fn split(
             .binary_search_by_key(&code, |&(c, _)| c)
             .map_or(0, |idx| u32::from(cmap.codes[idx].1));
         codes.push(PredefinedCode {
+            single_byte: width == 1,
             value: u32::from(code),
             len: width,
             cid,

@@ -101,7 +101,7 @@ fn code_bytes(len: usize, value: u32) -> [u8; MAX_CODE_LEN] {
 }
 
 /// A code's bytes as a big-endian number.
-fn code_value(bytes: &[u8]) -> u32 {
+pub(crate) fn code_value(bytes: &[u8]) -> u32 {
     bytes.iter().fold(0, |acc, &b| acc << 8 | u32::from(b))
 }
 
@@ -223,12 +223,15 @@ impl Parent {
 pub(crate) struct Code {
     /// The CID the code selects; 0 (`.notdef`) when the CMap does not map it.
     pub cid: u32,
+    pub len: usize,
     /// The character, when a Unicode CMap carries it in the code itself.
     pub text: Option<char>,
     /// The single-byte code 32, the only code word spacing applies to (§9.3.3).
     pub is_word_space: bool,
     /// A one-byte code's value, for the ASCII a collection leaves unmapped.
     single_byte: Option<u8>,
+    /// A one-byte code no own range maps that a predefined CMap at the root reads as one byte.
+    predefined_byte: bool,
 }
 
 /// A composite font's resolved `/Encoding`.
@@ -303,9 +306,12 @@ impl CMap {
             });
         Code {
             cid,
+            len,
             text: root.and_then(|p| p.scalar),
             is_word_space: len == 1 && value == 0x20,
             single_byte: (len == 1).then_some(value as u8),
+            predefined_byte: root.is_some_and(|p| p.single_byte)
+                && self.own_cid(len, value).is_none(),
         }
     }
 
@@ -363,13 +369,38 @@ impl CMap {
     /// collection (`registry`, `ordering`) read at each code's CID. A code that resolves
     /// to nothing is skipped; `None` means no code resolved at all.
     pub(crate) fn decode(&self, registry: &str, ordering: &str, bytes: &[u8]) -> Option<String> {
+        self.decode_with_ascii(registry, ordering, bytes, true)
+    }
+
+    /// [`Self::decode`], reading a byte as ASCII only where it is a `predefined_byte`.
+    pub(crate) fn decode_declared(
+        &self,
+        registry: &str,
+        ordering: &str,
+        bytes: &[u8],
+    ) -> Option<String> {
+        self.decode_with_ascii(registry, ordering, bytes, false)
+    }
+
+    fn decode_with_ascii(
+        &self,
+        registry: &str,
+        ordering: &str,
+        bytes: &[u8],
+        any_byte: bool,
+    ) -> Option<String> {
         let text: String = self
             .codes(ordering, bytes)?
             .into_iter()
             .filter_map(|code| {
                 code.text
                     .or_else(|| super::cmap_table::lookup_cid(registry, ordering, code.cid))
-                    .or_else(|| predefined_cmap::ascii_fallback(u16::from(code.single_byte?), 1))
+                    .or_else(|| {
+                        let byte = code
+                            .single_byte
+                            .filter(|_| any_byte || code.predefined_byte)?;
+                        predefined_cmap::ascii_fallback(u16::from(byte), 1)
+                    })
             })
             .collect();
         (!text.is_empty()).then_some(text)
@@ -432,6 +463,32 @@ endcmap end end";
             map.decode("Adobe", "Korea1", &[0xD5, 0x5C, 0x00, 0x20])
                 .as_deref(),
             Some("한 ")
+        );
+    }
+
+    #[test]
+    fn a_byte_reads_as_ascii_only_where_the_predefined_cmap_holds_it_as_one_byte_code() {
+        let over = |name: &str, own: &[u8]| {
+            let mut data = format!("/{name} usecmap ").into_bytes();
+            data.extend_from_slice(own);
+            CMap::new(parse(&data).unwrap(), Parent::named(name))
+        };
+        let legacy = over("KSC-EUC-H", b"");
+        assert_eq!(
+            legacy.decode_declared("Adobe", "Korea1", b"A").as_deref(),
+            Some("A")
+        );
+        let own_range = over(
+            "KSC-EUC-H",
+            b"1 begincodespacerange <00> <FF> endcodespacerange \
+              1 begincidchar <41> 0 endcidchar",
+        );
+        assert_eq!(own_range.decode_declared("Adobe", "Korea1", b"A"), None);
+        let ucs2 = over("UniKS-UCS2-H", b"");
+        assert_eq!(
+            ucs2.decode_declared("Adobe", "Korea1", &[0xD5, 0x5C, 0x41])
+                .as_deref(),
+            Some("한")
         );
     }
 

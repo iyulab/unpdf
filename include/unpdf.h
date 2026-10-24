@@ -299,6 +299,7 @@ char* unpdf_get_extraction_quality(const UnpdfDocument* doc);
  * Per-page statistics as a JSON object:
  * {"page":N,"rotation":N,"text_op_count":N,"image_op_count":N,"form_op_count":N,
  *  "fill_op_count":N,"ocr_text_suppressed":bool,"suppressed_text_runs":N,
+ *  "undecoded_text_codes":N,
  *  "undecodable_content_streams":N,"image_coverage":F,"rotated_text_runs":N,
  *  "invisible_text_chars":N,"painted_text_chars":N,"margin_text_chars":N,
  *  "clipped_text_runs":N,"blank_text_runs":N,"ruled_grids":N,"ruled_tables":N,
@@ -306,7 +307,9 @@ char* unpdf_get_extraction_quality(const UnpdfDocument* doc);
  *
  * suppressed_text_runs and undecodable_content_streams are this page's share
  * of the document-level counts of the same name in
- * unpdf_get_extraction_quality.
+ * unpdf_get_extraction_quality. undecoded_text_codes counts codes a composite
+ * font's ToUnicode and own data give no character although their glyph
+ * advances, in runs that give other text.
  *
  * text_op_count counts text-showing operators (Tj/TJ/'/"); image_op_count
  * counts image paints (Do of anything but a Form XObject, and inline images);
