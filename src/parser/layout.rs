@@ -6,7 +6,9 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap};
 
-use super::backend::{get_number_from_value, ContentOp, PdfBackend, PdfValue, ResourceScope};
+use super::backend::{
+    get_number_from_value, ContentOp, PdfBackend, PdfValue, ResourceScope, TextSuppression,
+};
 use super::clip::{Bounds, ClipTracker};
 use super::text_state::Shift;
 use crate::error::{Error, Result};
@@ -1552,6 +1554,7 @@ impl<'a> LayoutAnalyzer<'a> {
                         let mut first_glyph = true;
                         let mut gaps: Vec<(usize, usize, Shift, Option<Shift>, Shift)> = Vec::new();
                         let mut gap_opened: Option<(usize, Shift, Option<Shift>)> = None;
+                        let mut suppressions = Vec::new();
                         for item in items {
                             match item {
                                 PdfValue::Str(bytes) => {
@@ -1561,12 +1564,7 @@ impl<'a> LayoutAnalyzer<'a> {
                                         &text_state.font_resource,
                                         bytes,
                                     );
-                                    note_suppression(
-                                        &decoded,
-                                        &text_state,
-                                        &mut suppressed_runs,
-                                        &mut unreadable_fonts,
-                                    );
+                                    suppressions.extend(decoded.suppressed);
                                     if let Some(room) = room.take() {
                                         maybe_insert_space_tj(&mut text, room - letter_room);
                                     }
@@ -1701,6 +1699,14 @@ impl<'a> LayoutAnalyzer<'a> {
                                 text_matrix.advance(run);
                             }
                             continue;
+                        }
+                        for reason in suppressions {
+                            note_suppression(
+                                reason,
+                                &text_state,
+                                &mut suppressed_runs,
+                                &mut unreadable_fonts,
+                            );
                         }
 
                         if !text.trim().is_empty() {
@@ -3270,33 +3276,31 @@ fn concat_matrix(a: &[f32; 6], b: &[f32; 6]) -> [f32; 6] {
 /// The run is also attributed to the font it was set in, so a consumer can say which
 /// font could not be read.
 fn note_suppression(
-    decoded: &super::backend::DecodedText,
+    reason: TextSuppression,
     text_state: &TextState,
     suppressed_runs: &mut usize,
     unreadable_fonts: &mut Vec<UnreadableFont>,
 ) {
-    if let Some(reason) = decoded.suppressed {
-        *suppressed_runs += 1;
-        // A font without `/BaseFont` is listed as "Unknown" by the font table; the
-        // resource name is the only identity it has.
-        let name = if text_state.font.is_empty() || text_state.font == "Unknown" {
-            String::from_utf8_lossy(&text_state.font_resource).into_owned()
-        } else {
-            text_state.font.clone()
-        };
-        match unreadable_fonts
-            .iter_mut()
-            .find(|f| f.reason == reason && f.name == name)
-        {
-            Some(entry) => entry.runs += 1,
-            None => unreadable_fonts.push(UnreadableFont {
-                name,
-                reason,
-                runs: 1,
-            }),
-        }
-        log::debug!("dropped an unreadable text run: {:?}", reason);
+    *suppressed_runs += 1;
+    // A font without `/BaseFont` is listed as "Unknown" by the font table; the
+    // resource name is the only identity it has.
+    let name = if text_state.font.is_empty() || text_state.font == "Unknown" {
+        String::from_utf8_lossy(&text_state.font_resource).into_owned()
+    } else {
+        text_state.font.clone()
+    };
+    match unreadable_fonts
+        .iter_mut()
+        .find(|f| f.reason == reason && f.name == name)
+    {
+        Some(entry) => entry.runs += 1,
+        None => unreadable_fonts.push(UnreadableFont {
+            name,
+            reason,
+            runs: 1,
+        }),
     }
+    log::debug!("dropped an unreadable text run: {:?}", reason);
 }
 
 /// Tally characters by whether they were painted, for [`PageTextLayerSignals`].

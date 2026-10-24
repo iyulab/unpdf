@@ -35,9 +35,8 @@ fn assemble(objects: &[String]) -> Vec<u8> {
     out
 }
 
-/// A one-page document drawing `literal` with the font object given as `font_body`.
-fn one_page_pdf(font_body: &str, literal: &str, extra_objects: &[String]) -> Vec<u8> {
-    let content = format!("BT /F1 12 Tf 72 720 Td ({}) Tj ET", literal);
+/// A one-page document whose `content` draws with the font object given as `font_body`.
+fn one_page_pdf(font_body: &str, content: &str, extra_objects: &[String]) -> Vec<u8> {
     let mut objects = vec![
         "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
         "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
@@ -58,11 +57,15 @@ fn one_page_pdf(font_body: &str, literal: &str, extra_objects: &[String]) -> Vec
 /// An Identity-H composite font with no `ToUnicode` map and no embedded cmap —
 /// the decoder has no way to turn its CIDs into characters.
 fn unresolvable_composite_pdf() -> Vec<u8> {
+    // Two CIDs. Byte-wise Latin-1 reading of these is categorically wrong.
+    unresolvable_composite_page("BT /F1 12 Tf 72 720 Td (\\001\\102\\001\\103) Tj ET")
+}
+
+fn unresolvable_composite_page(content: &str) -> Vec<u8> {
     one_page_pdf(
         "<< /Type /Font /Subtype /Type0 /BaseFont /NoMap /Encoding /Identity-H \
          /DescendantFonts [6 0 R] >>",
-        // Two CIDs. Byte-wise Latin-1 reading of these is categorically wrong.
-        "\\001\\102\\001\\103",
+        content,
         &["<< /Type /Font /Subtype /CIDFontType2 /BaseFont /NoMap \
            /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> >>"
             .to_string()],
@@ -73,7 +76,7 @@ fn unresolvable_composite_pdf() -> Vec<u8> {
 fn readable_pdf() -> Vec<u8> {
     one_page_pdf(
         "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
-        "Readable text",
+        "BT /F1 12 Tf 72 720 Td (Readable text) Tj ET",
         &[],
     )
 }
@@ -137,6 +140,18 @@ fn suppression_is_visible_on_the_page_that_lost_the_runs() {
         total > 0,
         "the page must carry the count, not just the total"
     );
+}
+
+#[test]
+fn a_run_the_clip_hides_is_not_counted_as_suppressed() {
+    let doc = PdfParser::from_bytes(&unresolvable_composite_page(
+        "q 0 0 10 10 re W n BT /F1 12 Tf 300 400 Td (\\001\\102\\001\\103) Tj ET Q",
+    ))
+    .and_then(|p| p.parse())
+    .expect("fixture must parse");
+
+    assert_eq!(doc.pages[0].suppressed_text_runs, 0);
+    assert!(doc.pages[0].unreadable_fonts.is_empty());
 }
 
 /// Forward compatibility: the field is additive JSON, so a consumer that does not

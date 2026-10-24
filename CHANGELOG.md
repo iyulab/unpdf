@@ -13,6 +13,10 @@
   table cell and a table row written as text joined their runs in the order they stand on the
   page -- visual order, so Arabic and Hebrew came out reversed there while multi-run lines were
   reordered. All of them now go through the same reordering.
+- **A run the clip hides is not reported as unreadable.** A text run whose font could not be
+  read was counted in `suppressed_text_runs` and `unreadable_fonts` even when the clipping path
+  or the page box hid it entirely, so a page could report a loss of text it never shows. Only
+  the runs the clip shows are counted now.
 
 ## 0.49.0 — 2026-10-24
 
