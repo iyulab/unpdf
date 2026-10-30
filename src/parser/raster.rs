@@ -17,9 +17,9 @@ use std::ops::ControlFlow;
 use std::rc::Rc;
 
 use super::backend::{
-    CodecParms, ContentOp, GlyphAdvance, ImageColorSpace, ObjectId, PageId, PdfBackend, PdfValue,
-    RawXObject, Shading, ShadingGeometry, SoftMask, SoftMaskEntry, TilingPattern, TintSpace,
-    Type3Font,
+    CodecParms, ContentOp, GlyphAdvance, ImageColorSpace, ObjectId, PageBox, PageId, PdfBackend,
+    PdfValue, RawXObject, ResourceScope, Shading, ShadingGeometry, SoftMask, SoftMaskEntry,
+    TilingPattern, TintSpace, Type3Font,
 };
 use super::cmyk::cmyk_to_rgb_unit;
 use super::form_xobject;
@@ -60,9 +60,10 @@ pub enum PageRegion {
 /// content asks for was painted.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RasterGaps {
-    /// Text runs not painted, or painted only in part: the font's program is not embedded
-    /// and no standard face stands in for it, or is one this does not read, or a code
-    /// selects no glyph in it (in a Type 3 font: no glyph procedure).
+    /// Text runs whose paint or text clipping could not be fully applied: the font's program
+    /// is not embedded and no standard face stands in for it, or is one this does not read, or a code
+    /// selects no glyph in it (in a Type 3 font: no glyph procedure). Glyphs wholly outside
+    /// the raster or its clip are excluded when their declared bounds are known.
     pub text_runs: u32,
     /// Images not painted: a codec this does not decode, a color
     /// space it does not convert, or data that did not decode.
@@ -871,29 +872,33 @@ impl Painter<'_> {
             }
             "BT" => self.text_clip = None,
             "ET" => {
-                if let Some(path) = self.text_clip.take().and_then(PathBuilder::finish) {
-                    self.clip_in(Some(&path), FillRule::Winding, Transform::identity());
+                if let Some(path) = self.text_clip.take() {
+                    let path = path.finish();
+                    self.clip_in(path.as_ref(), FillRule::Winding, Transform::identity());
                 }
             }
-            "Tj" | "'" => self.show(op, op.operands.get(..1).unwrap_or(&[])),
+            "Tj" | "'" => self.show(op.operands.get(..1).unwrap_or(&[])),
             "TJ" => {
                 if let Some(PdfValue::Array(items)) = op.operands.first() {
-                    self.show(op, items);
+                    self.show(items);
                 }
             }
-            "\"" => self.show(op, op.operands.get(2..3).unwrap_or(&[])),
+            "\"" => self.show(op.operands.get(2..3).unwrap_or(&[])),
             _ => {}
         }
     }
 
     /// Paint the strings and position adjustments of a text-showing operator, advancing the
     /// text matrix as text extraction does.
-    fn show(&mut self, op: &ContentOp, items: &[PdfValue]) {
+    fn show(&mut self, items: &[PdfValue]) {
         let Some(key) = self.state.text.font.clone() else {
             return;
         };
         let text = self.state.text.params.clone();
-        let scope = op.scope(self.page);
+        let scope = ResourceScope {
+            page: self.page,
+            form: key.0,
+        };
         if !self.type3.contains_key(&key) {
             let font = self.backend.type3_font(scope, &key.1).map(Rc::new);
             self.type3.insert(key.clone(), font);
@@ -910,8 +915,9 @@ impl Painter<'_> {
             self.fonts.insert(key.clone(), loaded);
         }
         let vertical = self.backend.is_vertical_font(scope, &key.1);
+        let bounds = self.backend.font_bounds(scope, &key.1);
         // Mode 3 paints nothing (an OCR layer over a scan): nothing is missing.
-        let invisible = matches!(text.render_mode, 3 | 7);
+        let invisible = text.render_mode == 3;
         let mut missing = false;
         let mut substituted = false;
         let mut unpainted_color = false;
@@ -936,12 +942,30 @@ impl Painter<'_> {
                 }
                 _ => continue,
             };
+            if (4..=7).contains(&text.render_mode) && !bytes.is_empty() {
+                self.text_clip.get_or_insert_with(PathBuilder::new);
+            }
             let advances = self.backend.glyph_advances(scope, &key.1, bytes);
             let Some(font) = loaded.as_mut() else {
-                missing |= !invisible;
-                // Still move past the run, so what follows lands where it should.
-                if let Some(advances) = &advances {
-                    self.text_matrix.advance(text.advance_of(advances));
+                match &advances {
+                    Some(advances) => {
+                        let start = self.text_matrix.clone();
+                        for measured in advances {
+                            if self.stopped {
+                                break 'run;
+                            }
+                            missing |= !invisible
+                                && self.missing_glyph_visible(bounds, &text, measured, true);
+                            self.text_matrix.advance(text.glyph_advance(measured));
+                        }
+                        self.text_matrix = start;
+                        self.text_matrix.advance(text.advance_of(advances));
+                    }
+                    None => {
+                        missing |= !invisible
+                            && !bytes.is_empty()
+                            && self.visible_bounds(None, (4..=7).contains(&text.render_mode))
+                    }
                 }
                 continue;
             };
@@ -983,31 +1007,19 @@ impl Painter<'_> {
                             substituted = true;
                         }
                         if let Some(outline) = font.outline(gid).cloned() {
-                            // A vertical glyph hangs from the text position by its position
-                            // vector.
-                            let origin = text.origin_offset(&measured);
-                            let to_text = Transform::from_row(
-                                text.size * text.horizontal_scale,
-                                0.0,
-                                0.0,
-                                text.size,
-                                0.0,
-                                text.rise,
-                            );
-                            let [a, b, c, d, e, f] = self.text_matrix.tm;
                             let transform = self
-                                .state
-                                .ctm
-                                .pre_concat(Transform::from_row(a, b, c, d, e, f))
-                                .pre_concat(Transform::from_translate(origin.tx, origin.ty))
-                                .pre_concat(to_text)
+                                .glyph_transform(&text, &measured)
                                 .pre_concat(glyph_space);
                             unpainted_color |=
                                 !self.paint_glyph(&outline, transform, text.render_mode);
                         }
                     }
                     Some(_) => {}
-                    None => missing |= !invisible && code != 32,
+                    None => {
+                        missing |= !invisible
+                            && code != 32
+                            && self.missing_glyph_visible(bounds, &text, &measured, true)
+                    }
                 }
                 self.text_matrix.advance(text.glyph_advance(&measured));
             }
@@ -1025,6 +1037,80 @@ impl Painter<'_> {
         }
     }
 
+    fn glyph_transform(&self, text: &TextParams, measured: &GlyphAdvance) -> Transform {
+        let origin = text.origin_offset(measured);
+        let to_text = Transform::from_row(
+            text.size * text.horizontal_scale,
+            0.0,
+            0.0,
+            text.size,
+            0.0,
+            text.rise,
+        );
+        let [a, b, c, d, e, f] = self.text_matrix.tm;
+        self.state
+            .ctm
+            .pre_concat(Transform::from_row(a, b, c, d, e, f))
+            .pre_concat(Transform::from_translate(origin.tx, origin.ty))
+            .pre_concat(to_text)
+    }
+
+    fn missing_glyph_visible(
+        &mut self,
+        bounds: Option<PageBox>,
+        text: &TextParams,
+        measured: &GlyphAdvance,
+        follows_render_mode: bool,
+    ) -> bool {
+        let bounds = bounds
+            .and_then(|b| Rect::from_ltrb(b.llx, b.lly, b.urx, b.ury))
+            .and_then(|b| b.transform(self.glyph_transform(text, measured)))
+            .and_then(|b| {
+                let reach = if follows_render_mode && matches!(text.render_mode, 1 | 2 | 5 | 6) {
+                    let width = self.state.line_width * transform_scale(&self.state.ctm);
+                    width.max(1.0) / 2.0 * Stroke::default().miter_limit
+                } else {
+                    0.0
+                } + 1.0;
+                b.outset(reach, reach)
+            });
+        self.visible_bounds(
+            bounds,
+            follows_render_mode && (4..=7).contains(&text.render_mode),
+        )
+    }
+
+    fn visible_bounds(&mut self, bounds: Option<Rect>, text_clipping: bool) -> bool {
+        let (w, h) = (self.pixmap.width(), self.pixmap.height());
+        let (x0, y0, x1, y1) = bounds.map_or((0, 0, w, h), |b| {
+            (
+                b.left().floor().clamp(0.0, w as f32) as u32,
+                b.top().floor().clamp(0.0, h as f32) as u32,
+                b.right().ceil().clamp(0.0, w as f32) as u32,
+                b.bottom().ceil().clamp(0.0, h as f32) as u32,
+            )
+        });
+        if x0 >= x1 || y0 >= y1 {
+            return false;
+        }
+        let mask = if text_clipping {
+            self.state.clip.as_ref()
+        } else {
+            self.state.masked_clip.as_ref().or(self.state.clip.as_ref())
+        }
+        .map(Rc::clone);
+        let Some(mask) = mask else { return true };
+        if !self.admit(u64::from(x1 - x0) * u64::from(y1 - y0)) {
+            return false;
+        }
+        (y0..y1).any(|y| {
+            let start = y as usize * w as usize;
+            mask.data()[start + x0 as usize..start + x1 as usize]
+                .iter()
+                .any(|&coverage| coverage != 0)
+        })
+    }
+
     /// Show strings in a Type 3 font: each code's glyph procedure runs where the glyph goes,
     /// then the text position advances by the glyph's width.
     fn show_type3(
@@ -1035,8 +1121,7 @@ impl Painter<'_> {
         text: &TextParams,
         items: &[PdfValue],
     ) {
-        // Mode 3 paints nothing; mode 7 only clips, which glyph procedures do not do here.
-        let invisible = matches!(text.render_mode, 3 | 7);
+        let bounds = self.backend.font_bounds(scope, font_name);
         let mut missing = false;
         for item in items {
             let codes = if let PdfValue::Str(bytes) = item {
@@ -1070,10 +1155,11 @@ impl Painter<'_> {
                             vertical: None,
                             is_word_space: code == 32,
                         });
-                if !invisible {
-                    match font.glyphs.get(&code) {
-                        Some(ops) => self.run_glyph(ops, font.matrix, text, &measured),
-                        None => missing |= code != 32,
+                match font.glyphs.get(&code) {
+                    Some(ops) => self.run_glyph(ops, font.matrix, text, &measured),
+                    None => {
+                        missing |=
+                            code != 32 && self.missing_glyph_visible(bounds, text, &measured, false)
                     }
                 }
                 self.text_matrix.advance(text.glyph_advance(&measured));
@@ -1098,23 +1184,9 @@ impl Painter<'_> {
         if self.glyph_depth >= MAX_GLYPH_DEPTH {
             return;
         }
-        let origin = text.origin_offset(measured);
-        let to_text = Transform::from_row(
-            text.size * text.horizontal_scale,
-            0.0,
-            0.0,
-            text.size,
-            0.0,
-            text.rise,
-        );
-        let [a, b, c, d, e, f] = self.text_matrix.tm;
         let [ma, mb, mc, md, me, mf] = matrix;
         let glyph_space = self
-            .state
-            .ctm
-            .pre_concat(Transform::from_row(a, b, c, d, e, f))
-            .pre_concat(Transform::from_translate(origin.tx, origin.ty))
-            .pre_concat(to_text)
+            .glyph_transform(text, measured)
             .pre_concat(Transform::from_row(ma, mb, mc, md, me, mf));
 
         let saved_state = self.state.clone();

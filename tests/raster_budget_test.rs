@@ -462,3 +462,25 @@ fn a_budget_of_three_pages_stops_the_fills_at_the_second() {
     assert!(matches!(painted, Err(Error::RasterStopped)), "{painted:?}");
     assert_eq!(calls, 1 + 4 + 4);
 }
+
+#[test]
+fn checking_a_missing_glyph_through_the_clip_is_charged_and_cancellable() {
+    let pdf = square_page(
+        "/Font<</T3 5 0 R>>",
+        b"0 0 5 5 re W n BT /T3 20 Tf 10 10 Td (b) Tj ET",
+        vec![type3_font(), stream(b"1000 0 0 0 1000 1000 d1")],
+    );
+    let work = charges(&pdf, &PT);
+    let scan = work.len() - 2;
+    assert_eq!(work[scan], 22 * 22);
+    let (result, calls) = stopped_at(&pdf, scan + 1);
+    assert!(matches!(result, Err(Error::RasterStopped)), "{result:?}");
+    assert_eq!(calls, scan + 1);
+    assert_eq!(
+        paint(&pdf, &PT, &mut |_| ControlFlow::Continue(()))
+            .unwrap()
+            .gaps
+            .text_runs,
+        0
+    );
+}

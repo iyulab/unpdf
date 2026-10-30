@@ -1965,3 +1965,427 @@ fn a_transfer_function_is_reported_and_the_mask_applied_without_it() {
     assert!(near(px(&page, IN_MASK.0, IN_MASK.1), RED));
     assert!(near(px(&page, OUT_OF_MASK.0, OUT_OF_MASK.1), WHITE));
 }
+
+#[derive(Clone, Copy, Debug)]
+enum MissingText {
+    Font,
+    Glyph,
+    Type3,
+}
+
+fn unpaintable_objects(kind: MissingText, entries: &str, content: &[u8]) -> Vec<Vec<u8>> {
+    let type3 = b"<</Type/Font/Subtype/Type3/FontBBox[0 -200 1000 800]\
+        /FontMatrix[0.001 0 0 0.001 0 0]/CharProcs<</A 9 0 R>>\
+        /Encoding<</Type/Encoding/Differences[65/A/B]>>\
+        /FirstChar 65/LastChar 66/Widths[1000 1000]/Resources<<>>>>"
+        .to_vec();
+    let font = match kind {
+        MissingText::Type3 => type3.clone(),
+        _ => b"<</Type/Font/Subtype/TrueType/BaseFont/UnpdfPictographs\
+            /FirstChar 65/LastChar 66/Widths[1000 1000]\
+            /Encoding<</Type/Encoding/Differences[65/A/B]>>/FontDescriptor 6 0 R>>"
+            .to_vec(),
+    };
+    let file = match kind {
+        MissingText::Glyph => "/FontFile2 7 0 R",
+        _ => "",
+    };
+    let glyph = b"1000 0 0 -200 1000 800 d1 0 0 1000 800 re f";
+    vec![
+        b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+        format!(
+            "<</Type/Page/Parent 2 0 R{A4}{entries}\
+            /Resources<</Font<</F1 5 0 R/F2 8 0 R>>>>/Contents 4 0 R>>"
+        )
+        .into_bytes(),
+        stream_object(&format!("<</Length {}>>", content.len()), content),
+        font,
+        format!(
+            "<</Type/FontDescriptor/FontName/UnpdfPictographs/Flags 4\
+            /FontBBox[0 -200 1000 800]/ItalicAngle 0/Ascent 800/Descent -200\
+            /CapHeight 800/StemV 80{file}>>"
+        )
+        .into_bytes(),
+        font_file("", SQUARE_TTF),
+        type3,
+        stream_object(&format!("<</Length {}>>", glyph.len()), glyph),
+    ]
+}
+
+fn unpaintable_text(kind: MissingText, entries: &str, content: &[u8]) -> Vec<u8> {
+    assemble(unpaintable_objects(kind, entries, content))
+}
+
+#[test]
+fn missing_text_is_reported_only_where_its_bounds_can_show() {
+    for kind in [MissingText::Font, MissingText::Glyph, MissingText::Type3] {
+        for (prefix, position, mode, expected) in [
+            ("", "100 100", 0, 1),
+            ("", "100 100", 3, 0),
+            ("", "100 100", 7, 0),
+            ("0 0 10 10 re W n", "100 100", 0, 0),
+            ("W n", "100 100", 0, 0),
+            ("", "700 100", 0, 0),
+            ("", "-100 100", 0, 0),
+            ("", "100 900", 0, 0),
+            ("", "100 -100", 0, 0),
+            ("", "580 100", 0, 1),
+            ("125 100 10 10 re W n", "100 100", 0, 1),
+            ("0 0 595 842 re 90 80 70 80 re W* n", "100 100", 0, 0),
+        ] {
+            let content = format!("{prefix} BT /F1 50 Tf {mode} Tr {position} Td (B) Tj ET");
+            let page = render(&unpaintable_text(kind, "", content.as_bytes()), &PT);
+            let expected = if matches!(
+                (mode, kind),
+                (7, MissingText::Font | MissingText::Glyph) | (3 | 7, MissingText::Type3)
+            ) {
+                1
+            } else {
+                expected
+            };
+            assert_eq!(page.gaps.text_runs, expected, "{kind:?}: {content}");
+        }
+    }
+}
+
+#[test]
+fn supported_text_does_not_make_a_hidden_missing_glyph_visible() {
+    for kind in [MissingText::Glyph, MissingText::Type3] {
+        for content in [
+            "90 80 55 100 re W n BT /F1 50 Tf 100 100 Td (AB) Tj ET",
+            "180 80 70 100 re W n BT /F1 50 Tf 100 100 Td [(B) -1000 (A)] TJ ET",
+        ] {
+            let page = render(&unpaintable_text(kind, "", content.as_bytes()), &PT);
+            assert_eq!(page.gaps.text_runs, 0, "{kind:?}: {content}");
+            assert!(inked(&page, 90, 250, 662, 762), "{kind:?}: {content}");
+        }
+    }
+}
+
+#[test]
+fn missing_text_keeps_its_advance_and_the_clip_restores() {
+    for kind in [MissingText::Font, MissingText::Glyph, MissingText::Type3] {
+        let pdf = |content: &str| unpaintable_text(kind, "", content.as_bytes());
+        let hidden = render(
+            &pdf("BT /F1 50 Tf 700 100 Td (B) Tj /F2 50 Tf [13000 (A)] TJ ET"),
+            &PT,
+        );
+        let placed = render(&pdf("BT /F2 50 Tf 100 100 Td (A) Tj ET"), &PT);
+        assert_eq!(hidden.gaps.text_runs, 0, "{kind:?}");
+        assert_eq!(hidden.rgba, placed.rgba, "{kind:?}");
+        assert!(inked(&hidden, 100, 150, 702, 742), "{kind:?}");
+        let restored = render(
+            &pdf("q W n BT /F1 50 Tf 100 100 Td (B) Tj ET Q BT /F1 50 Tf 100 100 Td (B) Tj ET"),
+            &PT,
+        );
+        assert_eq!(restored.gaps.text_runs, 1, "{kind:?}");
+        let moved = render(&pdf("BT /F1 50 Tf 700 100 Td [(B) 13000 (B)] TJ ET"), &PT);
+        assert_eq!(moved.gaps.text_runs, 1, "{kind:?}");
+    }
+}
+
+#[test]
+fn missing_text_bounds_follow_the_text_transforms_and_page_region() {
+    for kind in [MissingText::Font, MissingText::Glyph, MissingText::Type3] {
+        for (entries, content, expected) in [
+            (
+                "/CropBox[0 0 200 200]",
+                "BT /F1 50 Tf 300 100 Td (B) Tj ET",
+                0,
+            ),
+            (
+                "/CropBox[0 0 200 200]/Rotate 90",
+                "BT /F1 50 Tf 300 100 Td (B) Tj ET",
+                0,
+            ),
+            (
+                "/CropBox[0 0 200 200]/Rotate 270",
+                "BT /F1 50 Tf 100 100 Td (B) Tj ET",
+                1,
+            ),
+            ("", "1 0 0 1 700 0 cm BT /F1 50 Tf 0 100 Td (B) Tj ET", 0),
+            ("", "BT /F1 50 Tf 0 1 -1 0 700 100 Tm (B) Tj ET", 0),
+            ("", "BT /F1 50 Tf 100 900 Td -800 Ts (B) Tj ET", 1),
+            ("", "BT /F1 50 Tf 100 100 Td 900 Ts (B) Tj ET", 0),
+            ("", "BT /F1 50 Tf -100 Tz -20 100 Td (B) Tj ET", 0),
+            ("", "BT /F1 50 Tf -100 Tz 620 100 Td (B) Tj ET", 1),
+        ] {
+            let page = render(&unpaintable_text(kind, entries, content.as_bytes()), &PT);
+            assert_eq!(
+                page.gaps.text_runs, expected,
+                "{kind:?}: {entries} {content}"
+            );
+        }
+        let pdf = unpaintable_text(
+            kind,
+            "/CropBox[0 0 200 200]",
+            b"BT /F1 50 Tf 300 100 Td (B) Tj ET",
+        );
+        let media = render(
+            &pdf,
+            &RasterOptions {
+                region: PageRegion::Media,
+                ..PT
+            },
+        );
+        assert_eq!(media.gaps.text_runs, 1, "{kind:?}");
+    }
+}
+
+#[test]
+fn missing_text_with_unknown_bounds_is_conservatively_reported() {
+    for kind in [MissingText::Font, MissingText::Glyph, MissingText::Type3] {
+        for bbox in ["", "/FontBBox[0 0 0 0]"] {
+            for (prefix, expected) in [("", 1), ("W n", 0)] {
+                let content = format!("{prefix} BT /F1 50 Tf 700 100 Td (B) Tj ET");
+                let mut objects = unpaintable_objects(kind, "", content.as_bytes());
+                for object in &mut objects[4..=5] {
+                    *object = String::from_utf8(std::mem::take(object))
+                        .unwrap()
+                        .replace("/FontBBox[0 -200 1000 800]", bbox)
+                        .into_bytes();
+                }
+                let page = render(&assemble(objects), &PT);
+                assert_eq!(page.gaps.text_runs, expected, "{kind:?} {bbox}: {content}");
+            }
+        }
+    }
+}
+
+#[test]
+fn an_unmeasured_missing_font_does_not_guess_its_glyph_positions() {
+    for (prefix, shown, expected) in [("", "B", 1), ("W n", "B", 0), ("", "", 0)] {
+        let content = format!("{prefix} BT /F1 50 Tf 700 100 Td ({shown}) Tj ET");
+        let mut objects = unpaintable_objects(MissingText::Font, "", content.as_bytes());
+        objects[4] = String::from_utf8(std::mem::take(&mut objects[4]))
+            .unwrap()
+            .replace("/FirstChar 65/LastChar 66/Widths[1000 1000]", "")
+            .into_bytes();
+        let page = render(&assemble(objects), &PT);
+        assert_eq!(page.gaps.text_runs, expected, "{content}");
+    }
+}
+
+#[test]
+fn missing_type3_bounds_follow_its_font_matrix() {
+    for (matrix, clip, expected) in [
+        ("0.002 0 0 0.001 2 0", "90 80 70 100", 0),
+        ("0.002 0 0 0.001 2 0", "210 80 50 100", 1),
+        ("0 0.001 -0.001 0 0 0", "120 80 40 100", 0),
+        ("0 0.001 -0.001 0 0 0", "70 110 20 20", 1),
+    ] {
+        let content = format!("{clip} re W n BT /F1 50 Tf 100 100 Td (B) Tj ET");
+        let mut objects = unpaintable_objects(MissingText::Type3, "", content.as_bytes());
+        objects[4] = String::from_utf8(std::mem::take(&mut objects[4]))
+            .unwrap()
+            .replace("0.001 0 0 0.001 0 0", matrix)
+            .into_bytes();
+        let page = render(&assemble(objects), &PT);
+        assert_eq!(page.gaps.text_runs, expected, "{matrix}: {content}");
+    }
+}
+
+#[test]
+fn a_form_box_hides_its_unpaintable_text() {
+    for kind in [MissingText::Font, MissingText::Glyph, MissingText::Type3] {
+        for (position, expected) in [("100 100", 0), ("20 20", 1)] {
+            let content = format!("BT /F1 50 Tf {position} Td (B) Tj ET");
+            let mut objects = unpaintable_objects(kind, "", b"/Fm Do");
+            objects[2] = format!(
+                "<</Type/Page/Parent 2 0 R{A4}\
+                /Resources<</XObject<</Fm 10 0 R>>>>/Contents 4 0 R>>"
+            )
+            .into_bytes();
+            objects.push(stream_object(
+                &format!(
+                    "<</Type/XObject/Subtype/Form\
+                /BBox[0 0 80 80]/Resources<</Font<</F1 5 0 R>>>>/Length {}>>",
+                    content.len()
+                ),
+                content.as_bytes(),
+            ));
+            let page = render(&assemble(objects), &PT);
+            assert_eq!(page.gaps.text_runs, expected, "{kind:?}: {content}");
+        }
+    }
+}
+
+#[test]
+fn missing_vertical_text_uses_its_cid_descriptor_and_origin() {
+    for (position, shown, expected) in [
+        ("100 100", "<0042> Tj", 1),
+        ("-100 100", "<0042> Tj", 0),
+        ("-10 100", "<0042> Tj", 1),
+        ("100 900", "<0042> Tj", 0),
+        ("100 870", "<0042> Tj", 1),
+        ("100 900", "[<0042> 1000 <0042>] TJ", 1),
+    ] {
+        let content = format!("BT /F1 50 Tf {position} Td {shown} ET");
+        let mut objects = unpaintable_objects(MissingText::Font, "", content.as_bytes());
+        objects[4] = b"<</Type/Font/Subtype/Type0/BaseFont/UnpdfPictographs\
+            /Encoding/Identity-V/DescendantFonts[10 0 R]>>"
+            .to_vec();
+        objects.push(
+            b"<</Type/Font/Subtype/CIDFontType2/BaseFont/UnpdfPictographs\
+            /CIDSystemInfo<</Registry(Adobe)/Ordering(Identity)/Supplement 0>>\
+            /FontDescriptor 6 0 R/DW 1000/DW2[880 -1000]>>"
+                .to_vec(),
+        );
+        let page = render(&assemble(objects), &PT);
+        assert_eq!(page.gaps.text_runs, expected, "{content}");
+    }
+}
+
+#[test]
+fn a_missing_stroked_glyph_can_reach_past_its_font_box() {
+    for kind in [MissingText::Font, MissingText::Glyph, MissingText::Type3] {
+        for (mode, expected) in [(0, 0), (1, 1), (2, 1), (5, 1), (6, 1)] {
+            let content = format!("100 w BT /F1 50 Tf {mode} Tr 620 100 Td (B) Tj ET");
+            let page = render(&unpaintable_text(kind, "", content.as_bytes()), &PT);
+            let expected = if matches!(kind, MissingText::Type3) {
+                0
+            } else {
+                expected
+            };
+            assert_eq!(page.gaps.text_runs, expected, "{kind:?}: {content}");
+        }
+    }
+}
+
+#[test]
+fn an_inherited_font_keeps_the_scope_where_it_was_selected() {
+    for kind in [MissingText::Font, MissingText::Glyph, MissingText::Type3] {
+        for (selected_bbox, decoy_bbox, expected) in [
+            ("0 -200 1000 800", "10000 -200 11000 800", 1),
+            ("10000 -200 11000 800", "0 -200 1000 800", 0),
+        ] {
+            let mut objects = unpaintable_objects(kind, "", b"BT /F1 50 Tf ET /Fm Do");
+            objects[2] = format!(
+                "<</Type/Page/Parent 2 0 R{A4}/Resources\
+                <</Font<</F1 5 0 R>>/XObject<</Fm 10 0 R>>>>/Contents 4 0 R>>"
+            )
+            .into_bytes();
+            let content = b"BT 100 100 Td (B) Tj ET";
+            objects.push(stream_object(
+                &format!(
+                    "<</Type/XObject/Subtype/Form\
+                /BBox[0 0 595 842]/Resources<</Font<</F1 11 0 R>>>>/Length {}>>",
+                    content.len()
+                ),
+                content,
+            ));
+            let decoy_font = String::from_utf8(objects[4].clone())
+                .unwrap()
+                .replace("/FontDescriptor 6 0 R", "/FontDescriptor 12 0 R")
+                .replace("0 -200 1000 800", decoy_bbox)
+                .into_bytes();
+            let decoy_descriptor = String::from_utf8(objects[5].clone())
+                .unwrap()
+                .replace("0 -200 1000 800", decoy_bbox)
+                .into_bytes();
+            objects.extend([decoy_font, decoy_descriptor]);
+            for object in &mut objects[4..=5] {
+                *object = String::from_utf8(std::mem::take(object))
+                    .unwrap()
+                    .replace("0 -200 1000 800", selected_bbox)
+                    .into_bytes();
+            }
+            let page = render(&assemble(objects), &PT);
+            assert_eq!(
+                page.gaps.text_runs, expected,
+                "{kind:?}: {selected_bbox} / {decoy_bbox}"
+            );
+        }
+    }
+}
+
+#[test]
+fn missing_clipping_glyphs_cannot_silently_leave_the_old_clip() {
+    for kind in [MissingText::Font, MissingText::Glyph] {
+        for mode in [4, 5, 6, 7] {
+            for (position, expected) in [("700 100", 0), ("100 100", 1)] {
+                let content = format!(
+                    "BT /F1 50 Tf {mode} Tr {position} Td (B) Tj ET \
+                    1 0 0 rg 0 0 595 842 re f"
+                );
+                let page = render(&unpaintable_text(kind, "", content.as_bytes()), &PT);
+                assert_eq!(page.gaps.text_runs, expected, "{kind:?}: {content}");
+                assert_eq!(px(&page, 120, 842 - 120), WHITE, "{kind:?}: {content}");
+            }
+        }
+    }
+}
+
+#[test]
+fn known_clipping_glyphs_still_show_after_hidden_missing_ones() {
+    for (clip, shown, inside) in [
+        ("90 80 55 100", "(AB) Tj", 120),
+        ("180 80 70 100", "[(B) -1000 (A)] TJ", 220),
+    ] {
+        let content = format!(
+            "{clip} re W n BT /F1 50 Tf 7 Tr 100 100 Td {shown} ET \
+            1 0 0 rg 0 0 595 842 re f"
+        );
+        let page = render(
+            &unpaintable_text(MissingText::Glyph, "", content.as_bytes()),
+            &PT,
+        );
+        assert_eq!(page.gaps.text_runs, 0, "{content}");
+        assert_eq!(px(&page, inside, 842 - 120), RED, "{content}");
+        assert_eq!(px(&page, 300, 842 - 120), WHITE, "{content}");
+    }
+}
+
+#[test]
+fn a_space_in_a_clipping_mode_leaves_an_empty_clip() {
+    let content = b"BT /F1 50 Tf 7 Tr 100 100 Td ( ) Tj ET 1 0 0 rg 0 0 595 842 re f";
+    let page = render(&unpaintable_text(MissingText::Glyph, "", content), &PT);
+    assert_eq!(page.gaps.text_runs, 0);
+    assert_eq!(px(&page, 120, 842 - 120), WHITE);
+}
+
+#[test]
+fn text_clipping_does_not_disappear_with_a_temporary_soft_mask() {
+    for kind in [MissingText::Font, MissingText::Glyph] {
+        for (mode, expected) in [(0, 0), (4, 1), (5, 1), (6, 1), (7, 1)] {
+            let content = format!(
+                "/Mk gs BT /F1 50 Tf {mode} Tr 100 100 Td (B) Tj ET \
+                /Off gs 1 0 0 rg 0 0 595 842 re f"
+            );
+            let mut objects = unpaintable_objects(kind, "", content.as_bytes());
+            objects[2] = format!(
+                "<</Type/Page/Parent 2 0 R{A4}/Resources\
+                <</Font<</F1 5 0 R>>/ExtGState<</Mk<</SMask\
+                <</S/Alpha/G 10 0 R>>>>/Off<</SMask/None>>>>>>/Contents 4 0 R>>"
+            )
+            .into_bytes();
+            objects.push(stream_object(
+                "<</Type/XObject/Subtype/Form/BBox[0 0 595 842]\
+                /Group<</S/Transparency>>/Length 0>>",
+                b"",
+            ));
+            let page = render(&assemble(objects), &PT);
+            assert_eq!(page.gaps.text_runs, expected, "{kind:?}: {content}");
+            let pixel = if mode == 0 { RED } else { WHITE };
+            assert_eq!(px(&page, 120, 842 - 120), pixel, "{kind:?}: {content}");
+        }
+    }
+}
+
+#[test]
+fn type3_glyph_procedures_ignore_the_text_rendering_mode() {
+    for mode in 0..=7 {
+        let content = format!(
+            "BT /F1 50 Tf {mode} Tr 100 100 Td (A) Tj ET \
+            1 0 0 rg 300 100 20 20 re f"
+        );
+        let page = render(
+            &unpaintable_text(MissingText::Type3, "", content.as_bytes()),
+            &PT,
+        );
+        assert_eq!(page.gaps.text_runs, 0, "{content}");
+        assert_eq!(px(&page, 120, 842 - 120), [0, 0, 0], "{content}");
+        assert_eq!(px(&page, 310, 842 - 110), RED, "{content}");
+    }
+}

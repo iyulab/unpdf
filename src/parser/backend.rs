@@ -902,6 +902,11 @@ pub trait PdfBackend: Send + Sync {
         None
     }
 
+    /// The font's declared bounding box in text space, or `None` when it has no usable box.
+    fn font_bounds(&self, _scope: ResourceScope, _font_name: &[u8]) -> Option<PageBox> {
+        None
+    }
+
     /// The Type 3 font `font_name` refers to in `scope`. `None` for any other font.
     fn type3_font(&self, _scope: ResourceScope, _font_name: &[u8]) -> Option<Type3Font> {
         None
@@ -1524,6 +1529,46 @@ impl PdfBackend for RawBackend {
 
     fn font_program(&self, scope: ResourceScope, font_name: &[u8]) -> Option<FontProgram> {
         self.font_resolver.font_program(&self.doc, scope, font_name)
+    }
+
+    fn font_bounds(&self, scope: ResourceScope, font_name: &[u8]) -> Option<PageBox> {
+        let doc = &self.doc;
+        let font = self.font_resolver.find_font(doc, scope, font_name)?;
+        let dict = if font.is_composite() {
+            self.font_resolver.cid_font_dict(doc, &font)?
+        } else {
+            font.dict
+        };
+        let is_type3 =
+            raw_dict_get(dict, b"Subtype").and_then(|s| s.as_name()) == Some(b"Type3".as_slice());
+        let (dict, matrix) = if is_type3 {
+            (
+                dict,
+                raw_dict_get(dict, b"FontMatrix").and_then(|m| matrix_from(doc, m))?,
+            )
+        } else {
+            let descriptor =
+                raw_dict_get(dict, b"FontDescriptor").and_then(|d| raw_resolve_dict(doc, d))?;
+            (descriptor, [0.001, 0.0, 0.0, 0.001, 0.0, 0.0])
+        };
+        let bbox = raw_dict_get(dict, b"FontBBox").and_then(|b| page_box_from_array(doc, b))?;
+        let [a, b, c, d, e, f] = matrix;
+        let points = [
+            (bbox.llx, bbox.lly),
+            (bbox.llx, bbox.ury),
+            (bbox.urx, bbox.lly),
+            (bbox.urx, bbox.ury),
+        ]
+        .map(|(x, y)| (a * x + c * y + e, b * x + d * y + f));
+        points
+            .iter()
+            .all(|(x, y)| x.is_finite() && y.is_finite())
+            .then(|| PageBox {
+                llx: points.iter().map(|p| p.0).fold(f32::INFINITY, f32::min),
+                lly: points.iter().map(|p| p.1).fold(f32::INFINITY, f32::min),
+                urx: points.iter().map(|p| p.0).fold(f32::NEG_INFINITY, f32::max),
+                ury: points.iter().map(|p| p.1).fold(f32::NEG_INFINITY, f32::max),
+            })
     }
 
     fn type3_font(&self, scope: ResourceScope, font_name: &[u8]) -> Option<Type3Font> {
