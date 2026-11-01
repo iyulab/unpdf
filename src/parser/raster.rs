@@ -954,17 +954,19 @@ impl Painter<'_> {
                             if self.stopped {
                                 break 'run;
                             }
-                            missing |= !invisible
-                                && self.missing_glyph_visible(bounds, &text, measured, true);
+                            missing = missing
+                                || !invisible
+                                    && self.missing_glyph_visible(bounds, &text, measured, true);
                             self.text_matrix.advance(text.glyph_advance(measured));
                         }
                         self.text_matrix = start;
                         self.text_matrix.advance(text.advance_of(advances));
                     }
                     None => {
-                        missing |= !invisible
-                            && !bytes.is_empty()
-                            && self.visible_bounds(None, (4..=7).contains(&text.render_mode))
+                        missing = missing
+                            || !invisible
+                                && !bytes.is_empty()
+                                && self.visible_bounds(None, (4..=7).contains(&text.render_mode))
                     }
                 }
                 continue;
@@ -1016,9 +1018,10 @@ impl Painter<'_> {
                     }
                     Some(_) => {}
                     None => {
-                        missing |= !invisible
-                            && code != 32
-                            && self.missing_glyph_visible(bounds, &text, &measured, true)
+                        missing = missing
+                            || !invisible
+                                && code != 32
+                                && self.missing_glyph_visible(bounds, &text, &measured, true)
                     }
                 }
                 self.text_matrix.advance(text.glyph_advance(&measured));
@@ -1116,12 +1119,13 @@ impl Painter<'_> {
     fn show_type3(
         &mut self,
         font: &Type3Font,
-        scope: super::backend::ResourceScope,
+        scope: ResourceScope,
         font_name: &[u8],
         text: &TextParams,
         items: &[PdfValue],
     ) {
         let bounds = self.backend.font_bounds(scope, font_name);
+        let invisible = matches!(text.render_mode, 3 | 7);
         let mut missing = false;
         for item in items {
             let codes = if let PdfValue::Str(bytes) = item {
@@ -1155,11 +1159,14 @@ impl Painter<'_> {
                             vertical: None,
                             is_word_space: code == 32,
                         });
-                match font.glyphs.get(&code) {
-                    Some(ops) => self.run_glyph(ops, font.matrix, text, &measured),
-                    None => {
-                        missing |=
-                            code != 32 && self.missing_glyph_visible(bounds, text, &measured, false)
+                if !invisible {
+                    match font.glyphs.get(&code) {
+                        Some(ops) => self.run_glyph(ops, font.matrix, text, &measured),
+                        None => {
+                            missing = missing
+                                || code != 32
+                                    && self.missing_glyph_visible(bounds, text, &measured, false)
+                        }
                     }
                 }
                 self.text_matrix.advance(text.glyph_advance(&measured));
