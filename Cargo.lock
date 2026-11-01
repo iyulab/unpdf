@@ -2910,7 +2910,6 @@ dependencies = [
  "unicode-bidi-mirroring",
  "unicode-normalization",
  "unparser-shared",
- "url",
  "zune-jpeg",
 ]
 

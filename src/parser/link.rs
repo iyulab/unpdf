@@ -315,7 +315,7 @@ pub(crate) fn read_annotations(doc: &RawDocument, page: PageId) -> LinkAnnotatio
         .and_then(|c| dict_get(c, b"URI"))
         .and_then(|v| doc.resolve(v).as_dict())
         .and_then(|d| string(doc, d, b"Base"))
-        .and_then(|s| url::Url::parse(s).ok());
+        .filter(|s| has_scheme(s));
     let mut result = Vec::new();
     let mut area_budget = MAX_AREAS;
     let mut target_budget = MAX_TARGET_BYTES;
@@ -369,12 +369,10 @@ pub(crate) fn read_annotations(doc: &RawDocument, page: PageId) -> LinkAnnotatio
         let Some(original) = string(doc, action, b"URI") else {
             continue;
         };
-        let resolved = if url::Url::parse(original).is_err() {
-            base.as_ref()
-                .and_then(|b| b.join(original).ok())
-                .map(String::from)
-        } else {
+        let resolved = if has_scheme(original) {
             None
+        } else {
+            base.and_then(|b| resolve_reference(b, original))
         };
         let target = resolved.as_deref().unwrap_or(original);
         if resolved.is_some() {
@@ -494,4 +492,203 @@ fn quadrilaterals(
         areas.push(LinkArea::from_points(p)?);
     }
     Some(areas)
+}
+
+/// Whether `reference` names a scheme (RFC 3986 §3.1, `scheme ":"`), so it is absolute rather
+/// than relative to a base.
+fn has_scheme(reference: &str) -> bool {
+    let Some(colon) = reference.find(':') else {
+        return false;
+    };
+    let scheme = &reference[..colon];
+    let mut chars = scheme.chars();
+    chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+}
+
+/// The parts of a URI reference (RFC 3986 Appendix B): scheme, authority, path, query, fragment.
+struct Reference<'a> {
+    scheme: Option<&'a str>,
+    authority: Option<&'a str>,
+    path: &'a str,
+    query: Option<&'a str>,
+    fragment: Option<&'a str>,
+}
+
+impl<'a> Reference<'a> {
+    fn parse(s: &'a str) -> Self {
+        let (s, fragment) = match s.split_once('#') {
+            Some((a, f)) => (a, Some(f)),
+            None => (s, None),
+        };
+        let (s, query) = match s.split_once('?') {
+            Some((a, q)) => (a, Some(q)),
+            None => (s, None),
+        };
+        let (scheme, s) = if has_scheme(s) {
+            let (scheme, rest) = s.split_once(':').unwrap_or((s, ""));
+            (Some(scheme), rest)
+        } else {
+            (None, s)
+        };
+        let (authority, path) = match s.strip_prefix("//") {
+            Some(rest) => {
+                let end = rest.find('/').unwrap_or(rest.len());
+                (Some(&rest[..end]), &rest[end..])
+            }
+            None => (None, s),
+        };
+        Reference {
+            scheme,
+            authority,
+            path,
+            query,
+            fragment,
+        }
+    }
+}
+
+/// RFC 3986 §5.2.4.
+fn remove_dot_segments(path: &str) -> String {
+    let mut input = path;
+    let mut output = String::with_capacity(path.len());
+    while !input.is_empty() {
+        if let Some(rest) = input
+            .strip_prefix("../")
+            .or_else(|| input.strip_prefix("./"))
+        {
+            input = rest;
+        } else if input.starts_with("/./") {
+            input = &input[2..];
+        } else if input == "/." {
+            input = "/";
+        } else if input.starts_with("/../") || input == "/.." {
+            input = if input == "/.." { "/" } else { &input[3..] };
+            let cut = output.rfind('/').unwrap_or(0);
+            output.truncate(cut);
+        } else if input == "." || input == ".." {
+            input = "";
+        } else {
+            let start = usize::from(input.starts_with('/'));
+            let end = input[start..].find('/').map_or(input.len(), |i| i + start);
+            output.push_str(&input[..end]);
+            input = &input[end..];
+        }
+    }
+    output
+}
+
+/// Resolve `reference` against an absolute `base` by RFC 3986 §5.2.2 — the resolution PDF's
+/// URI dictionary `/Base` calls for (ISO 32000-1 §12.6.4.7). `None` when `base` has no scheme.
+fn resolve_reference(base: &str, reference: &str) -> Option<String> {
+    let base = Reference::parse(base);
+    let base_scheme = base.scheme?;
+    let r = Reference::parse(reference);
+    let scheme = r.scheme.unwrap_or(base_scheme);
+    let (authority, path, query);
+    if r.scheme.is_some() || r.authority.is_some() {
+        authority = r.authority;
+        path = remove_dot_segments(r.path);
+        query = r.query;
+    } else if r.path.is_empty() {
+        authority = base.authority;
+        path = base.path.to_string();
+        query = r.query.or(base.query);
+    } else {
+        authority = base.authority;
+        path = if r.path.starts_with('/') {
+            remove_dot_segments(r.path)
+        } else {
+            // §5.2.3 merge.
+            let merged = if base.authority.is_some() && base.path.is_empty() {
+                format!("/{}", r.path)
+            } else {
+                let dir = base.path.rfind('/').map_or("", |i| &base.path[..=i]);
+                format!("{dir}{}", r.path)
+            };
+            remove_dot_segments(&merged)
+        };
+        query = r.query;
+    }
+    // §5.3 recomposition.
+    let mut out = format!("{scheme}:");
+    if let Some(authority) = authority {
+        out.push_str("//");
+        out.push_str(authority);
+    }
+    out.push_str(&path);
+    if let Some(q) = query {
+        out.push('?');
+        out.push_str(q);
+    }
+    if let Some(f) = r.fragment {
+        out.push('#');
+        out.push_str(f);
+    }
+    Some(out)
+}
+
+#[cfg(test)]
+mod rfc3986_tests {
+    use super::resolve_reference;
+
+    /// RFC 3986 §5.4.1 and §5.4.2, base `http://a/b/c/d;p?q`.
+    #[test]
+    fn resolves_the_rfc_examples() {
+        let base = "http://a/b/c/d;p?q";
+        for (reference, expected) in [
+            ("g:h", "g:h"),
+            ("g", "http://a/b/c/g"),
+            ("./g", "http://a/b/c/g"),
+            ("g/", "http://a/b/c/g/"),
+            ("/g", "http://a/g"),
+            ("//g", "http://g"),
+            ("?y", "http://a/b/c/d;p?y"),
+            ("g?y", "http://a/b/c/g?y"),
+            ("#s", "http://a/b/c/d;p?q#s"),
+            ("g#s", "http://a/b/c/g#s"),
+            ("g?y#s", "http://a/b/c/g?y#s"),
+            (";x", "http://a/b/c/;x"),
+            ("g;x", "http://a/b/c/g;x"),
+            ("g;x?y#s", "http://a/b/c/g;x?y#s"),
+            ("", "http://a/b/c/d;p?q"),
+            (".", "http://a/b/c/"),
+            ("./", "http://a/b/c/"),
+            ("..", "http://a/b/"),
+            ("../", "http://a/b/"),
+            ("../g", "http://a/b/g"),
+            ("../..", "http://a/"),
+            ("../../", "http://a/"),
+            ("../../g", "http://a/g"),
+            ("../../../g", "http://a/g"),
+            ("../../../../g", "http://a/g"),
+            ("/./g", "http://a/g"),
+            ("/../g", "http://a/g"),
+            ("g.", "http://a/b/c/g."),
+            (".g", "http://a/b/c/.g"),
+            ("g..", "http://a/b/c/g.."),
+            ("..g", "http://a/b/c/..g"),
+            ("./../g", "http://a/b/g"),
+            ("./g/.", "http://a/b/c/g/"),
+            ("g/./h", "http://a/b/c/g/h"),
+            ("g/../h", "http://a/b/c/h"),
+            ("g;x=1/./y", "http://a/b/c/g;x=1/y"),
+            ("g;x=1/../y", "http://a/b/c/y"),
+            ("g?y/./x", "http://a/b/c/g?y/./x"),
+            ("g?y/../x", "http://a/b/c/g?y/../x"),
+            ("g#s/./x", "http://a/b/c/g#s/./x"),
+            ("g#s/../x", "http://a/b/c/g#s/../x"),
+        ] {
+            assert_eq!(
+                resolve_reference(base, reference).as_deref(),
+                Some(expected),
+                "{reference}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_base_without_a_scheme_resolves_nothing() {
+        assert_eq!(resolve_reference("docs/index.html", "a.html"), None);
+    }
 }
