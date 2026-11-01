@@ -5,6 +5,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
+use super::decoded_run::{append, SourceText};
 use super::encoding::EncodingMap;
 
 // ---------------------------------------------------------------------------
@@ -53,23 +54,32 @@ pub(crate) struct ToUnicodeMap {
 impl ToUnicodeMap {
     /// Decode a byte sequence using this CMap.
     pub(crate) fn decode(&self, bytes: &[u8]) -> String {
+        self.decode_mapped(bytes, &mut None)
+    }
+
+    pub(crate) fn decode_mapped(
+        &self,
+        bytes: &[u8],
+        mapping: &mut Option<Vec<SourceText>>,
+    ) -> String {
+        if let Some(mapping) = mapping {
+            mapping.clear();
+        }
         let mut result = String::new();
         let mut i = 0;
         while i < bytes.len() {
-            if self.code_width == 2 && i + 1 < bytes.len() {
-                let code = u32::from(bytes[i]) << 8 | u32::from(bytes[i + 1]);
-                if let Some(s) = self.mappings.get(&code) {
-                    result.push_str(s);
-                }
-                // If unmapped, skip silently (common for space/control chars)
-                i += 2;
+            let (code, len) = if self.code_width == 2 && i + 1 < bytes.len() {
+                (u32::from(bytes[i]) << 8 | u32::from(bytes[i + 1]), 2)
             } else {
-                let code = u32::from(bytes[i]);
-                if let Some(s) = self.mappings.get(&code) {
-                    result.push_str(s);
-                }
-                i += 1;
-            }
+                (u32::from(bytes[i]), 1)
+            };
+            append(
+                &mut result,
+                i..i + len,
+                self.mappings.get(&code).map_or("", String::as_str),
+                mapping,
+            );
+            i += len;
         }
         result
     }
@@ -82,14 +92,31 @@ impl ToUnicodeMap {
     /// from a run whose other codes decode (`314` read back as `34`), while the
     /// encoding still names it (`/one.SP`).
     pub(crate) fn decode_with_fallback(&self, bytes: &[u8], fallback: &EncodingMap) -> String {
+        self.decode_fallback_mapped(bytes, fallback, &mut None)
+    }
+
+    pub(crate) fn decode_fallback_mapped(
+        &self,
+        bytes: &[u8],
+        fallback: &EncodingMap,
+        mapping: &mut Option<Vec<SourceText>>,
+    ) -> String {
         debug_assert_eq!(self.code_width, 1);
+        if let Some(mapping) = mapping {
+            mapping.clear();
+        }
         let mut result = String::new();
-        for &b in bytes {
-            if let Some(s) = self.mappings.get(&u32::from(b)) {
-                result.push_str(s);
-            } else if let Some(text) = fallback.get(&b) {
-                result.push_str(text);
-            }
+        for (i, &b) in bytes.iter().enumerate() {
+            let text = self
+                .mappings
+                .get(&u32::from(b))
+                .or_else(|| fallback.get(&b));
+            append(
+                &mut result,
+                i..i + 1,
+                text.map_or("", String::as_str),
+                mapping,
+            );
         }
         result
     }

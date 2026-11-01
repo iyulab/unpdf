@@ -2893,6 +2893,7 @@ dependencies = [
  "md-5",
  "peak_alloc",
  "png",
+ "pulldown-cmark",
  "rayon",
  "rc4",
  "regex",
@@ -2909,6 +2910,7 @@ dependencies = [
  "unicode-bidi-mirroring",
  "unicode-normalization",
  "unparser-shared",
+ "url",
  "zune-jpeg",
 ]
 

@@ -262,6 +262,7 @@ mod tests {
             text: "doc".to_string(),
             url: "sub\\folder\\file.pdf".to_string(),
             title: None,
+            style: Default::default(),
         });
         page.add_paragraph(para);
         doc.add_page(page);
@@ -289,6 +290,7 @@ mod tests {
             text: "doc".to_string(),
             url: "sub\\folder\\file.pdf".to_string(),
             title: None,
+            style: Default::default(),
         });
         page.add_paragraph(para);
         doc.add_page(page);
@@ -354,6 +356,7 @@ mod tests {
             text: "notes".to_string(),
             url: "notes).txt".to_string(),
             title: None,
+            style: Default::default(),
         });
         page.elements.push(Block::Paragraph(para));
         doc.add_page(page);
@@ -388,6 +391,7 @@ mod tests {
             text: "doc".to_string(),
             url: "my folder/file.png".to_string(),
             title: None,
+            style: Default::default(),
         });
         page.elements.push(Block::Paragraph(para));
         doc.add_page(page);

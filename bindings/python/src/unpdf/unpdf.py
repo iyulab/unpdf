@@ -456,6 +456,8 @@ def get_page_stats(
         applied, where running heads and page numbers sit),
         ``omitted_page_number_chars`` (non-whitespace Unicode scalar values removed
         by the page-number filters, including decorations; saturates at 2**32 - 1),
+        ``link_annotations_incomplete`` (a link bound or unresolved URI/text association;
+        text and proven links remain unless annotation reading or indexing was incomplete),
         ``clipped_text_runs`` (text the clipping
         path or the page box hides entirely, left out), ``blank_text_runs``
         (runs that are only whitespace),

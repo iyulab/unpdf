@@ -168,6 +168,16 @@ fn written_marks(style: &TextStyle) -> (bool, bool, bool, bool) {
 fn coalesce_written_runs(content: &[InlineContent]) -> Vec<InlineContent> {
     let mut out: Vec<InlineContent> = Vec::with_capacity(content.len());
     for item in content {
+        let plain = match item {
+            InlineContent::Link {
+                text, url, style, ..
+            } if !active_link(url) => Some(InlineContent::Text(crate::model::TextRun {
+                text: text.clone(),
+                style: style.clone(),
+            })),
+            _ => None,
+        };
+        let item = plain.as_ref().unwrap_or(item);
         if let (InlineContent::Text(run), Some(InlineContent::Text(last))) = (item, out.last_mut())
         {
             if written_marks(&run.style) == written_marks(&last.style) {
@@ -182,6 +192,15 @@ fn coalesce_written_runs(content: &[InlineContent]) -> Vec<InlineContent> {
 
 /// Append a paragraph's inline content.
 fn push_inline_content(output: &mut String, content: &[InlineContent], options: &RenderOptions) {
+    push_inline_content_in(output, content, options, false);
+}
+
+fn push_inline_content_in(
+    output: &mut String,
+    content: &[InlineContent],
+    options: &RenderOptions,
+    cell: bool,
+) {
     let content = &coalesce_written_runs(content);
     for (i, item) in content.iter().enumerate() {
         match item {
@@ -206,13 +225,29 @@ fn push_inline_content(output: &mut String, content: &[InlineContent], options: 
                     output.push(' ');
                 }
             }
-            InlineContent::Link { text, url, title } => {
+            InlineContent::Link {
+                text,
+                url,
+                title,
+                style,
+            } => {
                 let label = if options.escape_special_chars {
                     escape_markdown(text)
                 } else {
                     text.clone()
                 };
-                output.push_str(&markdown::link(&label, url, title.as_deref(), false));
+                if active_link(url) {
+                    let label = apply_text_style(&label, style, None, None);
+                    output.push_str(&markdown::link(&label, url, title.as_deref(), cell));
+                } else {
+                    let after = content.get(i + 1).and_then(leading_char);
+                    output.push_str(&apply_text_style(
+                        &label,
+                        style,
+                        output.chars().next_back(),
+                        after,
+                    ));
+                }
             }
             InlineContent::Image {
                 resource_id,
@@ -220,7 +255,7 @@ fn push_inline_content(output: &mut String, content: &[InlineContent], options: 
             } => {
                 let alt = alt_text.as_deref().unwrap_or("");
                 let path = format!("{}{}", options.image_path_prefix, resource_id);
-                output.push_str(&markdown::image(alt, &path, false));
+                output.push_str(&markdown::image(alt, &path, cell));
             }
         }
     }
@@ -231,9 +266,60 @@ pub(super) fn leading_char(item: &InlineContent) -> Option<char> {
     match item {
         InlineContent::Text(run) => run.text.chars().next(),
         InlineContent::LineBreak => Some('\n'),
-        InlineContent::Link { .. } => Some('['),
+        InlineContent::Link { text, url, .. } => {
+            if active_link(url) {
+                Some('[')
+            } else {
+                text.chars().next()
+            }
+        }
         InlineContent::Image { .. } => Some('!'),
     }
+}
+
+fn active_link(target: &str) -> bool {
+    if target.is_empty()
+        || target.starts_with("\\\\")
+        || target.starts_with("//")
+        || target.trim() != target
+        || target.chars().any(char::is_control)
+    {
+        return false;
+    }
+    let Some(colon) = target
+        .find(':')
+        .filter(|&colon| target.find(['/', '?', '#']).is_none_or(|end| colon < end))
+    else {
+        return true;
+    };
+    ["http", "https", "ftp", "mailto", "tel"]
+        .into_iter()
+        .any(|scheme| target[..colon].eq_ignore_ascii_case(scheme))
+}
+
+fn cell_has_links(cell: &TableCell) -> bool {
+    cell.content
+        .iter()
+        .flat_map(|p| &p.content)
+        .any(|i| matches!(i, InlineContent::Link { .. }))
+}
+
+fn markdown_cell(cell: &TableCell, options: &RenderOptions) -> String {
+    let mut out = String::new();
+    for (i, paragraph) in cell.content.iter().enumerate() {
+        if i > 0 {
+            out.push(' ');
+        }
+        if let Some(marker) = paragraph.list_marker() {
+            out.push_str(&if options.escape_special_chars {
+                escape_markdown(&marker)
+            } else {
+                marker
+            });
+        }
+        push_inline_content_in(&mut out, &paragraph.content, options, true);
+    }
+    out.replace('\n', " ").trim().to_string()
 }
 
 /// Render a table to Markdown, honoring [`RenderOptions::table_fallback`] for a table
@@ -268,6 +354,11 @@ fn render_table_markdown(table: &Table, options: &RenderOptions) -> String {
         }
         output.push('|');
         for slot in &slots {
+            if let Some(cell) = slot.filter(|cell| cell_has_links(cell)) {
+                let content = markdown_cell(cell, options);
+                output.push_str(&format!(" {content} |"));
+                continue;
+            }
             let content = slot.map_or(String::new(), |cell| cell.plain_text().replace('\n', " "));
             // A cell's text is the document's: a `|` in it would end the cell, a `*` start
             // emphasis. Escaped like a paragraph's (`escape_special_chars`), `|` included.
@@ -337,13 +428,79 @@ fn render_html_row(output: &mut String, row: &TableRow, is_header: bool) {
 
         // HTML, whatever `escape_special_chars` says: a `<` or `&` in a cell's text is markup
         // to the reader of an HTML table, and the text is not.
-        let content = escape_html(&cell.plain_text());
+        let content = if cell_has_links(cell) {
+            html_cell(cell)
+        } else {
+            escape_html(&cell.plain_text())
+        };
         output.push_str(&format!("<{}{}>", tag, attrs));
         output.push_str(&content);
         output.push_str(&format!("</{}>", tag));
     }
 
     output.push_str("</tr>\n");
+}
+
+fn html_style(text: &str, style: &TextStyle) -> String {
+    let mut text = escape_html(text);
+    for (enabled, tag) in [
+        (style.strikethrough, "del"),
+        (style.italic, "em"),
+        (style.bold, "strong"),
+        (style.underline, "u"),
+        (style.superscript, "sup"),
+        (style.subscript, "sub"),
+    ] {
+        if enabled {
+            text = format!("<{tag}>{text}</{tag}>");
+        }
+    }
+    text
+}
+
+fn html_attribute(text: &str) -> String {
+    escape_html(text).replace('"', "&quot;")
+}
+
+fn html_cell(cell: &TableCell) -> String {
+    let mut output = String::new();
+    for (i, paragraph) in cell.content.iter().enumerate() {
+        if i > 0 {
+            output.push('\n');
+        }
+        if let Some(marker) = paragraph.list_marker() {
+            output.push_str(&escape_html(&marker));
+        }
+        for inline in &paragraph.content {
+            match inline {
+                InlineContent::Text(run) => output.push_str(&html_style(&run.text, &run.style)),
+                InlineContent::Link {
+                    text,
+                    url,
+                    title,
+                    style,
+                } => {
+                    let label = html_style(text, style);
+                    if active_link(url) {
+                        output.push_str(&format!("<a href=\"{}\"", html_attribute(url)));
+                        if let Some(title) = title {
+                            output.push_str(&format!(" title=\"{}\"", html_attribute(title)));
+                        }
+                        output.push('>');
+                        output.push_str(&label);
+                        output.push_str("</a>");
+                    } else {
+                        output.push_str(&label);
+                    }
+                }
+                InlineContent::LineBreak => output.push_str("<br>"),
+                InlineContent::Image { alt_text, .. } => {
+                    output.push_str(&escape_html(alt_text.as_deref().unwrap_or("")))
+                }
+            }
+        }
+    }
+    output
 }
 
 /// A cell's text in a Markdown table, escaped like a paragraph's -- except `*` and `_`. A cell

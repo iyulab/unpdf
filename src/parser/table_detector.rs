@@ -784,7 +784,7 @@ impl TableDetector {
 
         for (row_idx, row_data) in detected.rows.iter().enumerate() {
             // Create a cell content vector for each column
-            let mut cell_contents: Vec<Vec<String>> = vec![Vec::new(); columns.len()];
+            let mut cell_contents: Vec<Vec<TextSpan>> = vec![Vec::new(); columns.len()];
 
             // Then each span in the column whose text, in the other rows, it lies over
             // (`ColumnText::column_for`); where it lies over none, where it was first put.
@@ -794,7 +794,7 @@ impl TableDetector {
                 let col_idx = column_text.column_for(row_idx, start, edge, left, right, first);
 
                 if col_idx < cell_contents.len() {
-                    cell_contents[col_idx].push(span.text.trim().to_string());
+                    cell_contents[col_idx].push(span.clone());
                 }
             }
 
@@ -804,8 +804,10 @@ impl TableDetector {
                 .map(|contents| {
                     // The cell's runs stand in visual order, as a line's do: right-to-left text
                     // is reordered to logical order the way `TextLine::text` reorders it.
-                    let text = super::bidi::reorder_bidi(&contents.join(" "));
-                    TableCell::text(super::layout::trim_leaders(&text).to_string())
+                    let text = super::inline::joined_spans(&contents, " ", true);
+                    TableCell::with_content(vec![super::inline::paragraph(
+                        super::inline::trim_leaders(text),
+                    )])
                 })
                 .collect();
 
@@ -1917,6 +1919,7 @@ mod tests {
     fn make_span(text: &str, x: f32, y: f32) -> TextSpan {
         TextSpan {
             text: text.to_string(),
+            links: Vec::new(),
             x,
             y,
             width: text.len() as f32 * 6.0, // Approximate width
@@ -2277,6 +2280,7 @@ mod tests {
     fn make_span_w(text: &str, x: f32, y: f32, font_size: f32) -> TextSpan {
         TextSpan {
             text: text.to_string(),
+            links: Vec::new(),
             x,
             y,
             width: 0.0,

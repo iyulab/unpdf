@@ -1087,7 +1087,7 @@ unparser_shared::export_string_getter!(
     /// "undecoded_text_codes":N,
     /// "undecodable_content_streams":N,"image_coverage":F,"rotated_text_runs":N,
     /// "invisible_text_chars":N,"painted_text_chars":N,"margin_text_chars":N,
-    /// "omitted_page_number_chars":N,"clipped_text_runs":N,
+    /// "omitted_page_number_chars":N,"clipped_text_runs":N,"link_annotations_incomplete":bool,
     /// "blank_text_runs":N,"ruled_grids":N,"ruled_tables":N,"reading_regions":N,"column_count":N,
     /// "ambiguous_layout_regions":N}`.
     ///
@@ -1138,6 +1138,9 @@ unparser_shared::export_string_getter!(
     ///   numbers sit.
     /// - `omitted_page_number_chars`: non-whitespace Unicode scalar values removed by the
     ///   page-number filters, including decorations; saturates at `u32::MAX`.
+    /// - `link_annotations_incomplete`: a link bound was reached or supported URI/text
+    ///   association was unresolved. Text and proven links remain; incomplete annotation
+    ///   reading or indexing clears all page links.
     /// - `clipped_text_runs`: text runs the clipping path or the page box hides entirely.
     ///   Their text is left out.
     /// - `blank_text_runs`: text runs whose text is only whitespace.
@@ -1190,6 +1193,7 @@ unparser_shared::export_string_getter!(
             "painted_text_chars": page.painted_text_chars,
             "margin_text_chars": page.margin_text_chars,
             "omitted_page_number_chars": page.omitted_page_number_chars,
+            "link_annotations_incomplete": page.link_annotations_incomplete,
             "clipped_text_runs": page.clipped_text_runs,
             "blank_text_runs": page.blank_text_runs,
             "ruled_grids": page.ruled_grids,

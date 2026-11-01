@@ -275,6 +275,11 @@ public sealed class PageStats
     /// </summary>
     [JsonPropertyName("omitted_page_number_chars")]
     public uint OmittedPageNumberChars { get; init; }
+    /// A link resource bound was reached or supported URI/text association was unresolved.
+    /// Text and proven links remain; incomplete annotation reading or indexing clears links.
+    /// </summary>
+    [JsonPropertyName("link_annotations_incomplete")]
+    public bool LinkAnnotationsIncomplete { get; init; }
 
     /// <summary>
     /// Text runs the clipping path or the page box hides entirely. Their text is left out.

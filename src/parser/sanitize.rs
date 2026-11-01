@@ -36,7 +36,7 @@
 /// True for characters that are not text: C0 and C1 control codes, plus DEL.
 ///
 /// `\n`, `\r` and `\t` are excluded — they carry structure, not noise.
-fn is_non_text_control(c: char) -> bool {
+pub(crate) fn is_non_text_control(c: char) -> bool {
     match c {
         '\n' | '\r' | '\t' => false,
         // C0 controls and DEL

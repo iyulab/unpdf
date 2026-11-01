@@ -72,21 +72,22 @@ impl Paragraph {
             })
             .collect();
 
-        match &self.style.list_info {
-            Some(info) => {
-                let marker = match &info.style {
-                    ListStyle::Unordered { marker } => format!("{marker} "),
-                    ListStyle::Ordered { number_style, .. } => {
-                        format!(
-                            "{}. ",
-                            number_style.format_number(info.item_number.unwrap_or(1))
-                        )
-                    }
-                };
-                format!("{marker}{text}")
-            }
+        match self.list_marker() {
+            Some(marker) => format!("{marker}{text}"),
             None => text,
         }
+    }
+
+    pub(crate) fn list_marker(&self) -> Option<String> {
+        self.style.list_info.as_ref().map(|info| match &info.style {
+            ListStyle::Unordered { marker } => format!("{marker} "),
+            ListStyle::Ordered { number_style, .. } => {
+                format!(
+                    "{}. ",
+                    number_style.format_number(info.item_number.unwrap_or(1))
+                )
+            }
+        })
     }
 
     /// Check if the paragraph is empty.
@@ -134,6 +135,9 @@ pub enum InlineContent {
         url: String,
         /// Link title (tooltip)
         title: Option<String>,
+        /// Label styling. Missing styles in older JSON use the default.
+        #[serde(default)]
+        style: TextStyle,
     },
 
     /// An inline image
@@ -193,7 +197,7 @@ impl TextRun {
 }
 
 /// Text styling properties.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TextStyle {
     /// Bold text
     pub bold: bool,

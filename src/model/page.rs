@@ -146,6 +146,11 @@ pub struct Page {
     /// text runs; saturates at `u32::MAX`. Omitted from JSON when 0.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub omitted_page_number_chars: u32,
+    /// A link bound or unsupported text association limited URI preservation. Text and
+    /// proven links remain; unread annotations or incomplete indexing clear all page links.
+    /// Missing means false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub link_annotations_incomplete: bool,
 
     /// Text runs the clipping path or the page box hides entirely. Their text is left out,
     /// as it does not show. Omitted from JSON when 0.
@@ -222,6 +227,7 @@ impl Page {
             painted_text_chars: 0,
             margin_text_chars: 0,
             omitted_page_number_chars: 0,
+            link_annotations_incomplete: false,
             clipped_text_runs: 0,
             blank_text_runs: 0,
             undecoded_text_codes: 0,
