@@ -141,6 +141,12 @@ pub struct Page {
     #[serde(default, skip_serializing_if = "is_zero")]
     pub margin_text_chars: u32,
 
+    /// Non-whitespace Unicode scalar values removed by the page-number filters, including
+    /// decorations such as `Page` or dashes. Counts characters, not semantic page numbers or
+    /// text runs; saturates at `u32::MAX`. Omitted from JSON when 0.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub omitted_page_number_chars: u32,
+
     /// Text runs the clipping path or the page box hides entirely. Their text is left out,
     /// as it does not show. Omitted from JSON when 0.
     #[serde(default, skip_serializing_if = "is_zero")]
@@ -215,6 +221,7 @@ impl Page {
             invisible_text_chars: 0,
             painted_text_chars: 0,
             margin_text_chars: 0,
+            omitted_page_number_chars: 0,
             clipped_text_runs: 0,
             blank_text_runs: 0,
             undecoded_text_codes: 0,

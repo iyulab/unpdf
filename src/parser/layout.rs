@@ -641,6 +641,9 @@ pub struct PageFacts {
     /// Painted characters other than whitespace whose baseline is in the top or bottom
     /// tenth of the page box, where running heads and page numbers sit.
     pub margin_text_chars: u32,
+    /// Non-whitespace Unicode scalar values removed by the page-number filters, including
+    /// decorations. Resets when the page is read again; saturates at `u32::MAX`.
+    pub omitted_page_number_chars: u32,
     /// Text runs the clipping path or the page box hides entirely.
     pub clipped_text_runs: u32,
     /// Text runs whose text is only whitespace.
@@ -1264,7 +1267,11 @@ impl<'a> LayoutAnalyzer<'a> {
     pub fn filter_spans_for_page(&self, spans: &mut Vec<TextSpan>, page_num: u32) {
         let pages = self.backend.pages();
         if let Some(&page_id) = pages.get(&page_num) {
-            filter_header_footer_spans(spans, self.backend.crop_box(page_id));
+            let omitted = filter_header_footer_spans(spans, self.backend.crop_box(page_id));
+            let mut facts = self.page_facts.get();
+            facts.omitted_page_number_chars =
+                facts.omitted_page_number_chars.saturating_add(omitted);
+            self.page_facts.set(facts);
         }
     }
 
@@ -1313,17 +1320,10 @@ impl<'a> LayoutAnalyzer<'a> {
 
     /// Extract structured text blocks from a page.
     pub fn extract_page_blocks(&mut self, page_num: u32) -> Result<Vec<TextBlock>> {
-        // Get page dimensions for header/footer filtering
-        let pages = self.backend.pages();
-        let page_id = pages
-            .get(&page_num)
-            .ok_or(Error::PageOutOfRange(page_num, pages.len() as u32))?;
-        let page_box = self.backend.crop_box(*page_id);
-
         let mut spans = self.extract_page_spans(page_num)?;
 
         // Filter out page numbers / running headers from top/bottom margins
-        filter_header_footer_spans(&mut spans, page_box);
+        self.filter_spans_for_page(&mut spans, page_num);
 
         // Update font statistics
         for span in &spans {
@@ -1372,6 +1372,9 @@ impl<'a> LayoutAnalyzer<'a> {
         self.image_op_count.set(0);
         self.suppressed_text_runs.set(0);
         self.unreadable_fonts.borrow_mut().clear();
+        let mut facts = self.page_facts.get();
+        facts.omitted_page_number_chars = 0;
+        self.page_facts.set(facts);
         // What the page shows: marks outside its crop box or its clipping path are never
         // seen, so they are not page content.
         let visible = self.backend.crop_box(page_id);
@@ -2515,11 +2518,20 @@ pub(crate) fn trim_leaders(text: &str) -> &str {
 ///
 /// Removes spans in the top/bottom margin that contain only numbers or short
 /// page-number patterns (e.g. "- 3 -", "Page 5", "2 / 10").
-fn filter_header_footer_spans(spans: &mut Vec<TextSpan>, page_box: super::backend::PageBox) {
+fn filter_header_footer_spans(spans: &mut Vec<TextSpan>, page_box: super::backend::PageBox) -> u32 {
     let page_height = page_box.height();
     if spans.is_empty() || page_height <= 0.0 {
-        return;
+        return 0;
     }
+
+    let chars = |spans: &[TextSpan]| {
+        spans
+            .iter()
+            .flat_map(|span| span.text.chars())
+            .filter(|c| !c.is_whitespace())
+            .count()
+    };
+    let before = chars(spans);
 
     // Define margin regions: top/bottom 5% of page height.
     // PDF Y axis is bottom-up, measured from the page box's lower edge.
@@ -2547,6 +2559,7 @@ fn filter_header_footer_spans(spans: &mut Vec<TextSpan>, page_box: super::backen
     });
     remove_folio_lines(spans, page_box);
     remove_side_margin_numbers(spans, page_box);
+    u32::try_from(before - chars(spans)).unwrap_or(u32::MAX)
 }
 
 /// How far, as a share of the page height, a page number may sit from the bottom and the top
@@ -5443,6 +5456,18 @@ mod tests {
 
     fn texts(spans: &[TextSpan]) -> Vec<&str> {
         spans.iter().map(|s| s.text.trim()).collect()
+    }
+
+    #[test]
+    fn margin_filter_counts_removed_characters_without_whitespace() {
+        let mut spans = margin_page(vec![
+            number("Page 12", 300.0, 710.0, 8.6),
+            number("- 12 -", 300.0, 20.0, 8.6),
+            number("   ", 400.0, 20.0, 8.6),
+        ]);
+        assert_eq!(filter_header_footer_spans(&mut spans, REPORT_PAGE), 10);
+        assert_eq!(spans.len(), 3);
+        assert_eq!(filter_header_footer_spans(&mut spans, REPORT_PAGE), 0);
     }
 
     /// The folio on the outer edge shares a body line's baseline; it goes, as a folio at the

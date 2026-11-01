@@ -453,7 +453,10 @@ def get_page_stats(
         although nothing shows it and still counted when the OCR layer was
         dropped, and in one that paints them), ``margin_text_chars`` (painted
         characters in the top or bottom tenth of the page as shown, its /Rotate
-        applied, where running heads and page numbers sit), ``clipped_text_runs`` (text the clipping
+        applied, where running heads and page numbers sit),
+        ``omitted_page_number_chars`` (non-whitespace Unicode scalar values removed
+        by the page-number filters, including decorations; saturates at 2**32 - 1),
+        ``clipped_text_runs`` (text the clipping
         path or the page box hides entirely, left out), ``blank_text_runs``
         (runs that are only whitespace),
         ``ruled_grids`` / ``ruled_tables`` (ruling-line grids drawn, tables built

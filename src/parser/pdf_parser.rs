@@ -284,6 +284,7 @@ pub(crate) fn parse_single_page(
         page.invisible_text_chars = facts.invisible_text_chars;
         page.painted_text_chars = facts.painted_text_chars;
         page.margin_text_chars = facts.margin_text_chars;
+        page.omitted_page_number_chars = facts.omitted_page_number_chars;
         page.clipped_text_runs = facts.clipped_text_runs;
         page.blank_text_runs = facts.blank_text_runs;
         page.fill_op_count = facts.fill_op_count;
@@ -1197,7 +1198,8 @@ fn fallback_text_extraction_fn(
     options: &ParseOptions,
 ) -> Result<()> {
     match analyzer.extract_page_spans(page_num) {
-        Ok(spans) if !spans.is_empty() => {
+        Ok(mut spans) if !spans.is_empty() => {
+            analyzer.filter_spans_for_page(&mut spans, page_num);
             let lines = analyzer.group_spans_into_lines_pub(spans);
             let text = lines
                 .iter()

@@ -10,7 +10,7 @@ use std::ffi::CStr;
 use std::os::raw::c_char;
 use std::ptr;
 
-use common::{bordered_table_pdf, image_only_pdf, suppressed_text_run_pdf, text_pdf};
+use common::{bordered_table_pdf, image_only_pdf, page_pdf, suppressed_text_run_pdf, text_pdf};
 use unpdf::ffi::{
     unpdf_free_document, unpdf_free_string, unpdf_get_extraction_quality, unpdf_last_error,
     unpdf_page_stats, unpdf_parse_bytes, unpdf_tables,
@@ -82,6 +82,7 @@ fn page_stats_distinguishes_image_only_page() {
             "invisible_text_chars",
             "painted_text_chars",
             "margin_text_chars",
+            "omitted_page_number_chars",
             "clipped_text_runs",
             "blank_text_runs",
             "undecoded_text_codes",
@@ -113,6 +114,24 @@ fn page_stats_reports_text_page() {
         // Always present, so a consumer never has to test for absence.
         assert_eq!(v["unreadable_fonts"], serde_json::json!([]), "{json}");
 
+        unpdf_free_document(doc);
+    }
+}
+
+#[test]
+fn page_stats_reports_omitted_page_number_chars() {
+    let bytes = page_pdf(
+        "",
+        "/MediaBox[0 0 595 842]",
+        b"BT /F1 12 Tf 72 700 Td (Body text.) Tj ET \
+          BT /F1 10 Tf 290 20 Td (12) Tj ET",
+    );
+    unsafe {
+        let doc = unpdf_parse_bytes(bytes.as_ptr(), bytes.len());
+        assert!(!doc.is_null());
+        let json = take_string(unpdf_page_stats(doc, 1));
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["omitted_page_number_chars"], 2, "{json}");
         unpdf_free_document(doc);
     }
 }
