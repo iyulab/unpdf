@@ -1198,7 +1198,7 @@ Structured Markdown with preserved formatting:
 - **Lists**: Detected ordered and unordered lists
 - **Tables**: Markdown tables (with an HTML fallback for merged cells)
 - **Inline styles**: Bold (`**`), italic (`*`)
-- **Hyperlinks**: Preserved as Markdown links
+- **Hyperlinks**: URI annotations become links on covered text; internal PDF destinations stay text. Markdown and HTML activate HTTP(S), FTP, mailto, tel and ordinary relative targets; other URI targets stay in JSON and render as styled labels. A page's `link_annotations_incomplete` marks limited coverage: text and proven links remain unless annotation reading or indexing was incomplete.
 - **Images**: Reference-style image links
 
 ### Plain Text

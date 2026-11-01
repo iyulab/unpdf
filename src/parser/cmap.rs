@@ -369,7 +369,17 @@ impl CMap {
     /// collection (`registry`, `ordering`) read at each code's CID. A code that resolves
     /// to nothing is skipped; `None` means no code resolved at all.
     pub(crate) fn decode(&self, registry: &str, ordering: &str, bytes: &[u8]) -> Option<String> {
-        self.decode_with_ascii(registry, ordering, bytes, true)
+        self.decode_with_ascii(registry, ordering, bytes, true, &mut None)
+    }
+
+    pub(crate) fn decode_mapped(
+        &self,
+        registry: &str,
+        ordering: &str,
+        bytes: &[u8],
+        mapping: &mut Option<Vec<super::decoded_run::SourceText>>,
+    ) -> Option<String> {
+        self.decode_with_ascii(registry, ordering, bytes, true, mapping)
     }
 
     /// [`Self::decode`], reading a byte as ASCII only where it is a `predefined_byte`.
@@ -379,7 +389,7 @@ impl CMap {
         ordering: &str,
         bytes: &[u8],
     ) -> Option<String> {
-        self.decode_with_ascii(registry, ordering, bytes, false)
+        self.decode_with_ascii(registry, ordering, bytes, false, &mut None)
     }
 
     fn decode_with_ascii(
@@ -388,21 +398,32 @@ impl CMap {
         ordering: &str,
         bytes: &[u8],
         any_byte: bool,
+        mapping: &mut Option<Vec<super::decoded_run::SourceText>>,
     ) -> Option<String> {
-        let text: String = self
-            .codes(ordering, bytes)?
-            .into_iter()
-            .filter_map(|code| {
-                code.text
-                    .or_else(|| super::cmap_table::lookup_cid(registry, ordering, code.cid))
-                    .or_else(|| {
-                        let byte = code
-                            .single_byte
-                            .filter(|_| any_byte || code.predefined_byte)?;
-                        predefined_cmap::ascii_fallback(u16::from(byte), 1)
-                    })
-            })
-            .collect();
+        if let Some(mapping) = mapping {
+            mapping.clear();
+        }
+        let mut text = String::new();
+        let mut at = 0;
+        for code in self.codes(ordering, bytes)? {
+            let end = at + code.len;
+            let decoded = code
+                .text
+                .or_else(|| super::cmap_table::lookup_cid(registry, ordering, code.cid))
+                .or_else(|| {
+                    let byte = code
+                        .single_byte
+                        .filter(|_| any_byte || code.predefined_byte)?;
+                    predefined_cmap::ascii_fallback(u16::from(byte), 1)
+                });
+            let mut buffer = [0; 4];
+            let value: &str = match decoded {
+                Some(c) => c.encode_utf8(&mut buffer),
+                None => "",
+            };
+            super::decoded_run::append(&mut text, at..end, value, mapping);
+            at = end;
+        }
         (!text.is_empty()).then_some(text)
     }
 }

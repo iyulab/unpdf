@@ -49,7 +49,10 @@ fn latex_resume_separates_runs_that_share_a_row() {
         !md.contains("***"),
         "abutting emphasis markers read as one bold-italic opener\n--- markdown ---\n{md}"
     );
-    assert!(md.contains("**GitHub link:** github.com"), "{md}");
+    assert!(
+        md.contains("**GitHub link:** [github.com/iyulab/unpdf](https://github.com/iyulab/unpdf)"),
+        "{md}"
+    );
 }
 
 #[test]

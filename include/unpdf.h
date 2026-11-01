@@ -303,6 +303,7 @@ char* unpdf_get_extraction_quality(const UnpdfDocument* doc);
  *  "undecoded_text_codes":N,
  *  "undecodable_content_streams":N,"image_coverage":F,"rotated_text_runs":N,
  *  "invisible_text_chars":N,"painted_text_chars":N,"margin_text_chars":N,
+ *  "link_annotations_incomplete":bool,
  *  "clipped_text_runs":N,"blank_text_runs":N,"ruled_grids":N,"ruled_tables":N,
  *  "reading_regions":N,"column_count":N,"ambiguous_layout_regions":N}
  *
@@ -334,6 +335,9 @@ char* unpdf_get_extraction_quality(const UnpdfDocument* doc);
  * margin_text_chars counts the painted ones whose baseline is in the top or
  * bottom tenth of the page as shown (its /Rotate applied), where running
  * heads and page numbers sit.
+ * link_annotations_incomplete means a link bound was reached or supported URI/text
+ * association was unresolved: text and proven links remain, unless incomplete
+ * annotation reading or indexing made their overlap priority unknown.
  * clipped_text_runs counts text runs the clipping path or the page box hides
  * entirely, left out; blank_text_runs, text runs that are only whitespace.
  * ruled_grids / ruled_tables: ruling-line grids drawn, tables built from them.

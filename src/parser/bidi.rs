@@ -4,6 +4,52 @@ use unicode_bidi::BidiInfo;
 use unicode_bidi_mirroring::get_mirrored;
 use unicode_normalization::UnicodeNormalization;
 
+pub(crate) fn reorder_tagged<T: Clone + PartialEq>(
+    text: super::text_ranges::TaggedText<T>,
+) -> super::text_ranges::TaggedText<T> {
+    if !contains_rtl(&text.text) {
+        return text;
+    }
+    let info = BidiInfo::new(&text.text, None);
+    let mut output = super::text_ranges::TaggedText::new();
+    for paragraph in &info.paragraphs {
+        let (levels, runs) = info.visual_runs(paragraph, paragraph.range.clone());
+        for run in runs {
+            if levels[run.start].is_rtl() {
+                for (at, c) in text.text[run.clone()].char_indices().rev() {
+                    emit_scalar(
+                        &mut output,
+                        &text.ranges,
+                        run.start + at,
+                        get_mirrored(c).unwrap_or(c),
+                    );
+                }
+            } else {
+                for (at, c) in text.text[run.clone()].char_indices() {
+                    emit_scalar(&mut output, &text.ranges, run.start + at, c);
+                }
+            }
+        }
+    }
+    output
+}
+
+fn emit_scalar<T: Clone + PartialEq>(
+    output: &mut super::text_ranges::TaggedText<T>,
+    owners: &[super::text_ranges::TextRange<T>],
+    source: usize,
+    c: char,
+) {
+    let mut buffer = [0; 4];
+    let value = c.encode_utf8(&mut buffer);
+    if is_rtl_presentation_form(c) {
+        let expanded: String = value.nfkc().collect();
+        output.emit_from(owners, source, &expanded);
+    } else {
+        output.emit_from(owners, source, value);
+    }
+}
+
 /// Check if text contains RTL characters (Arabic, Hebrew, etc.)
 pub fn contains_rtl(text: &str) -> bool {
     text.chars().any(|c| {

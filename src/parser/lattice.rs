@@ -544,7 +544,7 @@ pub(crate) fn build_table(grid: &LatticeGrid, spans: &[TextSpan]) -> Option<(Tab
 
     // A merged cell is read as one: the text of the positions it covers together, line by
     // line, so a label set across the rule its neighbours have reads in one piece.
-    let mut cells: Vec<(Merge, Vec<String>)> = Vec::new();
+    let mut cells: Vec<(Merge, Vec<TextLine>)> = Vec::new();
     for merge in merged_cells(grid, &cell_spans) {
         let spans: Vec<TextSpan> = (merge.row..merge.row + merge.rows)
             .flat_map(|r| (merge.col..merge.col + merge.cols).map(move |c| (r, c)))
@@ -552,10 +552,10 @@ pub(crate) fn build_table(grid: &LatticeGrid, spans: &[TextSpan]) -> Option<(Tab
             .collect();
         // A cell reads line by line, a superscript with the line it marks (`0.31*`,
         // not `* 0.31`) -- the same rows stream-mode detection builds.
-        let lines: Vec<String> = group_into_rows(&spans, CELL_LINE_TOLERANCE)
+        let lines: Vec<TextLine> = group_into_rows(&spans, CELL_LINE_TOLERANCE)
             .into_iter()
-            .map(|line| TextLine::from_spans(line.spans).text().trim().to_string())
-            .filter(|text| !text.is_empty())
+            .map(|line| TextLine::from_spans(line.spans))
+            .filter(|line| !line.text().trim().is_empty())
             .collect();
         cells.push((merge, lines));
     }
@@ -578,8 +578,10 @@ pub(crate) fn build_table(grid: &LatticeGrid, spans: &[TextSpan]) -> Option<(Tab
             .iter()
             .filter(|(merge, _)| merge.row == r)
             .map(|(merge, lines)| {
-                let mut cell =
-                    TableCell::text(super::layout::trim_leaders(&lines.join(" ")).to_string());
+                let text = super::inline::joined_lines(lines, " ", true);
+                let mut cell = TableCell::with_content(vec![super::inline::paragraph(
+                    super::inline::trim_leaders(text),
+                )]);
                 cell.rowspan = u8::try_from(merge.rows).unwrap_or(u8::MAX);
                 cell.colspan = u8::try_from(merge.cols).unwrap_or(u8::MAX);
                 cell
@@ -1539,6 +1541,7 @@ mod tests {
     fn span(text: &str, x: f32, y: f32) -> TextSpan {
         TextSpan {
             text: text.to_string(),
+            links: Vec::new(),
             x,
             y,
             width: text.len() as f32 * 6.0,

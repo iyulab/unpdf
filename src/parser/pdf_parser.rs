@@ -13,7 +13,6 @@ use crate::model::{
 };
 
 use super::backend::{CodecParms, PdfBackend, RawBackend, RawXObject};
-use super::layout::{ScriptShift, SCRIPT_MAX_SIZE};
 use super::options::{ErrorMode, ParseOptions};
 
 /// PDF document parser.
@@ -279,6 +278,10 @@ pub(crate) fn parse_single_page(
         page.image_op_count = counts.image;
         page.form_op_count = counts.form;
         let facts = analyzer.page_facts();
+        page.link_annotations_incomplete = facts.link_annotations_incomplete;
+        if analyzer.clear_page_links() {
+            super::inline::clear_links(&mut page);
+        }
         page.image_coverage = facts.image_coverage;
         page.rotated_text_runs = facts.rotated_text_runs;
         page.invisible_text_chars = facts.invisible_text_chars;
@@ -503,6 +506,14 @@ fn is_code_block(block: &super::layout::TextBlock) -> bool {
 /// from the block's left edge amounts to at the line's own character width, with blank lines
 /// where a gap of more than a line pitch (at most two) stood between two lines.
 fn code_block(block: &super::layout::TextBlock) -> Block {
+    for link in block
+        .lines
+        .iter()
+        .flat_map(|line| &line.spans)
+        .flat_map(|span| &span.links)
+    {
+        link.value.target.mark_incomplete();
+    }
     let lines = &block.lines;
     let left = lines
         .iter()
@@ -580,137 +591,9 @@ fn block_list_marker_len(block: &super::layout::TextBlock) -> usize {
     full.len() - stripped.len()
 }
 
-/// Build a `Paragraph` whose inline content preserves per-span bold/italic
-/// styling, joining spans and lines with the same spacing the plain-text
-/// `TextBlock::text` path would produce. Adjacent runs sharing a style are
-/// merged so emphasis markers don't fragment. Falls back to plain text for
-/// blocks containing RTL characters: BiDi reordering works on the joined
-/// string and can't be represented as independently-styled runs.
+/// Build inline content with the shared span ownership and style rules.
 fn styled_paragraph(block: &super::layout::TextBlock) -> Paragraph {
-    let plain = block.text();
-    if super::bidi::contains_rtl(&plain) {
-        return Paragraph::with_text(plain);
-    }
-
-    let mut runs: Vec<TextRun> = Vec::new();
-    let in_word = block.hangul_breaks_in_words();
-    for (line_idx, line) in block.lines.iter().enumerate() {
-        // At a join the line break is what `line_join` says, as in `TextBlock::text`:
-        // whitespace on either side of it is dropped.
-        let mut at_line_start = line_idx > 0;
-        if at_line_start {
-            while let Some(last) = runs.last_mut() {
-                let kept = last.text.trim_end().len();
-                last.text.truncate(kept);
-                if !last.text.is_empty() {
-                    break;
-                }
-                runs.pop();
-            }
-            let join = super::layout::line_join(
-                &block.lines[line_idx - 1].text(),
-                &line.text(),
-                in_word[line_idx - 1],
-            );
-            if !join.is_empty() {
-                push_run(&mut runs, join, TextStyle::default());
-            }
-        }
-        let shifts = script_shifts(line);
-        for (piece, span_idx) in line.styled_segments() {
-            let span = &line.spans[span_idx];
-            let piece = if at_line_start {
-                piece.trim_start()
-            } else {
-                piece.as_str()
-            };
-            if piece.is_empty() {
-                continue;
-            }
-            at_line_start = false;
-            let style = TextStyle {
-                bold: span.is_bold,
-                italic: span.is_italic,
-                strikethrough: span.is_struck,
-                ..Default::default()
-            };
-            let (superscript, subscript) = match shifts[span_idx] {
-                Some(ScriptShift::Raised) => (true, false),
-                Some(ScriptShift::Lowered) => (false, true),
-                _ => (false, false),
-            };
-            if superscript || subscript {
-                let ink = piece.trim();
-                let start = piece.len() - piece.trim_start().len();
-                push_run(&mut runs, &piece[..start], style.clone());
-                let script = TextStyle {
-                    superscript,
-                    subscript,
-                    ..style.clone()
-                };
-                push_run(&mut runs, ink, script);
-                push_run(&mut runs, &piece[start + ink.len()..], style);
-            } else {
-                push_run(&mut runs, piece, style);
-            }
-        }
-    }
-
-    let mut para = Paragraph::new();
-    para.content = runs.into_iter().map(InlineContent::Text).collect();
-    para
-}
-
-/// The baseline of a line's text at its own size: that of its longest run set larger than a
-/// script is, or the line's when it has none.
-fn body_baseline(line: &super::layout::TextLine) -> f32 {
-    line.spans
-        .iter()
-        .filter(|s| !s.is_rotated() && s.font_size > line.font_size * SCRIPT_MAX_SIZE)
-        .max_by_key(|s| s.text.trim().chars().count())
-        .map_or(line.y, |s| s.y)
-}
-
-/// How each span of `line` sits as a script against the line's body text, by the definition
-/// the reading order folds scripts with ([`super::layout::script_shift`]).
-fn script_shifts(line: &super::layout::TextLine) -> Vec<Option<ScriptShift>> {
-    let baseline = body_baseline(line);
-    line.spans
-        .iter()
-        .map(|s| {
-            (!s.is_rotated())
-                .then(|| super::layout::script_shift(s.font_size, s.y, line.font_size, baseline))
-                .flatten()
-        })
-        .collect()
-}
-
-/// Append `text` as a run with the given style, merging into the previous
-/// run when it carries the same style so consecutive same-style spans don't
-/// produce back-to-back `**a****b**` fragments.
-fn push_run(runs: &mut Vec<TextRun>, text: &str, style: TextStyle) {
-    if text.is_empty() {
-        return;
-    }
-    if let Some(last) = runs.last_mut() {
-        let decorations = |s: &TextStyle| {
-            (
-                s.bold,
-                s.italic,
-                s.strikethrough,
-                s.superscript,
-                s.subscript,
-            )
-        };
-        if decorations(&last.style) == decorations(&style) {
-            last.text.push_str(text);
-            return;
-        }
-    }
-    runs.push(TextRun {
-        text: text.to_string(),
-        style,
-    });
+    super::inline::block(block)
 }
 
 /// Remove `n` bytes from the front of a run sequence (the list marker prefix),
@@ -719,25 +602,27 @@ fn push_run(runs: &mut Vec<TextRun>, text: &str, style: TextStyle) {
 /// the runs' concatenated text equals the block's plain text the length was
 /// measured against.
 fn strip_prefix_bytes(content: &mut Vec<InlineContent>, mut n: usize) {
+    fn text(item: &mut InlineContent) -> Option<&mut String> {
+        match item {
+            InlineContent::Text(run) => Some(&mut run.text),
+            InlineContent::Link { text, .. } => Some(text),
+            _ => None,
+        }
+    }
     while n > 0 && !content.is_empty() {
-        let remove_whole = match &content[0] {
-            InlineContent::Text(run) => run.text.len() <= n,
-            _ => false,
-        };
+        let remove_whole = text(&mut content[0]).is_some_and(|text| text.len() <= n);
         if remove_whole {
-            if let InlineContent::Text(run) = content.remove(0) {
-                n -= run.text.len();
-            }
-        } else if let InlineContent::Text(run) = &mut content[0] {
-            run.text = run.text[n..].to_string();
+            n -= text(&mut content[0]).unwrap().len();
+            content.remove(0);
+        } else if let Some(text) = text(&mut content[0]) {
+            *text = text[n..].to_string();
             n = 0;
         } else {
             break;
         }
     }
-    if let Some(InlineContent::Text(run)) = content.first_mut() {
-        let trimmed = run.text.trim_start().to_string();
-        run.text = trimmed;
+    if let Some(text) = content.first_mut().and_then(text) {
+        *text = text.trim_start().to_string();
     }
 }
 
@@ -913,15 +798,9 @@ fn merge_same_row_paragraphs(elements: Vec<Element>) -> Vec<Element> {
 const ROW_Y_TOLERANCE: f32 = 6.0;
 
 /// Render a table row detected with low confidence as plain paragraph text.
+#[cfg(test)]
 fn low_confidence_row_text(row: &super::table_detector::TableRowData) -> String {
-    let text = row
-        .spans
-        .iter()
-        .map(|s| s.text.as_str())
-        .collect::<Vec<_>>()
-        .join("  ");
-    // Visual order, as a line's runs: right-to-left text is reordered to logical.
-    super::bidi::reorder_bidi(&text)
+    super::inline::joined_spans(&row.spans, "  ", false).text
 }
 
 /// Each span's size and the characters it counts for in the body-size histogram.
@@ -1088,12 +967,12 @@ fn extract_page_with_tables_fn(
                 let rows: Vec<Element> = detected
                     .rows
                     .iter()
-                    .map(|row| (row.y, low_confidence_row_text(row)))
-                    .filter(|(_, text)| !text.trim().is_empty())
+                    .map(|row| (row.y, super::inline::joined_spans(&row.spans, "  ", false)))
+                    .filter(|(_, text)| !text.text.trim().is_empty())
                     .map(|(y, text)| Element {
                         y,
                         single_line: true,
-                        block: Block::Paragraph(Paragraph::with_text(text)),
+                        block: Block::Paragraph(super::inline::paragraph(text)),
                     })
                     .collect();
                 if !rows.is_empty() {
@@ -1123,11 +1002,10 @@ fn extract_page_with_tables_fn(
                 if !block.is_empty() {
                     let extent = Extent::of_block(&block);
                     let baseline = block.lines.first().map(|l| l.y).unwrap_or(0.0);
-                    let text_of_block = block.text();
                     let para_block = match block.block_type {
                         super::layout::BlockType::Heading => {
                             let level = block.heading_level.clamp(1, 6);
-                            Block::Paragraph(Paragraph::heading(text_of_block, level))
+                            Block::Paragraph(super::inline::heading(&block, level))
                         }
                         _ if is_code_block(&block) => code_block(&block),
                         super::layout::BlockType::Paragraph | super::layout::BlockType::Unknown => {
@@ -1172,7 +1050,7 @@ fn extract_page_with_tables_fn(
                 let para_block = match block.block_type {
                     super::layout::BlockType::Heading => {
                         let level = block.heading_level.clamp(1, 6);
-                        Block::Paragraph(Paragraph::heading(text, level))
+                        Block::Paragraph(super::inline::heading(&block, level))
                     }
                     _ if is_code_block(&block) => code_block(&block),
                     super::layout::BlockType::Paragraph | super::layout::BlockType::Unknown => {
@@ -1199,13 +1077,9 @@ fn fallback_text_extraction_fn(
     match analyzer.extract_page_spans(page_num) {
         Ok(spans) if !spans.is_empty() => {
             let lines = analyzer.group_spans_into_lines_pub(spans);
-            let text = lines
-                .iter()
-                .map(|l| l.text())
-                .collect::<Vec<_>>()
-                .join("\n");
-            if !text.trim().is_empty() {
-                page.add_paragraph(Paragraph::with_text(text));
+            let text = super::inline::joined_lines(&lines, "\n", false);
+            if !text.text.trim().is_empty() {
+                page.add_paragraph(super::inline::paragraph(text));
             }
         }
         Ok(_) => {}
@@ -1248,6 +1122,29 @@ fn parse_pdf_date(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn raw_fallback_keeps_links_on_ordinary_body_text() {
+        let content = b"BT /F1 10 Tf 72 700 Td (Label) Tj ET";
+        let pdf = crate::parser::test_pdf::pdf(vec![
+            b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+            b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+            b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Resources<</Font<</F1 5 0 R>>>>/Contents 4 0 R/Annots[<</Subtype/Link/Rect[72 697 110 709]/A<</S/URI/URI(https://example.test/paper)>>>>]>>".to_vec(),
+            crate::parser::test_pdf::stream(&format!("<</Length {}>>", content.len()), content),
+            b"<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>".to_vec(),
+        ], 1);
+        let backend = RawBackend::load_bytes(&pdf).unwrap();
+        let analyzer = crate::parser::LayoutAnalyzer::new(&backend);
+        let mut page = Page::letter(1);
+        fallback_text_extraction_fn(&analyzer, &mut page, 1, &ParseOptions::default()).unwrap();
+        assert_eq!(page.plain_text().trim(), "Label");
+        let Block::Paragraph(paragraph) = &page.elements[0] else {
+            panic!("paragraph");
+        };
+        assert!(
+            matches!(&paragraph.content[0], InlineContent::Link { url, .. } if url == "https://example.test/paper")
+        );
+    }
     // Assembled in the test rather than read from disk -- see that module's docs.
     use crate::parser::test_pdf::{pdf, stream};
     use chrono::Datelike;

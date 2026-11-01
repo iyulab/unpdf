@@ -12,8 +12,8 @@ use crate::model::{FieldType, FieldValue, FormField};
 use super::cmap::{code_value, CMap, CMapDef, Parent, MAX_USE_CMAP_DEPTH};
 use super::core14::StandardFont;
 use super::encoding::{
-    apply_differences, build_encoding_map, decode_with_encoding_map, single_char, BaseEncoding,
-    EncodingMap,
+    apply_differences, build_encoding_map, decode_with_encoding_map,
+    decode_with_encoding_map_mapped, single_char, BaseEncoding, EncodingMap,
 };
 use super::font::{
     is_likely_binary, parse_to_unicode_cmap, parse_truetype_cmap_table, ToUnicodeMap,
@@ -21,6 +21,7 @@ use super::font::{
 use super::glyph_metrics::{
     expand_w2_array, expand_w_array, CidCoding, FontMetrics, VerticalFont, WEntry,
 };
+use super::link::LinkAnnotations;
 use super::sanitize::sanitize_extracted_text;
 use super::text_string::{decode_text_string, decode_text_string_lossy};
 
@@ -710,6 +711,23 @@ pub struct GlyphAdvance {
     pub is_word_space: bool,
 }
 
+/// An atomic decoded cluster and the source glyph advances producing it. A ligature's
+/// several Unicode scalars stay in one cluster; ranges use sanitized UTF-8 bytes.
+#[derive(Debug, Clone)]
+pub struct TextCluster {
+    pub text: std::ops::Range<usize>,
+    pub glyphs: std::ops::Range<usize>,
+}
+
+/// A decoded run with optional exact text-to-glyph correspondence. `None` means partial
+/// text geometry is unavailable; consumers must preserve the decoded text without guessing.
+#[derive(Debug, Clone)]
+pub struct DecodedRun {
+    pub decoded: DecodedText,
+    pub glyphs: Option<Vec<GlyphAdvance>>,
+    pub clusters: Option<Vec<TextCluster>>,
+}
+
 /// A glyph's displacement in vertical writing mode (ISO 32000-1 §9.7.4.3), in thousandths
 /// of text space.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -767,6 +785,16 @@ pub trait PdfBackend: Send + Sync {
     /// "this run was discarded" and "this run held no text" look identical to the
     /// caller otherwise, and the difference is the whole of the caller's diagnostic.
     fn decode_text(&self, scope: ResourceScope, font_name: &[u8], bytes: &[u8]) -> DecodedText;
+
+    /// Decode and measure once when exact partial-run geometry is needed. The default
+    /// retains existing backend decoding and widths without claiming exact correspondence.
+    fn decode_run(&self, scope: ResourceScope, font_name: &[u8], bytes: &[u8]) -> DecodedRun {
+        DecodedRun {
+            decoded: self.decode_text(scope, font_name, bytes),
+            glyphs: self.glyph_advances(scope, font_name, bytes),
+            clusters: None,
+        }
+    }
 
     /// The advance of each code in `bytes`, as the font `font_name` names in `scope`
     /// declares it.
@@ -828,6 +856,12 @@ pub trait PdfBackend: Send + Sync {
     /// Defaults to none.
     fn struck_out_areas(&self, _page: PageId) -> Vec<PageBox> {
         Vec::new()
+    }
+
+    /// URI link annotations in default page coordinates, in annotation order. Internal
+    /// destinations and other actions are omitted. Defaults to no annotations.
+    fn link_annotations(&self, _page: PageId) -> LinkAnnotations {
+        LinkAnnotations::default()
     }
 
     /// Return the document outline (bookmarks) as a tree.
@@ -1142,6 +1176,31 @@ impl PdfBackend for RawBackend {
             .glyph_advances(&self.doc, scope, font_name, bytes)
     }
 
+    fn decode_run(&self, scope: ResourceScope, font_name: &[u8], bytes: &[u8]) -> DecodedRun {
+        let mut mapping = Some(Vec::new());
+        let decoded =
+            self.font_resolver
+                .decode_text_mapped(&self.doc, scope, font_name, bytes, &mut mapping);
+        if mapping.is_none() {
+            return DecodedRun {
+                decoded: DecodedText {
+                    text: sanitize_extracted_text(decoded.text),
+                    ..decoded
+                },
+                glyphs: self.glyph_advances(scope, font_name, bytes),
+                clusters: None,
+            };
+        }
+        let measured = self
+            .font_resolver
+            .find_font(&self.doc, scope, font_name)
+            .and_then(|font| {
+                self.font_resolver
+                    .with_font_metrics(&self.doc, &font, |m| m.advances_with_ranges(bytes))
+            });
+        super::decoded_run::finish(decoded, mapping, measured, bytes.len())
+    }
+
     fn is_vertical_font(&self, scope: ResourceScope, font_name: &[u8]) -> bool {
         self.font_resolver
             .is_vertical_font(&self.doc, scope, font_name)
@@ -1256,6 +1315,10 @@ impl PdfBackend for RawBackend {
             }
         }
         areas
+    }
+
+    fn link_annotations(&self, page: PageId) -> LinkAnnotations {
+        super::link::read_annotations(&self.doc, page)
     }
 
     fn outline(&self) -> Result<Vec<RawOutlineItem>> {
@@ -2909,6 +2972,17 @@ impl RawFontResolver {
         font_name: &[u8],
         bytes: &[u8],
     ) -> DecodedText {
+        self.decode_text_mapped(doc, scope, font_name, bytes, &mut None)
+    }
+
+    fn decode_text_mapped(
+        &self,
+        doc: &RawDocument,
+        scope: ResourceScope,
+        font_name: &[u8],
+        bytes: &[u8],
+        mapping: &mut Option<Vec<super::decoded_run::SourceText>>,
+    ) -> DecodedText {
         let font = self.find_font(doc, scope, font_name);
         let font = font.as_ref();
         let mut is_identity_h = false;
@@ -2922,7 +2996,7 @@ impl RawFontResolver {
             is_composite = font.is_composite();
             if let Some(cmap) = self.get_to_unicode_map(doc, font) {
                 if is_composite {
-                    if let Some(decoded) = self.decode_composite(doc, font, &cmap, bytes) {
+                    if let Some(decoded) = self.decode_composite(doc, font, &cmap, bytes, mapping) {
                         return decoded;
                     }
                 }
@@ -2932,8 +3006,9 @@ impl RawFontResolver {
                     None
                 };
                 let decoded = match &encoding {
-                    Some(enc) => cmap.decode_with_fallback(bytes, enc),
-                    None => cmap.decode(bytes),
+                    Some(enc) if mapping.is_none() => cmap.decode_with_fallback(bytes, enc),
+                    Some(enc) => cmap.decode_fallback_mapped(bytes, enc, mapping),
+                    None => cmap.decode_mapped(bytes, mapping),
                 };
                 if !decoded.is_empty() {
                     return DecodedText::text(decoded);
@@ -2946,6 +3021,7 @@ impl RawFontResolver {
             if let Some(cmap) = self.get_embedded_cmap(doc, font) {
                 let decoded = cmap.decode(bytes);
                 if !decoded.is_empty() {
+                    *mapping = None;
                     return DecodedText::text(decoded);
                 }
             }
@@ -2959,6 +3035,7 @@ impl RawFontResolver {
                         &registry, &ordering, bytes,
                     ) {
                         if !decoded.is_empty() {
+                            *mapping = None;
                             return DecodedText::text(decoded);
                         }
                     }
@@ -2976,7 +3053,12 @@ impl RawFontResolver {
                     let (registry, ordering) = self
                         .get_cid_system_info_cached(doc, font)
                         .unwrap_or_default();
-                    if let Some(decoded) = cmap.decode(&registry, &ordering, bytes) {
+                    let decoded = if mapping.is_none() {
+                        cmap.decode(&registry, &ordering, bytes)
+                    } else {
+                        cmap.decode_mapped(&registry, &ordering, bytes, mapping)
+                    };
+                    if let Some(decoded) = decoded {
                         return DecodedText::text(decoded);
                     }
                 }
@@ -2986,7 +3068,11 @@ impl RawFontResolver {
         // 5. Try encoding dictionary (BaseEncoding + Differences)
         if let Some(font) = font {
             if let Some(enc_map) = self.get_encoding_map(doc, font) {
-                let decoded = decode_with_encoding_map(bytes, &enc_map);
+                let decoded = if mapping.is_none() {
+                    decode_with_encoding_map(bytes, &enc_map)
+                } else {
+                    decode_with_encoding_map_mapped(bytes, &enc_map, mapping)
+                };
                 if !decoded.is_empty() {
                     return DecodedText::text(decoded);
                 }
@@ -3007,7 +3093,11 @@ impl RawFontResolver {
         //     the binary judgement below: those codes are control characters in Latin-1.
         if let Some(font) = font {
             if let Some(enc_map) = self.program_encoding(doc, font) {
-                let decoded = decode_with_encoding_map(bytes, &enc_map);
+                let decoded = if mapping.is_none() {
+                    decode_with_encoding_map(bytes, &enc_map)
+                } else {
+                    decode_with_encoding_map_mapped(bytes, &enc_map, mapping)
+                };
                 if !decoded.is_empty() {
                     return DecodedText::text(decoded);
                 }
@@ -3029,13 +3119,27 @@ impl RawFontResolver {
             });
         }
         if let Some(standard) = font.and_then(|font| self.standard_font(doc, font)) {
-            let decoded = decode_with_encoding_map(bytes, standard.builtin_encoding());
+            let decoded =
+                decode_with_encoding_map_mapped(bytes, standard.builtin_encoding(), mapping);
             if !decoded.is_empty() {
                 return DecodedText::text(decoded);
             }
         }
 
         // 7. Final fallback
+        if mapping.is_some() && bytes.is_ascii() {
+            if let Some(parts) = mapping {
+                parts.clear();
+            }
+            for i in 0..bytes.len() {
+                super::decoded_run::record(mapping, i..i + 1, i..i + 1);
+                if mapping.is_none() {
+                    break;
+                }
+            }
+        } else {
+            *mapping = None;
+        }
         DecodedText::text(simple)
     }
 
@@ -3045,9 +3149,15 @@ impl RawFontResolver {
         font: &FontRef<'_>,
         to_unicode: &ToUnicodeMap,
         bytes: &[u8],
+        mapping: &mut Option<Vec<super::decoded_run::SourceText>>,
     ) -> Option<DecodedText> {
+        if let Some(mapping) = mapping {
+            mapping.clear();
+        }
         let mut decoded = DecodedText::default();
+        let mut at = 0;
         for code in self.composite_codes(doc, font, bytes)? {
+            let start = decoded.text.len();
             if let Some(text) = to_unicode.mappings.get(&code_value(code)) {
                 decoded.text.push_str(text);
             } else if let Some(text) = self.decode_left_out_code(doc, font, code) {
@@ -3062,6 +3172,8 @@ impl RawFontResolver {
             {
                 decoded.undecoded_codes += 1;
             }
+            super::decoded_run::record(mapping, at..at + code.len(), start..decoded.text.len());
+            at += code.len();
         }
         if decoded.text.is_empty() && decoded.undecoded_codes > 0 {
             return Some(DecodedText::suppressed(

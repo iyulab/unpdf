@@ -148,6 +148,39 @@ impl FontMetrics {
             }
         }
     }
+
+    pub(crate) fn advances_with_ranges(
+        &self,
+        bytes: &[u8],
+    ) -> Vec<(std::ops::Range<usize>, GlyphAdvance)> {
+        let glyphs = self.advances(bytes);
+        let lengths: Vec<usize> = match self {
+            Self::Simple { .. } => vec![1; glyphs.len()],
+            Self::Cid {
+                coding: CidCoding::Identity,
+                ..
+            } => bytes.chunks(2).map(<[u8]>::len).collect(),
+            Self::Cid {
+                coding: CidCoding::Map { cmap, ordering },
+                ..
+            } => cmap
+                .codes(ordering, bytes)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|c| c.len)
+                .collect(),
+        };
+        let mut at = 0;
+        lengths
+            .into_iter()
+            .zip(glyphs)
+            .map(|(len, glyph)| {
+                let range = at..at + len;
+                at += len;
+                (range, glyph)
+            })
+            .collect()
+    }
 }
 
 /// One element of a CIDFont `/W` array, already resolved to plain values.

@@ -453,7 +453,10 @@ def get_page_stats(
         although nothing shows it and still counted when the OCR layer was
         dropped, and in one that paints them), ``margin_text_chars`` (painted
         characters in the top or bottom tenth of the page as shown, its /Rotate
-        applied, where running heads and page numbers sit), ``clipped_text_runs`` (text the clipping
+        applied, where running heads and page numbers sit),
+        ``link_annotations_incomplete`` (a link bound or unresolved URI/text association;
+        text and proven links remain unless annotation reading or indexing was incomplete),
+        ``clipped_text_runs`` (text the clipping
         path or the page box hides entirely, left out), ``blank_text_runs``
         (runs that are only whitespace),
         ``ruled_grids`` / ``ruled_tables`` (ruling-line grids drawn, tables built

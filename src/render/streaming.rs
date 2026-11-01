@@ -391,6 +391,7 @@ mod tests {
             text: "see [3] *now*".to_string(),
             url: "https://example.com".to_string(),
             title: Some(r#"say "hi""#.to_string()),
+            style: Default::default(),
         });
         let mut doc = Document::new();
         let mut page = Page::letter(1);

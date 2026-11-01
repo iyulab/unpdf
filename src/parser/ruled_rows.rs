@@ -395,6 +395,7 @@ mod tests {
     fn span(text: &str, x: f32, y: f32) -> TextSpan {
         TextSpan {
             text: text.to_string(),
+            links: Vec::new(),
             x,
             y,
             width: text.len() as f32 * 5.0,

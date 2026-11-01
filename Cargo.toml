@@ -81,6 +81,7 @@ regex = "1.11"
 unicode-bidi = "0.3"
 unicode-bidi-mirroring = "0.4"
 unicode-normalization = "0.1"
+url = "2.5.8"
 # Metadata and outline strings written in a legacy CJK code page without a byte-order
 # mark (CP949, Shift_JIS, GBK, Big5) — detection and decoding.
 chardetng = "1.0"
@@ -109,6 +110,7 @@ rayon = "1.10"
 crossbeam-channel = "0.5"
 
 [dev-dependencies]
+pulldown-cmark = { version = "=0.13.6", default-features = false }
 criterion = { version = "0.8", features = ["html_reports"] }
 tempfile = "3.14"
 peak_alloc = "0.3"

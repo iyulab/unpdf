@@ -79,12 +79,25 @@ pub(crate) fn apply_differences(map: &mut EncodingMap, differences: &[(u8, Strin
 
 /// Decode a byte sequence using an encoding map.
 pub(crate) fn decode_with_encoding_map(bytes: &[u8], map: &EncodingMap) -> String {
+    decode_with_encoding_map_mapped(bytes, map, &mut None)
+}
+
+pub(crate) fn decode_with_encoding_map_mapped(
+    bytes: &[u8],
+    map: &EncodingMap,
+    mapping: &mut Option<Vec<super::decoded_run::SourceText>>,
+) -> String {
+    if let Some(mapping) = mapping {
+        mapping.clear();
+    }
     let mut result = String::with_capacity(bytes.len());
-    for &b in bytes {
-        if let Some(text) = map.get(&b) {
-            result.push_str(text);
-        }
-        // Skip unmapped codes silently
+    for (i, &b) in bytes.iter().enumerate() {
+        super::decoded_run::append(
+            &mut result,
+            i..i + 1,
+            map.get(&b).map_or("", String::as_str),
+            mapping,
+        );
     }
     result
 }

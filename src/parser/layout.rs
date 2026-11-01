@@ -7,9 +7,12 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap};
 
 use super::backend::{
-    get_number_from_value, ContentOp, PdfBackend, PdfValue, ResourceScope, TextSuppression,
+    get_number_from_value, ContentOp, DecodedRun, PdfBackend, PdfValue, ResourceScope,
+    TextSuppression,
 };
 use super::clip::{Bounds, ClipTracker};
+use super::link::{LinkSpanStyle, PageLinks, TextLink};
+use super::text_ranges::{copy_ranges, push_range};
 use super::text_state::Shift;
 use crate::error::{Error, Result};
 use crate::model::UnreadableFont;
@@ -19,6 +22,8 @@ use crate::model::UnreadableFont;
 pub struct TextSpan {
     /// The text content
     pub text: String,
+    /// URI ownership of exact UTF-8 byte ranges, independent of layout segmentation.
+    pub links: Vec<TextLink>,
     /// X position (left edge)
     pub x: f32,
     /// Y position (baseline)
@@ -69,6 +74,15 @@ const SPACE_EM: f32 = 0.25;
 pub(crate) const COLUMN_GAP_EM: f32 = 0.8;
 
 impl TextSpan {
+    fn append_span_text(&mut self, other: &Self) {
+        copy_ranges(
+            &mut self.links,
+            &other.links,
+            0..other.text.len(),
+            self.text.len(),
+        );
+        self.text.push_str(&other.text);
+    }
     /// The direction of text read left to right, the way most text runs (see
     /// [`TextSpan::direction`]).
     pub const LEFT_TO_RIGHT: [f32; 2] = [1.0, 0.0];
@@ -107,6 +121,7 @@ impl TextSpan {
 
         Self {
             text,
+            links: Vec::new(),
             x,
             y,
             width: 0.0, // Will be calculated later if needed
@@ -318,22 +333,6 @@ impl TextLine {
         }
 
         result
-    }
-
-    /// The line's text broken into per-span pieces, with any gap-inserted space
-    /// attached to the span that precedes it. Each entry is `(text, span_index)`,
-    /// and concatenating the texts reproduces [`Self::text`] (minus BiDi
-    /// reordering, which operates on the joined string). The structured parser
-    /// uses this to build styled inline runs whose spacing matches `text()`.
-    pub(crate) fn styled_segments(&self) -> Vec<(String, usize)> {
-        let mut segs = Vec::with_capacity(self.spans.len());
-        for (i, span) in self.spans.iter().enumerate() {
-            if i > 0 && should_insert_space_between(&self.spans[i - 1], span) {
-                segs.push((" ".to_string(), i - 1));
-            }
-            segs.push((span.text.clone(), i));
-        }
-        segs
     }
 
     /// Where the line's text ends on the right.
@@ -627,6 +626,9 @@ pub struct PageOpCounts {
 /// consumer needs to tell a page that was read well from one that was not.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct PageFacts {
+    /// Supported URI links could not all be preserved. Proven links remain unless bounded
+    /// annotation reading or indexing left their overlap priority unknown.
+    pub link_annotations_incomplete: bool,
     /// Share of the page box painted by images (0–1): the union of every image paint's
     /// rectangle, clipped to the page box.
     pub image_coverage: f32,
@@ -695,6 +697,7 @@ pub struct LayoutAnalyzer<'a> {
     /// `parse_operations`, the reading-order facts each time spans are grouped into lines,
     /// so a re-analysed page reports its last pass.
     page_facts: Cell<PageFacts>,
+    links: RefCell<Option<PageLinks>>,
 }
 
 /// What a page's content stream says about how its text was produced.
@@ -1151,6 +1154,7 @@ impl<'a> LayoutAnalyzer<'a> {
             unreadable_fonts: RefCell::new(Vec::new()),
             undecodable_content_streams: Cell::new(0),
             page_facts: Cell::new(PageFacts::default()),
+            links: RefCell::new(None),
         }
     }
 
@@ -1198,7 +1202,114 @@ impl<'a> LayoutAnalyzer<'a> {
 
     /// What reading the page last analysed found out about it.
     pub fn page_facts(&self) -> PageFacts {
-        self.page_facts.get()
+        let mut facts = self.page_facts.get();
+        facts.link_annotations_incomplete = self
+            .links
+            .borrow()
+            .as_ref()
+            .is_some_and(PageLinks::incomplete);
+        facts
+    }
+
+    fn has_links(&self) -> bool {
+        self.links
+            .borrow()
+            .as_ref()
+            .is_some_and(PageLinks::has_links)
+    }
+
+    pub(crate) fn clear_page_links(&self) -> bool {
+        self.links
+            .borrow()
+            .as_ref()
+            .is_some_and(PageLinks::clear_all_links)
+    }
+
+    fn links_for_run(
+        &self,
+        run: &DecodedRun,
+        position: Option<Shift>,
+        params: &super::text_state::TextParams,
+        matrix: &super::text_state::TextMatrix,
+        ctm: &[f32; 6],
+        clip: &ClipTracker,
+    ) -> Vec<TextLink> {
+        let links = self.links.borrow();
+        let Some(page) = links.as_ref().filter(|p| p.has_links()) else {
+            return Vec::new();
+        };
+        if run.decoded.text.trim().is_empty() || matches!(params.render_mode, 3 | 7) {
+            return Vec::new();
+        }
+        let start = position.unwrap_or_default();
+        let start = matrix.point(start.tx, start.ty + params.rise);
+        let start = apply_ctm(ctm, start.0, start.1);
+        let size = params.size * matrix.vertical_scale() * ctm_y_scale(ctm);
+        let (Some(mut position), Some(glyphs)) = (position, run.glyphs.as_deref()) else {
+            if clip.admits(&run_bounds(start, None, size)) {
+                page.mark_incomplete();
+            }
+            return Vec::new();
+        };
+        let whole = super::backend::TextCluster {
+            text: 0..run.decoded.text.len(),
+            glyphs: 0..glyphs.len(),
+        };
+        let clusters = run
+            .clusters
+            .as_deref()
+            .unwrap_or(std::slice::from_ref(&whole));
+        let mut result = Vec::new();
+        let mut at = 0;
+        for cluster in clusters {
+            if cluster.glyphs.start != at
+                || cluster.glyphs.end > glyphs.len()
+                || run.decoded.text.get(cluster.text.clone()).is_none()
+            {
+                page.mark_incomplete();
+                return Vec::new();
+            }
+            let mut owner = None;
+            let mut first = true;
+            let mut mixed = false;
+            let mut any = false;
+            for glyph in &glyphs[cluster.glyphs.clone()] {
+                let origin = position + params.origin_offset(glyph);
+                let center = matrix.point(
+                    origin.tx + glyph.width * params.size * params.horizontal_scale / 2000.0,
+                    origin.ty + params.rise + params.size * 0.3,
+                );
+                let center = apply_ctm(ctm, center.0, center.1);
+                let point = Bounds {
+                    x0: center.0,
+                    y0: center.1,
+                    x1: center.0,
+                    y1: center.1,
+                };
+                let current = if clip.admits(&point) {
+                    page.owner(center)
+                } else {
+                    None
+                };
+                any |= current.is_some();
+                if first {
+                    owner = current;
+                    first = false;
+                } else if owner != current {
+                    mixed = true;
+                }
+                position += params.glyph_advance(glyph);
+            }
+            at = cluster.glyphs.end;
+            if !cluster.text.is_empty() {
+                if mixed && any {
+                    page.mark_incomplete();
+                } else if let Some(owner) = owner {
+                    push_range(&mut result, cluster.text.clone(), LinkSpanStyle::new(owner));
+                }
+            }
+        }
+        result
     }
 
     /// Record how many tables were built from the page's ruling-line grids.
@@ -1285,6 +1396,19 @@ impl<'a> LayoutAnalyzer<'a> {
         let page_id = pages
             .get(&page_num)
             .ok_or(Error::PageOutOfRange(page_num, pages.len() as u32))?;
+
+        if self
+            .links
+            .borrow()
+            .as_ref()
+            .is_none_or(|links| links.page != *page_id)
+        {
+            *self.links.borrow_mut() = Some(PageLinks::new(
+                *page_id,
+                self.backend.link_annotations(*page_id),
+                self.backend.crop_box(*page_id),
+            ));
+        }
 
         let painted = super::form_xobject::page_operations(self.backend, *page_id)?;
         self.undecodable_content_streams
@@ -1528,6 +1652,8 @@ impl<'a> LayoutAnalyzer<'a> {
                         // The run's text, and how far it moves the text position in text
                         // space — `None` as soon as one string's glyph widths are unknown.
                         let mut text = String::new();
+                        let mut text_links = Vec::new();
+                        let mut spacing_proven = true;
                         let mut advance: Option<Shift> = Some(Shift::default());
                         // `advance` as it stood after the last glyph that is not a word space:
                         // where the run's ink ends. Trailing word spaces and adjustments move
@@ -1572,11 +1698,50 @@ impl<'a> LayoutAnalyzer<'a> {
                             match item {
                                 PdfValue::Str(bytes) => {
                                     drawn = true;
-                                    let decoded = self.backend.decode_text(
-                                        op.scope(page_id),
-                                        &text_state.font_resource,
-                                        bytes,
+                                    // Sanitized-away codes can make glyph and scalar counts coincide.
+                                    let run = if self.has_links() || char_room > 0.0 {
+                                        self.backend.decode_run(
+                                            op.scope(page_id),
+                                            &text_state.font_resource,
+                                            bytes,
+                                        )
+                                    } else {
+                                        DecodedRun {
+                                            decoded: self.backend.decode_text(
+                                                op.scope(page_id),
+                                                &text_state.font_resource,
+                                                bytes,
+                                            ),
+                                            glyphs: self.backend.glyph_advances(
+                                                op.scope(page_id),
+                                                &text_state.font_resource,
+                                                bytes,
+                                            ),
+                                            clusters: None,
+                                        }
+                                    };
+                                    let aligned = run.clusters.as_ref().is_some_and(|clusters| {
+                                        clusters.iter().all(|cluster| {
+                                            cluster.glyphs.len() == 1
+                                                && run
+                                                    .decoded
+                                                    .text
+                                                    .get(cluster.text.clone())
+                                                    .is_some_and(|text| text.chars().count() == 1)
+                                        })
+                                    });
+                                    spacing_proven &= aligned;
+                                    let decoded_links = self.links_for_run(
+                                        &run,
+                                        advance,
+                                        &text_state.params,
+                                        &text_matrix,
+                                        &ctm,
+                                        &clip,
                                     );
+                                    let DecodedRun {
+                                        decoded, glyphs, ..
+                                    } = run;
                                     suppressions.extend(decoded.suppressed);
                                     undecoded_codes += decoded.undecoded_codes;
                                     if let Some(room) = room.take() {
@@ -1589,12 +1754,7 @@ impl<'a> LayoutAnalyzer<'a> {
                                             gaps.push((at, text.len(), from, ink, to));
                                         }
                                     }
-                                    let glyphs = self.backend.glyph_advances(
-                                        op.scope(page_id),
-                                        &text_state.font_resource,
-                                        bytes,
-                                    );
-                                    push_spaced(
+                                    push_spaced_with_links(
                                         &mut text,
                                         &decoded.text,
                                         glyphs.as_deref(),
@@ -1608,6 +1768,8 @@ impl<'a> LayoutAnalyzer<'a> {
                                                 0.0
                                             }
                                         },
+                                        Some((&mut text_links, &decoded_links)),
+                                        aligned,
                                     );
                                     room = Some(char_room);
                                     if let Some(glyphs) = &glyphs {
@@ -1736,7 +1898,8 @@ impl<'a> LayoutAnalyzer<'a> {
                             painted.text(&text, text_state.params.render_mode);
                             let mut span =
                                 TextSpan::new(text, x, y, effective_size, text_state.font.clone());
-                            span.letter_spacing = letter_room;
+                            span.links = text_links;
+                            span.letter_spacing = if spacing_proven { letter_room } else { 0.0 };
                             // A vertical font writes down the page by design and is read as it
                             // always was; any other run not read left to right carries its
                             // direction, to be joined along it.
@@ -1836,8 +1999,20 @@ impl<'a> LayoutAnalyzer<'a> {
         self.page_facts.set(facts);
 
         let mut spans = split_runs_at_filled_gaps(spans, run_gaps);
+        if self.clear_page_links() {
+            for span in &mut spans {
+                span.links.clear();
+            }
+        }
         mark_annotated_strike_outs(&mut spans, &self.backend.struck_out_areas(page_id));
         mark_struck_runs(&mut spans, &ruling_lines);
+        for span in &mut spans {
+            for link in &mut span.links {
+                link.value.bold = span.is_bold;
+                link.value.italic = span.is_italic;
+                link.value.strikethrough = span.is_struck;
+            }
+        }
         Ok((
             join_rotated_runs(spans),
             signals,
@@ -3030,7 +3205,7 @@ pub(crate) fn join_rotated_runs(spans: Vec<TextSpan>) -> Vec<TextSpan> {
                 {
                     current.text.push(' ');
                 }
-                current.text.push_str(&span.text);
+                current.append_span_text(&span);
                 current.width = (along(&span) + span.width - along(current)).max(current.width);
                 current.width_measured &= span.width_measured;
                 current.is_bold &= span.is_bold;
@@ -3159,6 +3334,8 @@ fn split_runs_at_filled_gaps(spans: Vec<TextSpan>, gaps: Vec<RunGap>) -> Vec<Tex
             let (before, after) = (before.to_string(), after.to_string());
             let right = rest.x + rest.width;
             let mut left = rest.clone();
+            left.links.clear();
+            copy_ranges(&mut left.links, &rest.links, 0..before.len(), 0);
             left.text = before;
             left.width = gap.blank_start - left.x;
             left.ink_width = gap.ink_end.map(|ink| (ink - left.x).clamp(0.0, left.width));
@@ -3166,6 +3343,10 @@ fn split_runs_at_filled_gaps(spans: Vec<TextSpan>, gaps: Vec<RunGap>) -> Vec<Tex
             rest.ink_width = rest
                 .ink_width
                 .map(|ink| (rest.x + ink - gap.after_origin.0).max(0.0));
+            let after_from = rest.text.len() - after.len();
+            let mut links = Vec::new();
+            copy_ranges(&mut links, &rest.links, after_from..rest.text.len(), 0);
+            rest.links = links;
             rest.text = after;
             (rest.x, rest.y) = gap.after_origin;
             rest.width = right - rest.x;
@@ -3212,24 +3393,35 @@ fn letter_room(items: &[PdfValue], char_room: f32) -> f32 {
 /// spacing, and the word spacing after a word space (`word_room`) — is a word gap by
 /// [`maybe_insert_space_tj`]'s measure. Only when each glyph decoded to one character, so the
 /// room after a glyph is the room after its character; otherwise the text goes in as decoded.
-fn push_spaced(
+fn push_spaced_with_links(
     text: &mut String,
     decoded: &str,
     glyphs: Option<&[super::backend::GlyphAdvance]>,
     char_room: f32,
     word_room: impl Fn(&super::backend::GlyphAdvance) -> f32,
+    links: Option<(&mut Vec<TextLink>, &[TextLink])>,
+    aligned: bool,
 ) {
+    let mut links = links.filter(|(_, source)| !source.is_empty());
     let chars = decoded.chars().count();
-    let Some(glyphs) = glyphs.filter(|g| g.len() == chars && chars > 1 && char_room > 0.0) else {
+    let Some(glyphs) =
+        glyphs.filter(|g| aligned && g.len() == chars && chars > 1 && char_room > 0.0)
+    else {
+        if let Some((destination, source)) = links {
+            copy_ranges(destination, source, 0..decoded.len(), text.len());
+        }
         text.push_str(decoded);
         return;
     };
     let mut prev: Option<char> = None;
-    for (i, c) in decoded.chars().enumerate() {
+    for (i, (byte, c)) in decoded.char_indices().enumerate() {
         // Spaced-out punctuation — a contents leader's dots — is a run of marks, not words.
         let between_marks = prev.is_some_and(|p| !p.is_alphanumeric()) && !c.is_alphanumeric();
         if let (Some(before), false) = (i.checked_sub(1).map(|j| &glyphs[j]), between_marks) {
             maybe_insert_space_tj(text, char_room + word_room(before));
+        }
+        if let Some((destination, source)) = links.as_mut() {
+            copy_ranges(destination, source, byte..byte + c.len_utf8(), text.len());
         }
         text.push(c);
         prev = Some(c);
@@ -3916,18 +4108,26 @@ fn space_out_wide_tracking(spans: &mut [TextSpan]) {
             // with ordinary letter spacing is not spaced out.
             let room = span.letter_spacing - typical.max(0.0);
             let mut text = String::with_capacity(span.text.len() * 2);
+            let mut links = Vec::new();
             let mut prev: Option<char> = None;
-            for c in span.text.chars() {
+            for (byte, c) in span.text.char_indices() {
                 // Spaced-out punctuation -- a contents leader's dots -- is a run of marks.
                 let between_marks =
                     prev.is_some_and(|p| !p.is_alphanumeric()) && !c.is_alphanumeric();
                 if prev.is_some() && !between_marks && !c.is_whitespace() {
                     maybe_insert_space_tj(&mut text, room);
                 }
+                copy_ranges(
+                    &mut links,
+                    &span.links,
+                    byte..byte + c.len_utf8(),
+                    text.len(),
+                );
                 text.push(c);
                 prev = Some(c);
             }
             spans[i].text = text;
+            spans[i].links = links;
         }
     }
 }
@@ -3980,7 +4180,7 @@ fn merge_fragmented_spans(spans: Vec<TextSpan>) -> Vec<TextSpan> {
                 prev.width_measured &= span.width_measured;
                 // The ink now ends where the later run's does.
                 prev.ink_width = span.ink_width.map(|ink| span.x + ink - prev.x);
-                prev.text.push_str(&span.text);
+                prev.append_span_text(&span);
                 continue;
             }
         }
@@ -4034,7 +4234,7 @@ fn merge_fragmented_spans(spans: Vec<TextSpan>) -> Vec<TextSpan> {
             prev.width = new_end - prev.x;
             prev.width_measured = false;
             prev.ink_width = None;
-            prev.text.push_str(&span.text);
+            prev.append_span_text(&span);
 
             // A merged fragment that now ends in a word space is a completed word:
             // don't let the next fragment chain onto it.
@@ -5188,6 +5388,7 @@ mod tests {
             .enumerate()
             .map(|(i, c)| TextSpan {
                 text: c.to_string(),
+                links: Vec::new(),
                 x: 100.0 + i as f32 * 6.0,
                 y: 500.0,
                 width: 0.0, // width=0 is the fragmentation signal
@@ -5215,6 +5416,7 @@ mod tests {
         let spans = vec![
             TextSpan {
                 text: "Hello".to_string(),
+                links: Vec::new(),
                 x: 100.0,
                 y: 500.0,
                 width: 30.0,
@@ -5231,6 +5433,7 @@ mod tests {
             },
             TextSpan {
                 text: "World".to_string(),
+                links: Vec::new(),
                 x: 145.0, // gap indicates word space
                 y: 500.0,
                 width: 30.0,

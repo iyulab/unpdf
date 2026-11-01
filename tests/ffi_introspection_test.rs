@@ -10,7 +10,7 @@ use std::ffi::CStr;
 use std::os::raw::c_char;
 use std::ptr;
 
-use common::{bordered_table_pdf, image_only_pdf, suppressed_text_run_pdf, text_pdf};
+use common::{bordered_table_pdf, image_only_pdf, page_pdf, suppressed_text_run_pdf, text_pdf};
 use unpdf::ffi::{
     unpdf_free_document, unpdf_free_string, unpdf_get_extraction_quality, unpdf_last_error,
     unpdf_page_stats, unpdf_parse_bytes, unpdf_tables,
@@ -68,6 +68,7 @@ fn page_stats_distinguishes_image_only_page() {
         assert_eq!(v["text_op_count"], 0);
         assert!(v["image_op_count"].as_u64().unwrap() >= 1);
         assert_eq!(v["ocr_text_suppressed"], false);
+        assert_eq!(v["link_annotations_incomplete"], false);
         // A full-page scan: the image covers the page, and there is no text to order.
         assert!(
             (v["image_coverage"].as_f64().unwrap() - 1.0).abs() < 1e-3,
@@ -114,6 +115,23 @@ fn page_stats_reports_text_page() {
         assert_eq!(v["unreadable_fonts"], serde_json::json!([]), "{json}");
 
         unpdf_free_document(doc);
+    }
+}
+
+#[test]
+fn page_stats_reports_incomplete_annotations_after_a_scan_bound() {
+    let bytes = page_pdf(
+        "",
+        &format!("/MediaBox[0 0 595 842]/Annots[{}]", "null ".repeat(4097)),
+        b"BT /F1 12 Tf 72 700 Td (Body text.) Tj ET",
+    );
+    unsafe {
+        let document = unpdf_parse_bytes(bytes.as_ptr(), bytes.len());
+        assert!(!document.is_null());
+        let json = take_string(unpdf_page_stats(document, 1));
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["link_annotations_incomplete"], true, "{json}");
+        unpdf_free_document(document);
     }
 }
 

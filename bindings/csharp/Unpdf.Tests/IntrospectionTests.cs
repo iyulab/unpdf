@@ -45,6 +45,16 @@ public class IntrospectionTests
         var stats = doc.GetPageStats(1);
         Assert.True(stats.TextOpCount >= 1);
         Assert.Equal(0u, stats.ImageOpCount);
+        Assert.False(stats.LinkAnnotationsIncomplete);
+    }
+
+    [Fact]
+    public void GetPageStats_AnnotationScanBound_ReportsIncompleteLinks()
+    {
+        var entries = "/Annots[" + string.Concat(Enumerable.Repeat("null ", 4097)) + "]";
+        using var doc = UnpdfDocument.ParseBytes(PdfFixtures.TextPdf(entries));
+        Assert.True(doc.GetPageStats(1).LinkAnnotationsIncomplete);
+        Assert.Contains("Hello World", doc.PlainText());
     }
 
     [Fact]
@@ -230,14 +240,14 @@ internal static class PdfFixtures
     }
 
     /// <summary>One page with a single line of visible Helvetica text.</summary>
-    public static byte[] TextPdf()
+    public static byte[] TextPdf(string pageEntries = "")
     {
         var content = "BT /F1 12 Tf 72 720 Td (Hello World) Tj ET\n";
         return Assemble(new[]
         {
             "<</Type/Catalog/Pages 2 0 R>>",
             "<</Type/Pages/Kids[3 0 R]/Count 1>>",
-            "<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]" +
+            "<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]" + pageEntries +
                 "/Resources<</Font<</F1 5 0 R>>>>/Contents 4 0 R>>",
             StreamObject($"<</Length {content.Length}>>", content),
             "<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>",
