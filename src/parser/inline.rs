@@ -227,7 +227,7 @@ pub(crate) fn paragraph(text: Text) -> Paragraph {
         return Paragraph::with_text(text.text);
     }
     let mut paragraph = Paragraph::new();
-    for TextRange { range, value } in text.ranges {
+    for TextRange { range, value } in coalesce_links(&text.text, text.ranges) {
         let piece = text.text[range].to_string();
         let inline = value
             .target
@@ -247,6 +247,32 @@ pub(crate) fn paragraph(text: Text) -> Paragraph {
         paragraph.content.push(inline);
     }
     paragraph
+}
+
+/// One link annotation usually covers several spans and often several lines, and the spaces
+/// the reading order puts between them belong to no span. A whitespace-only gap with no target
+/// between two pieces of the same target and style is part of that link's label, so the link
+/// comes out once (`[a changing climate](uri)`) rather than once per word.
+fn coalesce_links(text: &str, ranges: Vec<TextRange<Owner>>) -> Vec<TextRange<Owner>> {
+    let mut out: Vec<TextRange<Owner>> = Vec::with_capacity(ranges.len());
+    let mut ranges = ranges.into_iter().peekable();
+    while let Some(range) = ranges.next() {
+        if range.value.target.is_none() && text[range.range.clone()].trim().is_empty() {
+            if let (Some(previous), Some(next)) = (out.last_mut(), ranges.peek()) {
+                if previous.value.target.is_some()
+                    && previous.value == next.value
+                    && previous.range.end == range.range.start
+                    && range.range.end == next.range.start
+                {
+                    previous.range.end = next.range.end;
+                    ranges.next();
+                    continue;
+                }
+            }
+        }
+        out.push(range);
+    }
+    out
 }
 
 pub(crate) fn clear_links(page: &mut crate::model::Page) {

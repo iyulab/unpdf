@@ -140,6 +140,28 @@ fn unusable_quads_fall_back_to_the_annotation_rectangle() {
 }
 
 #[test]
+fn one_annotation_over_several_words_and_lines_is_one_link() {
+    // Each word its own text object, as many typesetters write them, and the label wrapping
+    // onto a second line under a second annotation rectangle with the same target.
+    let annotations = format!(
+        "{} {}",
+        annotation("72 697 200 709", TARGET),
+        annotation("72 683 120 695", TARGET)
+    );
+    let md = markdown(&parse(&pdf(
+        "BT /F1 10 Tf 72 700 Td (Camels) Tj ET          BT /F1 10 Tf 110 700 Td (in) Tj ET          BT /F1 10 Tf 122 700 Td (a) Tj ET          BT /F1 10 Tf 132 700 Td (changing) Tj ET          BT /F1 10 Tf 72 686 Td (climate) Tj ET",
+        &annotations,
+        "",
+        "",
+    )));
+    assert!(
+        md.contains(&format!("[Camels in a changing climate]({TARGET})")),
+        "{md}"
+    );
+    assert_eq!(md.matches(TARGET).count(), 1, "{md}");
+}
+
+#[test]
 fn later_annotations_win_an_overlap() {
     let annotations = format!(
         "{} {}",
@@ -563,7 +585,12 @@ fn shared_targets_and_final_output_are_bounded_independently() {
         for column in 0..40 {
             let x = 72 + column * 12;
             let y = 700 - row * 30;
-            content.push_str(&format!("BT /F1 10 Tf {x} {y} Td (X) Tj ET "));
+            // An unlinked `|` after each linked `X` keeps the 160 links apart: links to one
+            // target separated only by spaces would come out as one.
+            content.push_str(&format!(
+                "BT /F1 10 Tf {x} {y} Td (X) Tj ET BT /F1 10 Tf {} {y} Td (|) Tj ET ",
+                x + 8
+            ));
             annotations.push_str(&format!(
                 "<</Subtype/Link/Rect[{x} {} {} {}]/A<</S/URI/URI 7 0 R>>>> ",
                 y - 3,
