@@ -45,6 +45,17 @@ public class IntrospectionTests
         var stats = doc.GetPageStats(1);
         Assert.True(stats.TextOpCount >= 1);
         Assert.Equal(0u, stats.ImageOpCount);
+        Assert.Equal(0u, stats.OmittedPageNumberChars);
+    }
+
+    [Fact]
+    public void GetPageStats_OmittedPageNumber_CountsItsCharacters()
+    {
+        using var doc = UnpdfDocument.ParseBytes(
+            PdfFixtures.TextPdf("BT /F1 10 Tf 290 20 Td (Page 12) Tj ET\n"));
+        Assert.Equal(6u, doc.GetPageStats(1).OmittedPageNumberChars);
+        Assert.Contains("Hello World", doc.PlainText());
+        Assert.DoesNotContain("Page 12", doc.PlainText());
     }
 
     [Fact]
@@ -230,9 +241,9 @@ internal static class PdfFixtures
     }
 
     /// <summary>One page with a single line of visible Helvetica text.</summary>
-    public static byte[] TextPdf()
+    public static byte[] TextPdf(string extraContent = "")
     {
-        var content = "BT /F1 12 Tf 72 720 Td (Hello World) Tj ET\n";
+        var content = "BT /F1 12 Tf 72 720 Td (Hello World) Tj ET\n" + extraContent;
         return Assemble(new[]
         {
             "<</Type/Catalog/Pages 2 0 R>>",

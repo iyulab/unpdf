@@ -270,6 +270,13 @@ public sealed class PageStats
     public uint MarginTextChars { get; init; }
 
     /// <summary>
+    /// Non-whitespace Unicode scalar values removed by the page-number filters,
+    /// including decorations. Saturates at <see cref="uint.MaxValue"/>.
+    /// </summary>
+    [JsonPropertyName("omitted_page_number_chars")]
+    public uint OmittedPageNumberChars { get; init; }
+
+    /// <summary>
     /// Text runs the clipping path or the page box hides entirely. Their text is left out.
     /// </summary>
     [JsonPropertyName("clipped_text_runs")]

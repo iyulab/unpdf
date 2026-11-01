@@ -1086,7 +1086,8 @@ unparser_shared::export_string_getter!(
     /// "fill_op_count":N,"ocr_text_suppressed":bool,"suppressed_text_runs":N,"unreadable_fonts":[...],
     /// "undecoded_text_codes":N,
     /// "undecodable_content_streams":N,"image_coverage":F,"rotated_text_runs":N,
-    /// "invisible_text_chars":N,"painted_text_chars":N,"margin_text_chars":N,"clipped_text_runs":N,
+    /// "invisible_text_chars":N,"painted_text_chars":N,"margin_text_chars":N,
+    /// "omitted_page_number_chars":N,"clipped_text_runs":N,
     /// "blank_text_runs":N,"ruled_grids":N,"ruled_tables":N,"reading_regions":N,"column_count":N,
     /// "ambiguous_layout_regions":N}`.
     ///
@@ -1135,6 +1136,8 @@ unparser_shared::export_string_getter!(
     /// - `margin_text_chars`: the painted characters whose baseline is in the top or bottom
     ///   tenth of the page as shown (its `/Rotate` applied), where running heads and page
     ///   numbers sit.
+    /// - `omitted_page_number_chars`: non-whitespace Unicode scalar values removed by the
+    ///   page-number filters, including decorations; saturates at `u32::MAX`.
     /// - `clipped_text_runs`: text runs the clipping path or the page box hides entirely.
     ///   Their text is left out.
     /// - `blank_text_runs`: text runs whose text is only whitespace.
@@ -1186,6 +1189,7 @@ unparser_shared::export_string_getter!(
             "invisible_text_chars": page.invisible_text_chars,
             "painted_text_chars": page.painted_text_chars,
             "margin_text_chars": page.margin_text_chars,
+            "omitted_page_number_chars": page.omitted_page_number_chars,
             "clipped_text_runs": page.clipped_text_runs,
             "blank_text_runs": page.blank_text_runs,
             "ruled_grids": page.ruled_grids,
