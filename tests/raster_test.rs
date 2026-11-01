@@ -2036,10 +2036,7 @@ fn missing_text_is_reported_only_where_its_bounds_can_show() {
         ] {
             let content = format!("{prefix} BT /F1 50 Tf {mode} Tr {position} Td (B) Tj ET");
             let page = render(&unpaintable_text(kind, "", content.as_bytes()), &PT);
-            let expected = if matches!(
-                (mode, kind),
-                (7, MissingText::Font | MissingText::Glyph) | (3 | 7, MissingText::Type3)
-            ) {
+            let expected = if matches!((mode, kind), (7, MissingText::Font | MissingText::Glyph)) {
                 1
             } else {
                 expected
@@ -2374,8 +2371,8 @@ fn text_clipping_does_not_disappear_with_a_temporary_soft_mask() {
 }
 
 #[test]
-fn type3_glyph_procedures_ignore_the_text_rendering_mode() {
-    for mode in 0..=7 {
+fn visible_type3_glyph_procedures_ignore_the_text_rendering_mode() {
+    for mode in [0, 1, 2, 4, 5, 6] {
         let content = format!(
             "BT /F1 50 Tf {mode} Tr 100 100 Td (A) Tj ET \
             1 0 0 rg 300 100 20 20 re f"
@@ -2386,6 +2383,24 @@ fn type3_glyph_procedures_ignore_the_text_rendering_mode() {
         );
         assert_eq!(page.gaps.text_runs, 0, "{content}");
         assert_eq!(px(&page, 120, 842 - 120), [0, 0, 0], "{content}");
+        assert_eq!(px(&page, 310, 842 - 110), RED, "{content}");
+    }
+}
+
+#[test]
+fn invisible_type3_glyphs_advance_without_painting_or_reporting_gaps() {
+    for mode in [3, 7] {
+        let content = format!(
+            "BT /F1 50 Tf {mode} Tr 100 100 Td (AB) Tj 0 Tr (A) Tj ET \
+            1 0 0 rg 300 100 20 20 re f"
+        );
+        let page = render(
+            &unpaintable_text(MissingText::Type3, "", content.as_bytes()),
+            &PT,
+        );
+        assert_eq!(page.gaps.text_runs, 0, "{content}");
+        assert_eq!(px(&page, 120, 842 - 120), WHITE, "{content}");
+        assert_eq!(px(&page, 220, 842 - 120), [0, 0, 0], "{content}");
         assert_eq!(px(&page, 310, 842 - 110), RED, "{content}");
     }
 }

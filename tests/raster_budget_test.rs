@@ -484,3 +484,99 @@ fn checking_a_missing_glyph_through_the_clip_is_charged_and_cancellable() {
         0
     );
 }
+
+#[test]
+fn one_missing_run_fits_a_budget_for_one_visibility_scan() {
+    let widths = "/FirstChar 65/LastChar 66/Widths[1000 1000]";
+    let font = |widths: &str, descriptor: &str| {
+        format!(
+            "<</Type/Font/Subtype/TrueType/BaseFont/UnpdfSquare\
+            /Encoding/WinAnsiEncoding{widths}{descriptor}>>"
+        )
+        .into_bytes()
+    };
+    let missing = "B".repeat(32);
+    let measured = format!("({missing}A) Tj");
+    let unmeasured = format!("[{}] TJ", "(B) ".repeat(32));
+    let glyph = b"1000 0 0 0 1000 1000 d1 0 0 1000 1000 re f";
+    let descriptor = b"<</Type/FontDescriptor/FontName/UnpdfSquare/Flags 4/FontBBox[0 0 0 0]>>";
+    let mut outcomes = Vec::new();
+    for (kind, font, extra, shown, paints_glyph) in [
+        (
+            "missing font",
+            font(widths, "/FontDescriptor 6 0 R"),
+            vec![descriptor.to_vec()],
+            &measured,
+            false,
+        ),
+        (
+            "unmeasured font",
+            font("", "/FontDescriptor 6 0 R"),
+            vec![descriptor.to_vec()],
+            &unmeasured,
+            false,
+        ),
+        (
+            "missing embedded glyph",
+            font(widths, "/FontDescriptor 6 0 R"),
+            vec![
+                b"<</Type/FontDescriptor/FontName/UnpdfSquare/Flags 32\
+                /FontBBox[0 0 0 0]/FontFile2 7 0 R>>"
+                    .to_vec(),
+                stream(include_bytes!("fixtures/square.ttf")),
+            ],
+            &measured,
+            true,
+        ),
+        (
+            "missing Type3 glyph",
+            format!(
+                "<</Type/Font/Subtype/Type3/FontBBox[0 0 0 0]\
+                /FontMatrix[0.001 0 0 0.001 0 0]/CharProcs<</A 6 0 R>>\
+                /Encoding<</Type/Encoding/Differences[65/A/B]>>{widths}/Resources<<>>>>"
+            )
+            .into_bytes(),
+            vec![stream(glyph)],
+            &measured,
+            true,
+        ),
+    ] {
+        let content = format!(
+            "0 0 100 100 re W n BT /F1 2 Tf 10 10 Td {shown} ET \
+            0 0 1 rg 10 20 5 5 re f"
+        );
+        let pdf = square_page(
+            "/Font<</F1 5 0 R>>",
+            content.as_bytes(),
+            [vec![font], extra].concat(),
+        );
+        let mut spent = 0;
+        let painted = paint(&pdf, &PT, &mut |work| {
+            spent += work;
+            if spent > 4 * PAGE {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        });
+        let complete = match painted {
+            Ok(page) => {
+                assert_eq!(page.gaps.text_runs, 1, "{kind}");
+                let pixel =
+                    |x: usize, y: usize| &page.rgba[(y * 100 + x) * 4..(y * 100 + x) * 4 + 3];
+                assert_eq!(pixel(12, 77), [0, 0, 255], "{kind}");
+                if paints_glyph {
+                    assert!(pixel(75, 89).iter().all(|&v| v < 128), "{kind}");
+                }
+                true
+            }
+            Err(Error::RasterStopped) => false,
+            Err(error) => panic!("{kind}: {error}"),
+        };
+        outcomes.push((kind, complete));
+    }
+    assert!(
+        outcomes.iter().all(|(_, complete)| *complete),
+        "{outcomes:?}"
+    );
+}
