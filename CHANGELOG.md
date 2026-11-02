@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.52.0 — 2026-11-02
+
+### Added
+
+- **Breaking: link annotations come through to Markdown and HTML.** Text a URI link annotation
+  covers is written as a link, `[label](uri)` in Markdown and `<a href>` in HTML, through
+  reading order, right-to-left text and table cells; the label keeps its styling. A relative URI
+  is resolved against the document's `/URI /Base` by RFC 3986. Only `http`, `https`, `ftp`,
+  `mailto` and `tel` targets, and relative ones, become links; internal destinations and other
+  actions stay plain text. One annotation over several words or lines is one link. A heading that
+  holds a link is written plain apart from the link, as a heading without one is. Reading
+  annotations is bounded (count, areas, URI length, geometry work and output size); when a bound
+  is reached, or a link's text cannot be placed, the page reports
+  `link_annotations_incomplete` (page JSON, `unpdf_page_stats`, .NET
+  `PageStats.LinkAnnotationsIncomplete`, Python `get_page_stats`), and text is never lost.
+  `InlineContent::Link` gains a `style` field: Rust code that builds or matches it exhaustively
+  needs it. (#26, @erkurtharun)
+- **A page reports the page-number text it leaves out.** `omitted_page_number_chars` counts the
+  non-whitespace characters the margin page-number filters removed, decorations such as `Page`
+  or dashes included (page JSON, `unpdf_page_stats`, .NET `PageStats.OmittedPageNumberChars`,
+  Python `get_page_stats`). The fallback text path now removes page numbers as the main path
+  does. (#25, @erkurtharun)
+
+### Fixed
+
+- **A rendered page counts only the text it could not show where it would show.** A glyph the
+  renderer cannot draw is counted in `RasterGaps::text_runs` only when its declared font box,
+  placed on the page, meets the raster and the active clip; with no usable box it is counted as
+  before. Checking the clip is charged to the painting budget. A font is now looked up in the
+  resources current when `Tf` set it; text in a clipping render mode that shows no glyph clips
+  everything, as the text clip it builds is empty; and a missing glyph in render mode 7 is
+  counted, as the clip it should add is lost. (#24, @erkurtharun)
+
 ## 0.51.0 — 2026-10-27
 
 ### Added
