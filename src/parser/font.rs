@@ -321,7 +321,9 @@ pub(crate) fn parse_to_unicode_cmap(data: &[u8]) -> Option<ToUnicodeMap> {
                     };
                     rest = r;
                     for (i, code) in (lo..=hi).enumerate() {
-                        let dst = dst_start + i as u32;
+                        let Some(dst) = dst_start.checked_add(i as u32) else {
+                            break;
+                        };
                         if let Some(c) = char::from_u32(dst) {
                             if let Some(s) = sanitize_unicode(c.to_string()) {
                                 mappings.insert(code, s);
@@ -615,7 +617,9 @@ fn parse_cmap_format12(data: &[u8]) -> Option<HashMap<u32, u16>> {
         }
 
         for code in start_char..=end_char {
-            let gid = start_gid + (code - start_char);
+            let Some(gid) = start_gid.checked_add(code - start_char) else {
+                break;
+            };
             if gid != 0 && gid <= 0xFFFF {
                 result.insert(code, gid as u16);
             }
@@ -792,6 +796,14 @@ endbfchar";
         // Range 2: <0030>-<0039> starting at U+0030 → 0..9
         assert_eq!(map.mappings.get(&0x0030), Some(&"0".to_string()));
         assert_eq!(map.mappings.get(&0x0039), Some(&"9".to_string()));
+    }
+
+    #[test]
+    fn test_parse_to_unicode_cmap_bfrange_past_u32_max_maps_nothing() {
+        let cmap = b"1 beginbfchar <02> <0041> endbfchar
+1 beginbfrange <00> <01> <FFFFFFFF> endbfrange";
+        let map = parse_to_unicode_cmap(cmap).unwrap();
+        assert_eq!(map.mappings, BTreeMap::from([(2, "A".to_string())]));
     }
 
     // ---------------------------------------------------------------------------
@@ -1137,5 +1149,17 @@ endbfchar";
             Some(HashMap::new()),
             "an inverted group must be skipped, not panic or fabricate mappings"
         );
+    }
+
+    #[test]
+    fn test_parse_cmap_format12_glyph_ids_past_u32_max_map_nothing() {
+        let mut subtable = Vec::new();
+        subtable.extend_from_slice(&12u16.to_be_bytes());
+        subtable.extend_from_slice(&[0; 10]);
+        subtable.extend_from_slice(&1u32.to_be_bytes());
+        subtable.extend_from_slice(&0x41u32.to_be_bytes());
+        subtable.extend_from_slice(&0x43u32.to_be_bytes());
+        subtable.extend_from_slice(&u32::MAX.to_be_bytes());
+        assert_eq!(parse_cmap_format12(&subtable), Some(HashMap::new()));
     }
 }

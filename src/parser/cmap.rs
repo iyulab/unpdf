@@ -189,8 +189,11 @@ impl CMapDef {
         let below = self
             .ranges
             .partition_point(|r| (r.len, r.lo) <= (len, code));
-        let range = self.ranges.get(below.checked_sub(1)?)?;
-        (range.len == len && code <= range.hi).then(|| range.cid + (code - range.lo))
+        let range = self
+            .ranges
+            .get(below.checked_sub(1)?)
+            .filter(|r| r.len == len && code <= r.hi)?;
+        range.cid.checked_add(code - range.lo)
     }
 }
 
@@ -566,5 +569,16 @@ endcmap end end";
         assert_eq!(def.cid_of(2, 0x44), None);
         assert_eq!(def.cid_of(1, 0x41), Some(99));
         assert_eq!(def.cid_of(1, 0x42), None);
+    }
+
+    #[test]
+    fn a_code_whose_cid_would_pass_u32_max_is_unmapped() {
+        let map = parsed(
+            b"1 begincodespacerange <00> <FF> endcodespacerange
+              1 begincidrange <00> <FF> 4294967295 endcidrange",
+        );
+        let codes = map.codes("Korea1", &[0x00, 0x01, 0x02]).unwrap();
+        let cids: Vec<u32> = codes.iter().map(|c| c.cid).collect();
+        assert_eq!(cids, [u32::MAX, 0, 0]);
     }
 }

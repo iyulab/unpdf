@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A code range whose target passes `u32::MAX` no longer overflows.** A `ToUnicode` `bfrange`
+  such as `<00> <01> <FFFFFFFF>`, an embedded CMap's `cidrange` and an embedded TrueType `cmap`
+  format-12 group overflowed while they were read -- a panic in a build with overflow checks,
+  and otherwise a code read as another. A code whose target would pass the limit now maps
+  nothing, as a code the font leaves out.
+
 ## 0.52.0 — 2026-11-02
 
 ### Added
