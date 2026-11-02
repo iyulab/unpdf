@@ -6,9 +6,10 @@ use serde::{Deserialize, Serialize};
 
 /// A font whose text runs were discarded on a page, and why.
 ///
-/// Attributes [`Page::suppressed_text_runs`] to the fonts that caused it: the sum of
-/// `runs` over a page's [`Page::unreadable_fonts`] equals that page's
-/// `suppressed_text_runs`.
+/// Attributes [`Page::suppressed_text_runs`] and [`Page::suppressed_text_codes`] to the fonts
+/// that caused them: the sums of `runs` and of `codes` over a page's
+/// [`Page::unreadable_fonts`] equal that page's `suppressed_text_runs` and
+/// `suppressed_text_codes`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UnreadableFont {
     /// The font's `/BaseFont`, as written (a subset prefix such as `ABCDEF+` is kept).
@@ -22,6 +23,10 @@ pub struct UnreadableFont {
 
     /// Text runs of this font discarded for this reason on the page.
     pub runs: usize,
+
+    /// Codes in those runs, as [`Page::suppressed_text_codes`] counts them.
+    #[serde(default)]
+    pub codes: u32,
 }
 
 /// A single page in the document.
@@ -65,6 +70,16 @@ pub struct Page {
     /// discarded. Omitted from JSON when empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unreadable_fonts: Vec<UnreadableFont>,
+
+    /// Codes in the runs counted by [`Self::suppressed_text_runs`], whatever their rendering
+    /// mode, to weigh the text lost against `painted_text_chars` and `invisible_text_chars`.
+    ///
+    /// A simple font's code is a byte; a composite font's is as long as its `/Encoding` makes
+    /// it and counts only when its glyph advances; a string the `/Encoding` cannot split counts
+    /// none. The [`UnreadableFont::codes`] sum to it, so `unmapped_codes` entries, whose glyphs
+    /// the page may show, can be left out. Omitted from JSON when 0.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub suppressed_text_codes: u32,
 
     /// Content streams of this page that could not be decoded.
     ///
@@ -222,6 +237,7 @@ impl Page {
             ocr_text_suppressed: false,
             suppressed_text_runs: 0,
             unreadable_fonts: Vec::new(),
+            suppressed_text_codes: 0,
             undecodable_content_streams: 0,
             text_op_count: 0,
             image_op_count: 0,

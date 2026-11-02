@@ -130,6 +130,8 @@ public class IntrospectionTests
         Assert.Equal("NoMap", font.Name);
         Assert.Equal("composite_unresolved", font.Reason);
         Assert.Equal(stats.SuppressedTextRuns, font.Runs);
+        Assert.Equal(2u, font.Codes);
+        Assert.Equal(font.Codes, stats.SuppressedTextCodes);
     }
 
     [Fact]

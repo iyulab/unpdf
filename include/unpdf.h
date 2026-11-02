@@ -300,7 +300,7 @@ char* unpdf_get_extraction_quality(const UnpdfDocument* doc);
  * Per-page statistics as a JSON object:
  * {"page":N,"rotation":N,"text_op_count":N,"image_op_count":N,"form_op_count":N,
  *  "fill_op_count":N,"ocr_text_suppressed":bool,"suppressed_text_runs":N,
- *  "undecoded_text_codes":N,
+ *  "suppressed_text_codes":N,"undecoded_text_codes":N,
  *  "undecodable_content_streams":N,"image_coverage":F,"bilevel_image_coverage":F,
  *  "rotated_text_runs":N,
  *  "invisible_text_chars":N,"painted_text_chars":N,"margin_text_chars":N,
@@ -310,9 +310,14 @@ char* unpdf_get_extraction_quality(const UnpdfDocument* doc);
  *
  * suppressed_text_runs and undecodable_content_streams are this page's share
  * of the document-level counts of the same name in
- * unpdf_get_extraction_quality. undecoded_text_codes counts codes a composite
- * font's ToUnicode and own data give no character although their glyph
- * advances, in runs that give other text.
+ * unpdf_get_extraction_quality. suppressed_text_codes counts the codes in the
+ * discarded runs, whatever their rendering mode, to weigh the text lost against
+ * painted_text_chars and invisible_text_chars. A simple font's code is a byte;
+ * a composite font's is as long as its /Encoding makes it and counts only when
+ * its glyph advances; a string the /Encoding cannot split counts none.
+ * undecoded_text_codes counts codes a composite font's ToUnicode and own data
+ * give no character although their glyph advances, in runs that give other
+ * text.
  *
  * text_op_count counts text-showing operators (Tj/TJ/'/"); image_op_count
  * counts image paints (Do of anything but a Form XObject, and inline images);

@@ -91,6 +91,7 @@ fn page_stats_distinguishes_image_only_page() {
             "clipped_text_runs",
             "blank_text_runs",
             "undecoded_text_codes",
+            "suppressed_text_codes",
             "ruled_grids",
             "ruled_tables",
             "ambiguous_layout_regions",
@@ -218,10 +219,13 @@ fn page_stats_names_the_unreadable_font() {
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(
             v["unreadable_fonts"],
-            serde_json::json!([{"name": "NoMap", "reason": "composite_unresolved", "runs": 1}]),
+            serde_json::json!([
+                {"name": "NoMap", "reason": "composite_unresolved", "runs": 1, "codes": 2}
+            ]),
             "{json}"
         );
         assert_eq!(v["suppressed_text_runs"], 1, "{json}");
+        assert_eq!(v["suppressed_text_codes"], 2, "{json}");
 
         unpdf_free_document(doc);
     }

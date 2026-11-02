@@ -11,6 +11,14 @@
   It is read from the image dictionaries, nothing decoded, so a black-and-white page scan can be
   told from a photograph or a figure that covers as much of the page. `Page` and
   `parser::PageFacts` gain the field: Rust code that builds or matches either exhaustively needs it.
+- **Breaking: a page reports how many codes its discarded text runs held.** A page that lost one
+  word and a page that lost all its text could report the same `suppressed_text_runs`.
+  `suppressed_text_codes` (page JSON, `unpdf_page_stats`, .NET `PageStats.SuppressedTextCodes`,
+  Python `get_page_stats`) counts the codes in those runs, so the text lost can be weighed
+  against `painted_text_chars`; each `unreadable_fonts` entry carries its share in `codes`, so a
+  reason such as `unmapped_codes`, whose glyphs the page may show, can be left out.
+  `UnreadableFont` gains `codes` and `DecodedText` gains `suppressed_codes`: Rust code that
+  builds either with a struct literal needs the field.
 
 ## 0.52.3 — 2026-11-03
 

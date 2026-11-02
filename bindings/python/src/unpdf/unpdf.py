@@ -427,20 +427,28 @@ def get_page_stats(
         ``suppressed_text_runs``,
         ``unreadable_fonts``, ``undecodable_content_streams``. Text and images inside the Form XObjects
         the page paints are counted in ``text_op_count`` / ``image_op_count``;
-        ``form_op_count`` counts the form paints themselves. The last two are this page's share of the
+        ``form_op_count`` counts the form paints themselves. ``suppressed_text_runs`` and
+        ``undecodable_content_streams`` are this page's share of the
         document-level totals of the same name reported by
         :func:`get_extraction_quality` — text runs the font decoder could not read
         and discarded, and content streams that could not be decoded.
 
         ``unreadable_fonts`` is the list of fonts behind ``suppressed_text_runs``:
-        ``{"name", "reason", "runs"}`` per font and reason, in order of first
+        ``{"name", "reason", "runs", "codes"}`` per font and reason, in order of first
         loss (``[]`` when nothing was discarded). ``name`` is the font's
         ``/BaseFont`` (its resource name when it has none); ``reason`` is
         ``"composite_unresolved"`` (a Type0/CID font whose codes map to no text),
         ``"binary_density"`` (a simple font whose decode was binary noise) or
         ``"unmapped_codes"`` (a font that draws glyphs for codes it gives no
         character, its text lost) — treat any other value as a generic
-        "unreadable". The ``runs`` sum to ``suppressed_text_runs``.
+        "unreadable". The ``runs`` sum to ``suppressed_text_runs``, the ``codes`` to
+        ``suppressed_text_codes``, so ``"unmapped_codes"`` entries, whose glyphs the
+        page may show, can be left out. ``suppressed_text_codes`` counts the codes in
+        the discarded runs, whatever their rendering mode, to weigh the text lost
+        against ``painted_text_chars`` and ``invisible_text_chars``. A simple font's
+        code is a byte; a composite font's is as long as its ``/Encoding`` makes it
+        and counts only when its glyph advances; a string the ``/Encoding`` cannot
+        split counts none.
         ``undecoded_text_codes`` counts codes a composite font's ``ToUnicode`` and
         own data give no character although their glyph advances, in runs that
         give other text.

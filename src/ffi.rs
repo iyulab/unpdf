@@ -1084,7 +1084,7 @@ unparser_shared::export_string_getter!(
     ///
     /// Returns `{"page":N,"rotation":N,"text_op_count":N,"image_op_count":N,"form_op_count":N,
     /// "fill_op_count":N,"ocr_text_suppressed":bool,"suppressed_text_runs":N,"unreadable_fonts":[...],
-    /// "undecoded_text_codes":N,
+    /// "suppressed_text_codes":N,"undecoded_text_codes":N,
     /// "undecodable_content_streams":N,"image_coverage":F,"bilevel_image_coverage":F,
     /// "rotated_text_runs":N,
     /// "invisible_text_chars":N,"painted_text_chars":N,"margin_text_chars":N,
@@ -1098,14 +1098,21 @@ unparser_shared::export_string_getter!(
     /// - `suppressed_text_runs` / `undecodable_content_streams`: this page's share of the
     ///   document-level counts of the same name in `unpdf_get_extraction_quality`.
     /// - `unreadable_fonts`: the fonts behind `suppressed_text_runs`, an array of
-    ///   `{"name":S,"reason":S,"runs":N}` -- one entry per font and reason, in the order each
-    ///   first lost a run; always present, `[]` when nothing was discarded. `name` is the
-    ///   font's `/BaseFont` (its resource name when it has none). `reason` is
+    ///   `{"name":S,"reason":S,"runs":N,"codes":N}` -- one entry per font and reason, in the
+    ///   order each first lost a run; always present, `[]` when nothing was discarded. `name`
+    ///   is the font's `/BaseFont` (its resource name when it has none). `reason` is
     ///   `"composite_unresolved"` (a Type0/CID font whose codes map to no text),
     ///   `"binary_density"` (a simple font whose decode was binary noise) or
     ///   `"unmapped_codes"` (a font that draws glyphs for codes it gives no character,
     ///   its text lost); more values may be added, so treat an unknown one as a generic
-    ///   "unreadable". The `runs` of all entries sum to `suppressed_text_runs`.
+    ///   "unreadable". The `runs` of all entries sum to `suppressed_text_runs`, their `codes`
+    ///   to `suppressed_text_codes`, so `"unmapped_codes"` entries, whose glyphs the page may
+    ///   show, can be left out.
+    /// - `suppressed_text_codes`: the codes in the discarded runs, whatever their rendering
+    ///   mode, to weigh the text lost against `painted_text_chars` and `invisible_text_chars`.
+    ///   A simple font's code is a byte; a composite font's is as long as its `/Encoding` makes
+    ///   it and counts only when its glyph advances; a string the `/Encoding` cannot split
+    ///   counts none.
     /// - `undecoded_text_codes`: codes a composite font's `ToUnicode` and own data give no
     ///   character although their glyph advances, in runs that give other text.
     /// - `text_op_count`: number of text-showing operators (`Tj`/`TJ`/`'`/`"`),
@@ -1190,6 +1197,7 @@ unparser_shared::export_string_getter!(
             "ocr_text_suppressed": page.ocr_text_suppressed,
             "suppressed_text_runs": page.suppressed_text_runs,
             "unreadable_fonts": page.unreadable_fonts,
+            "suppressed_text_codes": page.suppressed_text_codes,
             "undecoded_text_codes": page.undecoded_text_codes,
             "undecodable_content_streams": page.undecodable_content_streams,
             "image_coverage": page.image_coverage,

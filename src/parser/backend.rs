@@ -677,6 +677,9 @@ pub struct DecodedText {
     pub suppressed: Option<TextSuppression>,
     /// Codes left without a character although their glyph advances.
     pub undecoded_codes: u32,
+    /// The codes of a discarded run, counted as `undecoded_codes` counts them (a simple
+    /// font's byte, a composite font's code that advances); 0 unless `suppressed` is set.
+    pub suppressed_codes: u32,
 }
 
 impl DecodedText {
@@ -686,6 +689,7 @@ impl DecodedText {
             text,
             suppressed: None,
             undecoded_codes: 0,
+            suppressed_codes: 0,
         }
     }
 
@@ -695,6 +699,7 @@ impl DecodedText {
             text: String::new(),
             suppressed: Some(reason),
             undecoded_codes: 0,
+            suppressed_codes: 0,
         }
     }
 }
@@ -1744,6 +1749,17 @@ fn inline_image_parts(body: &[u8]) -> Option<(RawPdfDict, &[u8])> {
         .or_else(|| data.strip_suffix(b" "))
         .unwrap_or(data);
     Some((dict, data))
+}
+
+fn count_u32(n: usize) -> u32 {
+    u32::try_from(n).unwrap_or(u32::MAX)
+}
+
+fn has_advance(metrics: &FontMetrics, code: &[u8]) -> bool {
+    metrics
+        .advances(code)
+        .iter()
+        .any(|g| g.vertical.map_or(g.width != 0.0, |v| v.advance != 0.0))
 }
 
 /// Read an axial (type 2) or radial (type 3) shading dictionary.
@@ -3148,7 +3164,10 @@ impl RawFontResolver {
         // wrong for them and only produces mojibake (e.g. `/Encoding /KSC-EUC-H` fonts
         // without ToUnicode), so emit nothing rather than unreadable text.
         if is_identity_h || is_composite {
-            return DecodedText::suppressed(TextSuppression::CompositeUnresolved);
+            return DecodedText {
+                suppressed_codes: font.map_or(0, |font| self.advancing_codes(doc, font, bytes)),
+                ..DecodedText::suppressed(TextSuppression::CompositeUnresolved)
+            };
         }
 
         // 5b. A font that embeds its program and gives no `/Encoding` uses the program's
@@ -3176,11 +3195,14 @@ impl RawFontResolver {
         if is_likely_binary(&simple) {
             let unmapped =
                 bytes.iter().all(|&b| b < 0x20) && font.is_some_and(|f| f.has_own_glyphs(doc));
-            return DecodedText::suppressed(if unmapped {
-                TextSuppression::UnmappedCodes
-            } else {
-                TextSuppression::BinaryDensity
-            });
+            return DecodedText {
+                suppressed_codes: count_u32(bytes.len()),
+                ..DecodedText::suppressed(if unmapped {
+                    TextSuppression::UnmappedCodes
+                } else {
+                    TextSuppression::BinaryDensity
+                })
+            };
         }
         if let Some(standard) = font.and_then(|font| self.standard_font(doc, font)) {
             let decoded =
@@ -3226,25 +3248,36 @@ impl RawFontResolver {
                 decoded.text.push_str(text);
             } else if let Some(text) = self.decode_left_out_code(doc, font, code) {
                 decoded.text.push_str(&text);
-            } else if self
-                .with_font_metrics(doc, font, |m| m.advances(code))
-                .is_none_or(|glyphs| {
-                    glyphs
-                        .iter()
-                        .any(|g| g.vertical.map_or(g.width != 0.0, |v| v.advance != 0.0))
-                })
-            {
+            } else if self.code_advances(doc, font, code) {
                 decoded.undecoded_codes += 1;
             }
             super::decoded_run::record(mapping, at..at + code.len(), start..decoded.text.len());
             at += code.len();
         }
         if decoded.text.is_empty() && decoded.undecoded_codes > 0 {
-            return Some(DecodedText::suppressed(
-                TextSuppression::CompositeUnresolved,
-            ));
+            return Some(DecodedText {
+                suppressed_codes: decoded.undecoded_codes,
+                ..DecodedText::suppressed(TextSuppression::CompositeUnresolved)
+            });
         }
         Some(decoded)
+    }
+
+    fn code_advances(&self, doc: &RawDocument, font: &FontRef<'_>, code: &[u8]) -> bool {
+        self.with_font_metrics(doc, font, |m| has_advance(m, code))
+            .unwrap_or(true)
+    }
+
+    fn advancing_codes(&self, doc: &RawDocument, font: &FontRef<'_>, bytes: &[u8]) -> u32 {
+        let Some(codes) = self.composite_codes(doc, font, bytes) else {
+            return 0;
+        };
+        let advancing = self
+            .with_font_metrics(doc, font, |m| {
+                codes.iter().filter(|code| has_advance(m, code)).count()
+            })
+            .unwrap_or(codes.len());
+        count_u32(advancing)
     }
 
     fn composite_codes<'b>(
