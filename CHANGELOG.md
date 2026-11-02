@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **A page's size is read before it is painted.** `PdfParser::page_size(page, region)` returns
+  the `PageSize`, in points, that `render_page` paints, crop box and `/Rotate` applied, and
+  `PageSize::pixels(dpi)` the pixels a `dpi` paints, by the arithmetic `render_page` sizes its
+  bitmap with, so a caller can size a bitmap or check a candidate `dpi` before painting. C ABI:
+  `unpdf_page_size`, `unpdf_page_pixels`; Python: `Document.page_size`, `PageSize.pixels`;
+  .NET: `UnpdfDocument.GetPageSize`, `PageSize.Pixels`.
+
 ## 0.52.0 — 2026-11-02
 
 ### Added

@@ -5,6 +5,7 @@ unpdf - Python bindings for unpdf PDF extraction library.
 from .unpdf import (
     Document,
     ErrorKind,
+    PageSize,
     ParseOptions,
     RenderOptions,
     RenderedPage,
@@ -29,6 +30,7 @@ from .unpdf import (
 __all__ = [
     "Document",
     "ErrorKind",
+    "PageSize",
     "ParseOptions",
     "RenderOptions",
     "RenderedPage",

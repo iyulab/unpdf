@@ -187,6 +187,11 @@ for (var n = 1; n <= doc.SectionCount; n++)
 }
 ```
 
+`GetPageSize` reads a page's size in points as displayed, its `/Rotate` applied, without
+painting, and `size.Pixels(dpi)` gives the pixels `RenderPage` paints at that `Dpi`.
+`72f * edge / Math.Max(size.Width, size.Height)` is a candidate `Dpi` for a long edge of `edge`
+pixels: rounding can land it a pixel off, so check it with `Pixels`.
+
 ## API Reference
 
 ### `UnpdfDocument`
@@ -195,8 +200,9 @@ for (var n = 1; n <= doc.SectionCount; n++)
 |--------|-------------|
 | `static UnpdfDocument ParseFile(string path, ParseOptions? options = null)` | Parse a PDF from disk. |
 | `static UnpdfDocument ParseBytes(byte[] data, ParseOptions? options = null)` | Parse a PDF from memory. |
-| `static UnpdfDocument OpenFile(string path, ParseOptions? options = null)` / `OpenBytes(byte[] data, ...)` | Open without extracting: content is extracted on first use; `PageCount` and `RenderPage` never need it. |
+| `static UnpdfDocument OpenFile(string path, ParseOptions? options = null)` / `OpenBytes(byte[] data, ...)` | Open without extracting: content is extracted on first use; `PageCount`, `GetPageSize` and `RenderPage` never need it. |
 | `int PageCount` | Pages in the page tree (every page, whatever `ParseOptions` selects); no extraction. |
+| `PageSize GetPageSize(int pageNumber, PageRegion region = PageRegion.Crop)` | A page's `Width` and `Height` in points as `RenderPage` paints it; no extraction. `Pixels(float dpi)` gives its pixels at a `Dpi`. |
 | `static string Version` | Native library version. |
 | `string ToMarkdown(MarkdownOptions? options = null)` | Render the whole document as Markdown. |
 | `string ToText()` | Render the whole document as plain text. |

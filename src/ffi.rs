@@ -57,12 +57,13 @@ fn json_err(e: serde_json::Error) -> FfiError {
 }
 
 /// A document, and the parser that read it — kept so a page can be painted
-/// ([`unpdf_render_page`]) or the pages counted ([`unpdf_page_count`]) without reading the
-/// file again.
+/// ([`unpdf_render_page`]), measured ([`unpdf_page_size`]) or the pages counted
+/// ([`unpdf_page_count`]) without reading the file again.
 ///
 /// The parse entry points extract the document when they open it. The open entry points
 /// (`unpdf_open_*`) only open it: the document is extracted the first time something asks for
-/// its content, so a caller that only counts or paints pages never pays for extraction.
+/// its content, so a caller that only counts, measures or paints pages never pays for
+/// extraction.
 pub struct HeldDocument {
     document: std::sync::OnceLock<Document>,
     parser: Option<crate::PdfParser>,
@@ -98,6 +99,15 @@ impl HeldDocument {
         })?;
         let document = parser.parse().map_err(ffi_err)?;
         Ok(self.document.get_or_init(|| document))
+    }
+
+    fn parser(&self) -> Result<&crate::PdfParser, FfiError> {
+        self.parser.as_ref().ok_or_else(|| {
+            (
+                ErrorKind::Render as c_int,
+                "this document handle holds no parser to render with".to_string(),
+            )
+        })
     }
 
     /// The document's pages, counted in its page tree — every page, whatever the options
@@ -763,8 +773,9 @@ pub unsafe extern "C" fn unpdf_parse_bytes_with_options(
 /// Opening reads the file's structure — its cross-reference table, its page tree, and with
 /// a `password` its encryption — and is what fails for a file that is not a PDF. The content
 /// is extracted the first time something asks for it (`unpdf_to_markdown`, `unpdf_get_title`,
-/// ...), with the options given here; `unpdf_page_count` and `unpdf_render_page` never need
-/// it. A caller that only counts or paints pages pays for neither.
+/// ...), with the options given here; `unpdf_page_count`, `unpdf_page_size` and
+/// `unpdf_render_page` never need it. A caller that only counts, measures or paints pages pays
+/// for neither.
 ///
 /// # Safety
 ///
@@ -1294,6 +1305,92 @@ struct FfiRasterOptions {
     max_work: Option<u64>,
 }
 
+/// A region name as `unpdf_render_page` and `unpdf_page_size` take it: `"crop"` (default
+/// when absent) or `"media"`.
+fn page_region(name: Option<&str>) -> Result<crate::parser::raster::PageRegion, FfiError> {
+    match name {
+        None | Some("crop") => Ok(crate::parser::raster::PageRegion::Crop),
+        Some("media") => Ok(crate::parser::raster::PageRegion::Media),
+        Some(other) => Err(invalid_argument(format!(
+            "region must be \"crop\" or \"media\", got {other:?}"
+        ))),
+    }
+}
+
+#[derive(serde::Serialize)]
+struct FfiPageSize {
+    width: f32,
+    height: f32,
+}
+
+unparser_shared::export_string_getter!(
+    /// Get a page's size before painting it, as JSON `{"width":F,"height":F}` in points
+    /// (1/72 inch): the size of the page as `unpdf_render_page` paints `region`, its `/Rotate`
+    /// applied. `unpdf_page_pixels` gives the pixels a `dpi` paints it in.
+    ///
+    /// Like `unpdf_render_page` it needs no extraction: on a handle from `unpdf_open_*` it reads
+    /// only what opening read.
+    ///
+    /// # Safety
+    ///
+    /// - `doc` must be a valid document handle.
+    /// - `page_number` is 1-indexed.
+    /// - `region` must be null (the crop box) or a valid null-terminated UTF-8 string, `"crop"`
+    ///   (what a viewer shows) or `"media"` (the whole sheet).
+    /// - Returns null on error (`PageOutOfRange`, `Render` for a box too large for a finite
+    ///   size, `InvalidArgument`); see `unpdf_last_error`.
+    /// - The returned string must be freed with `unpdf_free_string`.
+    LAST_ERROR,
+    unpdf_page_size(doc: UnpdfDocument, page_number: c_int, region: *const c_char),
+    {
+        let region = if region.is_null() {
+            None
+        } else {
+            Some(unparser_shared::ffi::c_str_utf8(region)?)
+        };
+        let region = page_region(region)?;
+        let page_number = u32::try_from(page_number).unwrap_or(0);
+        let size = (*doc).inner.parser()?.page_size(page_number, region).map_err(ffi_err)?;
+        serde_json::to_string(&FfiPageSize {
+            width: size.width,
+            height: size.height,
+        })
+        .map_err(json_err)
+    }
+);
+
+/// Write the pixels `unpdf_render_page` paints a page of `width` x `height` points (as
+/// `unpdf_page_size` reports it) in at `dpi` to `out_width` and `out_height`: the result of
+/// [`PageSize::pixels`], which painting sizes its bitmap with, so `72 * edge / points`, only a
+/// candidate `dpi` for a side of `edge` pixels, can be checked before painting.
+///
+/// # Safety
+///
+/// - `out_width` and `out_height` must be valid pointers.
+/// - Returns 0, or -1 when either is null (`InvalidArgument`); see `unpdf_last_error`.
+///
+/// [`PageSize::pixels`]: crate::parser::raster::PageSize::pixels
+#[no_mangle]
+pub unsafe extern "C" fn unpdf_page_pixels(
+    width: f32,
+    height: f32,
+    dpi: f32,
+    out_width: *mut u32,
+    out_height: *mut u32,
+) -> c_int {
+    LAST_ERROR.with(|slot| slot.clear());
+    if out_width.is_null() || out_height.is_null() {
+        LAST_ERROR.with(|slot| {
+            slot.set_error(&invalid_argument(
+                "out_width and out_height must not be null",
+            ))
+        });
+        return -1;
+    }
+    (*out_width, *out_height) = crate::parser::raster::PageSize { width, height }.pixels(dpi);
+    0
+}
+
 /// Rasterize a page to a PNG.
 ///
 /// The page is painted from the content interpretation the document was parsed with, by
@@ -1347,25 +1444,11 @@ pub unsafe extern "C" fn unpdf_render_page(
             let json = unparser_shared::ffi::c_str_utf8(options_json)?;
             serde_json::from_str(json).map_err(|e| invalid_argument(e.to_string()))?
         };
-        let region = match options.region.as_deref() {
-            None | Some("crop") => crate::parser::raster::PageRegion::Crop,
-            Some("media") => crate::parser::raster::PageRegion::Media,
-            Some(other) => {
-                return Err(invalid_argument(format!(
-                    "region must be \"crop\" or \"media\", got {other:?}"
-                )))
-            }
-        };
         let raster_options = crate::parser::raster::RasterOptions {
             dpi: options.dpi.unwrap_or(150.0),
-            region,
+            region: page_region(options.region.as_deref())?,
         };
-        let parser = (*doc).inner.parser.as_ref().ok_or_else(|| {
-            (
-                ErrorKind::Render as c_int,
-                "this document handle holds no parser to render with".to_string(),
-            )
-        })?;
+        let parser = (*doc).inner.parser()?;
         let page_number = u32::try_from(page_number).unwrap_or(0);
         let mut spent = 0u64;
         let max_work = options.max_work.unwrap_or(u64::MAX);

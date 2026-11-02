@@ -114,6 +114,20 @@ def _image_only_pdf() -> bytes:
     ])
 
 
+def _blank_page_pdf(page_entries: bytes) -> bytes:
+    """One blank page whose dictionary holds ``page_entries``."""
+    return _assemble([
+        b"<</Type/Catalog/Pages 2 0 R>>",
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>",
+        b"<</Type/Page/Parent 2 0 R" + page_entries + b">>",
+    ])
+
+
+def _cropped_page_pdf() -> bytes:
+    """One blank A4 page with a 200 x 300 pt crop box, turned a quarter."""
+    return _blank_page_pdf(b"/MediaBox[0 0 595 842]/CropBox[100 100 300 400]/Rotate 90")
+
+
 def _lab_image_pdf() -> bytes:
     """One page drawn as a 1x1 image in a color space unpdf does not convert (Lab)."""
     content = b"q 595 0 0 842 0 0 cm /Im0 Do Q\n"
@@ -823,14 +837,76 @@ class TestRenderPage:
         assert page.gaps["text_runs"] == 0
         assert page.substituted_text_runs >= 1
 
+    def test_page_size_is_the_size_render_page_paints_at_72_dpi(self):
+        with unpdf.Document(_cropped_page_pdf()) as doc:
+            size = doc.page_size(1)
+            assert (size.width, size.height) == (300.0, 200.0)
+            whole = doc.page_size(1, region="media")
+            assert (whole.width, whole.height) == (842.0, 595.0)
+            page = doc.render_page(1, dpi=72)
+        assert (page.width, page.height) == (300, 200)
+
+    def test_a_dpi_from_the_page_size_paints_the_long_edge_of_a_common_page(self):
+        with unpdf.Document(_cropped_page_pdf()) as doc:
+            size = doc.page_size(1)
+            page = doc.render_page(1, dpi=72 * 1024 / max(size.width, size.height))
+        assert (page.width, page.height) == (1024, 683)
+
+    def test_pixels_are_the_pixels_render_page_paints(self):
+        with unpdf.Document(_blank_page_pdf(b"/MediaBox[0 0 396 612]")) as doc:
+            size = doc.page_size(1)
+            page = doc.render_page(1, dpi=93)
+        assert size.pixels(93) == (page.width, page.height) == (511, 791)
+
+    def test_a_dpi_from_the_page_size_is_a_candidate_pixels_checks(self):
+        with unpdf.Document(_blank_page_pdf(b"/MediaBox[0 0 842 0.00001]")) as doc:
+            size = doc.page_size(1)
+            dpi = 72 * 5_000_014 / max(size.width, size.height)
+            page = doc.render_page(1, dpi=dpi)
+        assert size.pixels(dpi) == (page.width, page.height) == (5_000_015, 1)
+
+    def test_pixels_and_render_page_take_a_dpi_to_the_same_float(self):
+        dpi = 91.00000381469727
+        with unpdf.Document(_blank_page_pdf(b"/MediaBox[0 0 612 792]")) as doc:
+            size = doc.page_size(1)
+            page = doc.render_page(1, dpi=dpi)
+        assert size.pixels(dpi) == (page.width, page.height)
+
+    def test_a_page_number_a_c_int_cannot_hold_is_out_of_range(self):
+        with unpdf.Document(_image_only_pdf()) as doc:
+            for page_number in (4294967297, -4294967295):
+                with pytest.raises(unpdf.UnpdfError) as err:
+                    doc.page_size(page_number)
+                assert err.value.kind == unpdf.ErrorKind.PAGE_OUT_OF_RANGE
+
+    def test_a_region_holding_a_nul_is_refused(self):
+        with unpdf.Document(_image_only_pdf()) as doc:
+            for measure_or_paint in (doc.page_size, doc.render_page):
+                with pytest.raises(unpdf.UnpdfError) as err:
+                    measure_or_paint(1, region="media\0junk")
+                assert err.value.kind == unpdf.ErrorKind.INVALID_ARGUMENT
+
     def test_errors_carry_their_kind(self):
         with unpdf.Document(_image_only_pdf()) as doc:
+            with pytest.raises(unpdf.UnpdfError) as err:
+                doc.page_size(2)
+            assert err.value.kind == unpdf.ErrorKind.PAGE_OUT_OF_RANGE
+            with pytest.raises(unpdf.UnpdfError) as err:
+                doc.page_size(1, region="bleed")
+            assert err.value.kind == unpdf.ErrorKind.INVALID_ARGUMENT
             with pytest.raises(unpdf.UnpdfError) as err:
                 doc.render_page(2)
             assert err.value.kind == unpdf.ErrorKind.PAGE_OUT_OF_RANGE
             with pytest.raises(unpdf.UnpdfError) as err:
                 doc.render_page(1, region="bleed")
             assert err.value.kind == unpdf.ErrorKind.INVALID_ARGUMENT
+
+    def test_a_page_too_large_for_a_finite_size_is_a_render_error(self):
+        unbounded = _blank_page_pdf(b"/MediaBox[0 0 1" + b"0" * 39 + b".0 792]")
+        with unpdf.Document(unbounded) as doc:
+            with pytest.raises(unpdf.UnpdfError) as err:
+                doc.page_size(1)
+        assert err.value.kind == unpdf.ErrorKind.RENDER
 
     def test_painting_past_max_work_stops_with_its_kind(self):
         with unpdf.Document(_image_only_pdf()) as doc:
@@ -845,6 +921,8 @@ class TestRenderPage:
         doc.close()
         with pytest.raises(ValueError):
             doc.render_page(1)
+        with pytest.raises(ValueError):
+            doc.page_size(1)
 
 
 def test_a_library_path_naming_no_file_is_an_error(tmp_path):

@@ -22,6 +22,22 @@ pub struct PdfParser {
 }
 
 impl PdfParser {
+    /// The size of page `page_num` (1-indexed) as [`render_page`](Self::render_page) paints
+    /// `region` of it, `/Rotate` applied, without painting anything: what a caller needs to size
+    /// a bitmap or choose a `dpi` before it renders. [`PageSize::pixels`] gives the pixels a
+    /// `dpi` paints. Fails with [`Error::PageOutOfRange`] for a page the document does not have
+    /// and [`Error::Render`] for a box too large for a finite size.
+    ///
+    /// [`PageSize::pixels`]: super::raster::PageSize::pixels
+    #[cfg(feature = "raster")]
+    pub fn page_size(
+        &self,
+        page_num: u32,
+        region: super::raster::PageRegion,
+    ) -> Result<super::raster::PageSize> {
+        super::raster::page_size(&*self.backend, page_num, region)
+    }
+
     /// Rasterize page `page_num` (1-indexed) — painted from the same content interpretation
     /// [`parse`](Self::parse) reads, so it is the same page. Anything the rasterizer cannot
     /// paint yet is counted in the result's `gaps`; the rest of the page is still painted.
