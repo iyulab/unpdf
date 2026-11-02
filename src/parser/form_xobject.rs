@@ -30,6 +30,10 @@ use crate::error::Result;
 pub(crate) const BEGIN_GROUP: &str = "{group";
 pub(crate) const END_GROUP: &str = "}group";
 
+/// Pseudo-operator where a form nested past [`MAX_FORM_DEPTH`] was left unpainted, so a reader
+/// that paints can count what it lost.
+pub(crate) const FORM_TOO_DEEP: &str = "{deep";
+
 /// A page's operators, with the Form XObjects it paints interpreted in place.
 pub(crate) struct PageOperations {
     pub ops: Vec<ContentOp>,
@@ -137,12 +141,18 @@ impl Expander<'_> {
     }
 
     fn paint_form(&mut self, painted: FormXObject, outer: Option<ObjectId>) {
-        if self.path.contains(&painted.id) || self.path.len() >= MAX_FORM_DEPTH {
+        let cycle = self.path.contains(&painted.id);
+        if cycle || self.path.len() >= MAX_FORM_DEPTH {
             log::debug!(
                 "page {:?}: not painting form {:?} again inside itself",
                 self.page,
                 painted.id
             );
+            if !cycle {
+                let mut cut = ContentOp::new(FORM_TOO_DEEP, Vec::new());
+                cut.form = outer;
+                self.out.push(cut);
+            }
             return;
         }
         self.forms_painted += 1;

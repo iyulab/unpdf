@@ -687,6 +687,10 @@ and uncolored), and images, inline ones included (Flate-family, JPEG, JPEG 2000,
 JBIG2, with soft and stencil masks), blend modes (all sixteen of ISO 32000-1 §11.3.5) and soft
 masks (`/SMask`, luminosity and alpha). Not yet: mesh and function-based shadings and a soft
 mask's transfer function — each is counted in `gaps`, and the rest of the page is still painted.
+Text filled with a pattern that is not painted is painted in black. Text it cannot draw — a glyph
+with no outline whose text does not decode or is more than whitespace and default-ignorable
+characters, a Type 3 glyph nested past four deep, text shown before any `Tf` — and forms nested
+past 32 deep are counted in `gaps` too.
 
 Text in a font the PDF names but does not embed — the standard 14, or a system font such as
 Arial or Times New Roman — is painted in a stand-in face of the same class (sans, serif or

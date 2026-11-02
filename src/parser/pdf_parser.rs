@@ -39,12 +39,14 @@ impl PdfParser {
     /// [`render_page`](Self::render_page), charging `budget` before each step of painting an
     /// estimate of its work, in pixels and at least one, so a caller can bound a page's painting
     /// and stop it partway. The estimate counts chiefly the page's own pixels; one for each
-    /// operator applied, in forms, tiling pattern cells, soft masks and Type 3 glyphs too, and for
-    /// each byte of a text string; the pixels of the page a fill, stroke, glyph, shading or image
-    /// covers and the edges walked for it; the dashes a dashed stroke lays; the bytes an image's
-    /// filters gave and the samples its codec makes; and the whole page for a clip, a transparency
-    /// group's layer and a soft mask. When `budget` returns `Break`, painting stops before that
-    /// step and this returns [`Error::RasterStopped`].
+    /// operator applied, in forms, tiling pattern cells, soft masks and Type 3 glyphs too, for
+    /// each byte of a text string, and for each byte of the text, control characters included,
+    /// a code whose glyph has no outline decodes to, the first time its font shows it; the
+    /// pixels of the page a fill, stroke, glyph, shading or image covers and the edges walked
+    /// for it; the dashes a dashed stroke lays; the bytes an image's filters gave and the
+    /// samples its codec makes; and the whole page for a clip, a transparency group's layer and
+    /// a soft mask. When `budget` returns `Break`, painting stops before that step and this
+    /// returns [`Error::RasterStopped`].
     #[cfg(feature = "raster")]
     pub fn render_page_with(
         &self,

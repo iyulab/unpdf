@@ -1074,6 +1074,25 @@ fn gray_pixel_image() -> Vec<u8> {
     )
 }
 
+/// A `/ToUnicode` CMap stream mapping codes `width` bytes long to the texts `texts` gives them.
+pub fn to_unicode(width: usize, texts: &[(u32, &str)]) -> Vec<u8> {
+    let pairs: String = texts
+        .iter()
+        .map(|&(code, shown)| {
+            let units: String = shown.encode_utf16().map(|u| format!("{u:04x}")).collect();
+            format!("<{code:0digits$x}> <{units}>\n", digits = 2 * width)
+        })
+        .collect();
+    let cmap = format!(
+        "begincmap\n1 begincodespacerange\n<{}> <{}>\nendcodespacerange\n\
+         {} beginbfchar\n{pairs}endbfchar\nendcmap",
+        "00".repeat(width),
+        "ff".repeat(width),
+        texts.len()
+    );
+    stream_object(&format!("<</Length {}>>", cmap.len()), cmap.as_bytes())
+}
+
 pub fn stream_object(dict: &str, data: &[u8]) -> Vec<u8> {
     let mut obj = dict.as_bytes().to_vec();
     obj.extend_from_slice(b"\nstream\n");

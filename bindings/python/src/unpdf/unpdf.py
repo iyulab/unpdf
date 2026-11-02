@@ -637,12 +637,14 @@ class RenderedPage:
     """A rendered page: a PNG, its size in pixels, and what it could not show.
 
     ``gaps`` counts, by reason, what the renderer left out — ``text_runs``
-    (text in fonts that are not embedded and have no stand-in),
+    (text in fonts that are not embedded and have no stand-in, glyphs it
+    cannot draw, text shown before any font is set),
     ``images`` (codecs it does not decode), ``inline_images`` (inline images
     whose dictionary does not read), ``shadings`` (mesh shadings, and tiling
     patterns nested more than three deep), ``soft_masks`` (a soft mask whose
     group does not decode or nests too deep, or whose transfer function is not
-    applied) and ``undecodable_content_streams``. All zero means everything was painted;
+    applied) and ``undecodable_content_streams`` (forms nested more than 32 deep
+    included). All zero means everything was painted;
     otherwise the rest of the page still was.
 
     ``substituted_text_runs`` counts text painted in a standard face standing in
