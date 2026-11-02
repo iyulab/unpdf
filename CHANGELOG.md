@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A malformed `ToUnicode` CMap or embedded TrueType `cmap` no longer panics.** A `ToUnicode`
+  destination holding a byte that is not UTF-8, such as `<01> <000\xFF>`, was sliced inside a
+  character, and a `/FontFile2` program whose `cmap` declares more bytes than it holds was read
+  past its end: a panic in a release build too, which failed the whole document. The hex digits
+  are now read as bytes, and the `cmap` against the bytes present with offsets that cannot
+  overflow on 32-bit targets. A damaged entry maps nothing, as one the font leaves out, and the
+  page keeps its other text.
+
 ## 0.52.0 — 2026-11-02
 
 ### Added

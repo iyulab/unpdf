@@ -186,13 +186,11 @@ fn hex_to_unicode(hex: &str) -> Option<String> {
     }
 
     // Parse as UTF-16BE code units (each 4 hex digits = one u16)
-    let mut units = Vec::new();
-    let mut i = 0;
-    while i + 3 < hex.len() {
-        let val = u16::from_str_radix(&hex[i..i + 4], 16).ok()?;
-        units.push(val);
-        i += 4;
-    }
+    let (groups, _) = hex.as_bytes().as_chunks::<4>();
+    let units = groups
+        .iter()
+        .map(|digits| u16::from_str_radix(std::str::from_utf8(digits).ok()?, 16).ok())
+        .collect::<Option<Vec<u16>>>()?;
     let s = String::from_utf16(&units).ok()?;
     sanitize_unicode(s)
 }
@@ -400,13 +398,13 @@ pub(crate) fn parse_truetype_cmap_table(data: &[u8]) -> Option<ToUnicodeMap> {
         }
     }
 
-    if cmap_offset == 0 || cmap_offset as usize + 4 > data.len() {
+    if cmap_offset == 0 {
         return None;
     }
 
-    let cmap = &data[cmap_offset as usize..];
+    let cmap = data.get(cmap_offset as usize..)?;
     let cmap_len = cmap_length as usize;
-    if cmap_len < 4 {
+    if cmap.len() < 4 || cmap_len < 4 {
         return None;
     }
 
@@ -426,10 +424,12 @@ pub(crate) fn parse_truetype_cmap_table(data: &[u8]) -> Option<ToUnicodeMap> {
         if rec + 8 > cmap_len {
             break;
         }
-        let platform_id = u16::from_be_bytes([cmap[rec], cmap[rec + 1]]);
-        let encoding_id = u16::from_be_bytes([cmap[rec + 2], cmap[rec + 3]]);
-        let offset =
-            u32::from_be_bytes([cmap[rec + 4], cmap[rec + 5], cmap[rec + 6], cmap[rec + 7]]);
+        let Some(record) = cmap.get(rec..rec + 8) else {
+            break;
+        };
+        let platform_id = u16::from_be_bytes([record[0], record[1]]);
+        let encoding_id = u16::from_be_bytes([record[2], record[3]]);
+        let offset = u32::from_be_bytes([record[4], record[5], record[6], record[7]]);
 
         let priority = match (platform_id, encoding_id) {
             (3, 10) => 4, // Windows Unicode full repertoire (BMP + supplementary) — best
@@ -447,12 +447,12 @@ pub(crate) fn parse_truetype_cmap_table(data: &[u8]) -> Option<ToUnicodeMap> {
     }
 
     let subtable_offset = best_offset? as usize;
-    if subtable_offset + 2 > cmap_len {
+    if subtable_offset.saturating_add(2) > cmap_len {
         return None;
     }
 
-    let subtable = &cmap[subtable_offset..];
-    let format = u16::from_be_bytes([subtable[0], subtable[1]]);
+    let subtable = cmap.get(subtable_offset..)?;
+    let format = u16::from_be_bytes(*subtable.first_chunk()?);
 
     // Build Unicode→GID map, then reverse to GID→Unicode
     let unicode_to_gid = match format {
@@ -931,6 +931,13 @@ endbfchar";
         );
     }
 
+    #[test]
+    fn test_parse_to_unicode_cmap_bfchar_non_utf8_destination_maps_nothing() {
+        let cmap = b"2 beginbfchar <01> <000\xFF> <02> <0041> endbfchar";
+        let map = parse_to_unicode_cmap(cmap).unwrap();
+        assert_eq!(map.mappings, BTreeMap::from([(2, "A".to_string())]));
+    }
+
     /// Builds a format-4 `cmap` subtable body (what `parse_cmap_format4` receives,
     /// starting at its own `format` field). Four segments: 'A'..'C' -> GID 5..7 and
     /// 'D' -> GID 10 via idDelta, the PUA codepoint U+E000 -> GID 9 via idRangeOffset
@@ -1112,6 +1119,18 @@ endbfchar";
             None,
             "format-4's GID 10 must not leak in — format-12 should have won selection"
         );
+    }
+
+    #[test]
+    fn test_parse_truetype_cmap_table_cut_short_of_its_declared_length_maps_nothing() {
+        let font = minimal_truetype_font_with_format4_cmap();
+        let cmap_at = 12 + 16;
+        for cut in cmap_at + 4..cmap_at + 14 {
+            assert!(
+                parse_truetype_cmap_table(&font[..cut]).is_none(),
+                "cut at {cut}"
+            );
+        }
     }
 
     #[test]
