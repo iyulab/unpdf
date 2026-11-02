@@ -10,6 +10,11 @@
   caller can catch. Arrays, dictionaries and indirect objects now nest at most 64 deep, PDFium's
   bound: a deeper object, an inline image dictionary included, fails to parse as a malformed one
   does, and a deeper content-stream array is cut at the bound. The rest of the page is read.
+- **A code range whose target passes `u32::MAX` no longer overflows.** A `ToUnicode` `bfrange`
+  such as `<00> <01> <FFFFFFFF>`, an embedded CMap's `cidrange` and an embedded TrueType `cmap`
+  format-12 group overflowed while they were read -- a panic in a build with overflow checks,
+  and otherwise a code read as another. A code whose target would pass the limit now maps
+  nothing, as a code the font leaves out.
 
 ## 0.52.2 — 2026-11-03
 
@@ -34,7 +39,6 @@
   The band right above such a table can be its header even when it does not line up in
   columns by itself (a second header line with one cell, cells that span columns), and is no
   longer left outside the table as running text.
-
 
 ## 0.52.1 — 2026-11-03
 
