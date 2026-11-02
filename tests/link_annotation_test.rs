@@ -517,10 +517,9 @@ fn headings_and_both_native_table_builders_keep_annotated_labels() {
         "BT /F2 20 Tf 72 730 Td (Study) Tj ET BT /F1 10 Tf 72 700 Td (Some ordinary body text on the page.) Tj ET",
         &annotation("72 725 130 750", TARGET), "", ""));
     let md = markdown(&document);
-    assert!(
-        md.contains("# ") && md.contains(&format!("[**Study**]({TARGET})")),
-        "{md}"
-    );
+    // A heading is written plain whether or not it holds a link; the link adds only its markup.
+    assert!(md.contains(&format!("# [Study]({TARGET})")), "{md}");
+    assert!(!md.contains("**"), "{md}");
     let content = "BT /F1 12 Tf 80 690 Td (Name) Tj ET BT /F1 12 Tf 180 690 Td (Age) Tj ET \
         BT /F1 12 Tf 80 670 Td (Alice) Tj ET BT /F1 12 Tf 180 670 Td (30) Tj ET \
         BT /F1 12 Tf 80 650 Td (Bob) Tj ET BT /F1 12 Tf 180 650 Td (28) Tj ET";

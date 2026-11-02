@@ -123,6 +123,12 @@ pub(crate) fn line(line: &TextLine, styled: bool) -> Text {
 }
 
 pub(crate) fn block(block: &TextBlock) -> Paragraph {
+    paragraph(block_text(block, true))
+}
+
+/// The block's text with its ownership ranges. Unstyled keeps only link targets: a heading's
+/// text is written plain (as one without links is), its links still marked.
+fn block_text(block: &TextBlock, styled: bool) -> Text {
     let plain = block.text();
     if super::bidi::contains_rtl(&plain)
         && block
@@ -131,7 +137,9 @@ pub(crate) fn block(block: &TextBlock) -> Paragraph {
             .flat_map(|l| &l.spans)
             .all(|s| s.links.is_empty())
     {
-        return Paragraph::with_text(plain);
+        let mut output = Text::new();
+        output.insert(&plain);
+        return output;
     }
     let breaks = block.hangul_breaks_in_words();
     let mut output = Text::new();
@@ -158,7 +166,18 @@ pub(crate) fn block(block: &TextBlock) -> Paragraph {
         output.copy(&current.text, &current.ranges, start..end);
         previous = current.text;
     }
-    paragraph(output)
+    if !styled {
+        let mut ranges = Vec::with_capacity(output.ranges.len());
+        for TextRange { range, value } in std::mem::take(&mut output.ranges) {
+            let value = Owner {
+                style: TextStyle::default(),
+                ..value
+            };
+            push_range(&mut ranges, range, value);
+        }
+        output.ranges = ranges;
+    }
+    output
 }
 
 pub(crate) fn heading(block: &TextBlock, level: u8) -> Paragraph {
@@ -170,7 +189,7 @@ pub(crate) fn heading(block: &TextBlock, level: u8) -> Paragraph {
     {
         return Paragraph::heading(block.text(), level);
     }
-    let mut paragraph = self::block(block);
+    let mut paragraph = self::paragraph(block_text(block, false));
     paragraph.style.heading_level = Some(level.clamp(1, 6));
     paragraph
 }
