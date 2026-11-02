@@ -60,6 +60,32 @@
   `named_color_space_with`, `named_pattern_space_with`, `image_xobject_with`,
   `inline_image_with`, `shading_with` and `shading_pattern_with`, which take the charge as
   `admit` and by default call the lookup without it.
+- **Breaking: a rendered page paints its annotations.** Each annotation's normal appearance
+  (`/AP /N`, the state `/AS` selects) is fitted to its `/Rect` as ISO 32000-2 §12.5.5 defines and
+  painted over the page's content in annotation order, in a graphics state of its own, its isolated
+  groups blending with nothing beneath them. Annotations flagged Hidden or NoView, Invisible ones of
+  a type the standard does not define, pop-ups and annotations without an appearance are not
+  painted, nor counted among the first 4096; NoZoom and NoRotate are not applied. An appearance that
+  cannot be painted (no stream, one that does not decode or has no `/BBox`, states with no `/AS`, a
+  malformed `/Rect`, an annotation `/BM` that is not a name or names a blend mode other than Normal,
+  or past the first 4096 annotations of a page, which are not read) is left out, and one holding a
+  knockout group or soft mask, an isolated group past four nested group layers, a group that is not
+  isolated painted under an alpha, blend mode or soft mask, or a form nested more than 32 deep is
+  painted without it; each is counted once in the new `RasterGaps::annotations` (C ABI
+  `gaps.annotations`, .NET `RenderGaps.Annotations`, Python `RenderedPage.gaps`). `RasterGaps` gains
+  a field, so Rust code that builds or matches it exhaustively needs it.
+  `PdfBackend::annotation_appearances` places the appearances and `PdfBackend::form_xobject` reads
+  each as it is painted; `PdfBackend::form_xobject_id` finds a form without reading it,
+  `PdfBackend::group_attributes` gives its `/I` and `/K`, `PdfBackend::ext_gstate_ref` gives an
+  `/ExtGState` with its soft mask's group unread (`SoftMaskRef`), and `PdfBackend::pattern_id`,
+  `PdfBackend::shading_id` and `PdfBackend::font_id` find a pattern, a shading or a font without
+  reading it. A form a `Do` paints is read once per page, from the page's content, an annotation, a
+  tiling pattern's cell or a soft mask alike, and counted once if its stream does not decode; a soft
+  mask's group, or a pattern or shading a resource refers to, is read once per page too, a font it
+  refers to loaded once for the page's content and annotations, and an `/ExtGState` resource read
+  once per page for each form that names it. Forms in a pattern's cell or a soft mask are expanded
+  as they are painted, each `Do` of one a step of the budget, as is each form nested past 32. Text
+  extraction is unchanged.
 
 ### Changed
 
@@ -72,6 +98,7 @@
   R, G and B, is counted in `RasterGaps::images`; it was painted as the decoder read it.
   `CodecParms::Dct` carries the value: Rust code that matches `CodecParms` exhaustively needs the
   new arm.
+
 
 
 

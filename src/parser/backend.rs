@@ -190,6 +190,42 @@ pub struct FormXObject {
     pub transparency_group: bool,
 }
 
+/// What a transparency group's attributes dictionary (`/Group`, ISO 32000-1 §11.6.6) says
+/// beyond its being one.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct GroupAttributes {
+    /// `/I true`: an isolated group, whose content blends with a transparent backdrop, not
+    /// with what is under it.
+    pub isolated: bool,
+    /// `/K true`: a knockout group, each thing inside which is composited with the group's
+    /// backdrop, not with what the group painted before it.
+    pub knockout: bool,
+}
+
+/// A visible annotation's normal appearance, with where it goes on the page.
+#[derive(Debug, Clone)]
+pub struct AnnotationAppearance {
+    /// The appearance stream, `/AS`-selected when the annotation has several states: the
+    /// object [`PdfBackend::form_xobject`] reads.
+    pub form: ObjectId,
+    /// Matrix A of ISO 32000-2 §12.5.5: it maps the form's `/BBox`, transformed by its
+    /// `/Matrix`, onto the annotation's `/Rect`. It is concatenated onto the user space before
+    /// the form's own `/Matrix`.
+    pub placement: [f32; 6],
+}
+
+/// The normal appearances to paint for a page's annotations, in annotation order.
+#[derive(Debug, Clone, Default)]
+pub struct AnnotationAppearances {
+    /// The appearances to paint, each placed on its annotation's `/Rect`.
+    pub appearances: Vec<AnnotationAppearance>,
+    /// Visible annotations whose appearance cannot be painted -- a missing or unplaceable
+    /// stream, an `/AP` with states and no `/AS`, a malformed `/Rect`, a `/BM` that is not a
+    /// name or names a blend mode other than Normal -- and every annotation past the first 4096
+    /// of the page, unread.
+    pub unpainted: u32,
+}
+
 /// Raw metadata from the PDF backend.
 #[derive(Debug, Clone, Default)]
 pub struct PdfMetadataRaw {
@@ -593,6 +629,20 @@ pub struct SoftMask {
     pub transfer_function: bool,
 }
 
+/// A soft mask as [`PdfBackend::ext_gstate_ref`] gives it: a [`SoftMask`] with its group by
+/// object id, unread.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SoftMaskRef {
+    /// As [`SoftMask::luminosity`].
+    pub luminosity: bool,
+    /// `/G`: the object id of the transparency group that is the mask.
+    pub group: ObjectId,
+    /// As [`SoftMask::backdrop`].
+    pub backdrop: [f32; 3],
+    /// As [`SoftMask::transfer_function`].
+    pub transfer_function: bool,
+}
+
 /// What an `/ExtGState` says about the soft mask (`/SMask`).
 #[derive(Debug, Clone)]
 pub enum SoftMaskEntry {
@@ -961,6 +1011,13 @@ pub trait PdfBackend: Send + Sync {
         LinkAnnotations::default()
     }
 
+    /// The normal appearances (`/AP /N`) of the page's annotations that a viewer shows, in
+    /// annotation order: not those flagged Hidden or NoView, those of a type the standard does
+    /// not define flagged Invisible, or pop-ups. Defaults to none.
+    fn annotation_appearances(&self, _page: PageId) -> AnnotationAppearances {
+        AnnotationAppearances::default()
+    }
+
     /// Return the document outline (bookmarks) as a tree.
     /// Implementations must handle cycle detection and depth limits.
     fn outline(&self) -> Result<Vec<RawOutlineItem>>;
@@ -975,6 +1032,25 @@ pub trait PdfBackend: Send + Sync {
     /// XObjects never claims to know what one paints.
     fn xobject(&self, _scope: ResourceScope, _name: &[u8]) -> Option<PaintedXObject> {
         None
+    }
+
+    /// The object id of the Form XObject `name` refers to in `scope`, found without reading
+    /// the form, which [`Self::form_xobject`] then reads. `None` when the name is not a form;
+    /// defaults to `None`.
+    fn form_xobject_id(&self, _scope: ResourceScope, _name: &[u8]) -> Option<ObjectId> {
+        None
+    }
+
+    /// Object `id` read as a Form XObject: an annotation's appearance stream, or a form
+    /// [`Self::form_xobject_id`] found. Defaults to `None`.
+    fn form_xobject(&self, _id: ObjectId) -> Option<FormXObject> {
+        None
+    }
+
+    /// The attributes of Form XObject `id` as a transparency group, read without reading the
+    /// form. Defaults to neither isolated nor knockout.
+    fn group_attributes(&self, _id: ObjectId) -> GroupAttributes {
+        GroupAttributes::default()
     }
 
     /// The image XObject `name` refers to in `scope`, decoded as far as its filters go —
@@ -1072,6 +1148,20 @@ pub trait PdfBackend: Send + Sync {
         None
     }
 
+    /// The object id of the pattern the `/Pattern` resource `name` refers to in `scope`, found
+    /// without reading the pattern; `None` when the first resource of that name holds the
+    /// pattern itself. Defaults to `None`.
+    fn pattern_id(&self, _scope: ResourceScope, _name: &[u8]) -> Option<ObjectId> {
+        None
+    }
+
+    /// The object id of the shading the `/Shading` resource `name` refers to in `scope`, found
+    /// without reading the shading; `None` when the first resource of that name holds the
+    /// shading itself. Defaults to `None`.
+    fn shading_id(&self, _scope: ResourceScope, _name: &[u8]) -> Option<ObjectId> {
+        None
+    }
+
     /// Whether the `/ColorSpace` resource `name` refers to in `scope` is a `Pattern` space:
     /// `Some(base)`, where `base` is the space an uncolored pattern's color is given in (`None`
     /// when the space has no base, or one this does not convert).
@@ -1100,10 +1190,28 @@ pub trait PdfBackend: Send + Sync {
         None
     }
 
+    /// [`Self::ext_gstate`], without reading a soft mask's group: the soft mask the resource
+    /// sets comes beside it, its group for [`Self::form_xobject`] to read, and the
+    /// [`ExtGState`] then sets none. Defaults to [`Self::ext_gstate`], the group read.
+    fn ext_gstate_ref(
+        &self,
+        scope: ResourceScope,
+        name: &[u8],
+    ) -> Option<(ExtGState, Option<SoftMaskRef>)> {
+        self.ext_gstate(scope, name).map(|gs| (gs, None))
+    }
+
     /// The embedded program of the font `font_name` refers to in `scope`, with how its codes
     /// select glyphs. `None` for a font with no program this reads (not embedded, Type 3)
     /// or a composite font under a CMap other than `Identity-H`/`-V`.
     fn font_program(&self, _scope: ResourceScope, _font_name: &[u8]) -> Option<FontProgram> {
+        None
+    }
+
+    /// The object id of the font dictionary `font_name` names in `scope`, found without reading
+    /// the font; `None` when the first resource of that name holds the dictionary itself.
+    /// Defaults to `None`.
+    fn font_id(&self, _scope: ResourceScope, _font_name: &[u8]) -> Option<ObjectId> {
         None
     }
 
@@ -1521,6 +1629,10 @@ impl PdfBackend for RawBackend {
         super::link::read_annotations(&self.doc, page)
     }
 
+    fn annotation_appearances(&self, page: PageId) -> AnnotationAppearances {
+        super::annotation::read_appearances(&self.doc, page)
+    }
+
     fn outline(&self) -> Result<Vec<RawOutlineItem>> {
         const MAX_DEPTH: u8 = 64;
         let mut items = Vec::new();
@@ -1573,6 +1685,39 @@ impl PdfBackend for RawBackend {
             Some(b"Image") => PaintedXObject::Image,
             _ => PaintedXObject::Other,
         })
+    }
+
+    fn form_xobject_id(&self, scope: ResourceScope, name: &[u8]) -> Option<ObjectId> {
+        let id = resource_chain(&self.doc, scope)
+            .into_iter()
+            .find_map(|res| named_xobject(&self.doc, res, name))?;
+        let stream = self.doc.resolve(self.doc.get_object(id)?).as_stream()?;
+        let subtype = raw_dict_get(&stream.dict, b"Subtype").and_then(|s| s.as_name());
+        (subtype == Some(b"Form".as_slice())).then_some(id)
+    }
+
+    fn form_xobject(&self, id: ObjectId) -> Option<FormXObject> {
+        let stream = self.doc.resolve(self.doc.get_object(id)?).as_stream()?;
+        Some(form_of(&self.doc, id, stream))
+    }
+
+    fn group_attributes(&self, id: ObjectId) -> GroupAttributes {
+        let group = self
+            .doc
+            .get_object(id)
+            .and_then(|form| self.doc.resolve(form).as_stream())
+            .and_then(|form| raw_dict_get(&form.dict, b"Group"))
+            .and_then(|group| raw_resolve_dict(&self.doc, group));
+        let set = |key: &[u8]| {
+            group
+                .and_then(|group| raw_dict_get(group, key))
+                .map(|v| self.doc.resolve(v))
+                == Some(&RawPdfObject::Bool(true))
+        };
+        GroupAttributes {
+            isolated: set(b"I"),
+            knockout: set(b"K"),
+        }
     }
 
     fn image_xobject(&self, scope: ResourceScope, name: &[u8]) -> Option<RawXObject> {
@@ -1712,6 +1857,20 @@ impl PdfBackend for RawBackend {
         })
     }
 
+    fn shading_id(&self, scope: ResourceScope, name: &[u8]) -> Option<ObjectId> {
+        resource_chain(&self.doc, scope)
+            .into_iter()
+            .find_map(|res| raw_dict_get(res.category(&self.doc, b"Shading")?.dict, name))?
+            .as_reference()
+    }
+
+    fn pattern_id(&self, scope: ResourceScope, name: &[u8]) -> Option<ObjectId> {
+        resource_chain(&self.doc, scope)
+            .into_iter()
+            .find_map(|res| raw_dict_get(res.category(&self.doc, b"Pattern")?.dict, name))?
+            .as_reference()
+    }
+
     fn named_pattern_space(
         &self,
         scope: ResourceScope,
@@ -1751,6 +1910,27 @@ impl PdfBackend for RawBackend {
     }
 
     fn ext_gstate(&self, scope: ResourceScope, name: &[u8]) -> Option<ExtGState> {
+        let (mut gs, mask) = self.ext_gstate_ref(scope, name)?;
+        if let Some(mask) = mask {
+            let stream = self
+                .doc
+                .resolve(self.doc.get_object(mask.group)?)
+                .as_stream()?;
+            gs.soft_mask = Some(SoftMaskEntry::Mask(SoftMask {
+                luminosity: mask.luminosity,
+                group: form_of(&self.doc, mask.group, stream),
+                backdrop: mask.backdrop,
+                transfer_function: mask.transfer_function,
+            }));
+        }
+        Some(gs)
+    }
+
+    fn ext_gstate_ref(
+        &self,
+        scope: ResourceScope,
+        name: &[u8],
+    ) -> Option<(ExtGState, Option<SoftMaskRef>)> {
         let dict = resource_chain(&self.doc, scope)
             .into_iter()
             .find_map(|res| {
@@ -1775,7 +1955,7 @@ impl PdfBackend for RawBackend {
         let soft_mask = raw_dict_get(dict, b"SMask").and_then(|v| {
             let v = self.doc.resolve(v);
             if v.as_name() == Some(b"None".as_slice()) {
-                return Some(SoftMaskEntry::None);
+                return Some(None);
             }
             let mask = raw_resolve_dict(&self.doc, v)?;
             let group_ref = raw_dict_get(mask, b"G")?.as_reference()?;
@@ -1812,24 +1992,36 @@ impl PdfBackend for RawBackend {
             let transfer_function = raw_dict_get(mask, b"TR")
                 .map(|t| self.doc.resolve(t))
                 .is_some_and(|t| t.as_name() != Some(b"Identity".as_slice()));
-            Some(SoftMaskEntry::Mask(SoftMask {
+            Some(Some(SoftMaskRef {
                 luminosity,
-                group: form_of(&self.doc, group_ref, stream),
+                group: group_ref,
                 backdrop,
                 transfer_function,
             }))
         });
-        Some(ExtGState {
-            soft_mask,
+        let gs = ExtGState {
+            soft_mask: (soft_mask == Some(None)).then_some(SoftMaskEntry::None),
             line_width: number(b"LW"),
             blend_mode,
             stroke_alpha: number(b"CA"),
             fill_alpha: number(b"ca"),
-        })
+        };
+        Some((gs, soft_mask.flatten()))
     }
 
     fn font_program(&self, scope: ResourceScope, font_name: &[u8]) -> Option<FontProgram> {
         self.font_resolver.font_program(&self.doc, scope, font_name)
+    }
+
+    fn font_id(&self, scope: ResourceScope, font_name: &[u8]) -> Option<ObjectId> {
+        match self
+            .font_resolver
+            .find_font(&self.doc, scope, font_name)?
+            .key
+        {
+            FontKey::Object(id) => Some(id),
+            FontKey::Inline { .. } => None,
+        }
     }
 
     fn font_bounds(&self, scope: ResourceScope, font_name: &[u8]) -> Option<PageBox> {
@@ -2339,9 +2531,7 @@ fn form_of(
 ) -> FormXObject {
     FormXObject {
         id,
-        matrix: raw_dict_get(&stream.dict, b"Matrix")
-            .and_then(|m| matrix_from(doc, m))
-            .unwrap_or(IDENTITY_MATRIX),
+        matrix: form_matrix(doc, stream),
         bbox: raw_dict_get(&stream.dict, b"BBox").and_then(|b| page_box_from_array(doc, b)),
         content: raw_stream::decompress(stream).ok(),
         transparency_group: raw_dict_get(&stream.dict, b"Group")
@@ -2350,6 +2540,16 @@ fn form_of(
             .and_then(|s| doc.resolve(s).as_name())
             .is_some_and(|s| s == b"Transparency"),
     }
+}
+
+/// A form's `/Matrix`: identity when absent or malformed.
+pub(super) fn form_matrix(
+    doc: &RawDocument,
+    stream: &super::raw::tokenizer::PdfStream,
+) -> [f32; 6] {
+    raw_dict_get(&stream.dict, b"Matrix")
+        .and_then(|m| matrix_from(doc, m))
+        .unwrap_or(IDENTITY_MATRIX)
 }
 
 fn matrix_from(doc: &RawDocument, obj: &RawPdfObject) -> Option<[f32; 6]> {
@@ -2495,16 +2695,20 @@ fn inherited_page_attr<'d>(
 /// A rectangle array `[x1 y1 x2 y2]` as a [`PageBox`], its numbers resolved through
 /// indirect references. `None` for anything else, or a box with no area.
 fn page_box_from_array(doc: &RawDocument, obj: &RawPdfObject) -> Option<PageBox> {
+    rectangle_from_array(doc, obj).filter(|b| b.width() > 0.0 && b.height() > 0.0)
+}
+
+/// As [`page_box_from_array`], a box with no area included.
+pub(super) fn rectangle_from_array(doc: &RawDocument, obj: &RawPdfObject) -> Option<PageBox> {
     let arr = doc.resolve(obj).as_array()?;
     let n = |i: usize| arr.get(i).map(|v| doc.resolve(v)).and_then(|v| v.as_f32());
     let (x1, y1, x2, y2) = (n(0)?, n(1)?, n(2)?, n(3)?);
-    let page_box = PageBox {
+    Some(PageBox {
         llx: x1.min(x2),
         lly: y1.min(y2),
         urx: x1.max(x2),
         ury: y1.max(y2),
-    };
-    (page_box.width() > 0.0 && page_box.height() > 0.0).then_some(page_box)
+    })
 }
 
 /// A resource dictionary (or one of its category sub-dictionaries), with the indirect object

@@ -107,11 +107,23 @@ public sealed class RenderGaps
     [JsonPropertyName("colors")]
     public uint Colors { get; init; }
 
+    /// <summary>Annotations whose normal appearance was not painted: a stream that is missing,
+    /// does not decode or has no <c>/BBox</c>, an <c>/AP</c> with states and no <c>/AS</c>, a
+    /// malformed <c>/Rect</c>, a <c>/BM</c> that is not a name or names a blend mode other than
+    /// Normal, or an annotation past the first 4096 of the page, which is counted unread; and
+    /// those painted without what they hold of a knockout group or soft mask, an isolated group
+    /// past four nested group layers, a group that is not isolated painted under an alpha,
+    /// blend mode or soft mask, or a form nested more than 32 deep. Of the first 4096, hidden
+    /// annotations, pop-ups and annotations without an appearance are not counted.</summary>
+    [JsonPropertyName("annotations")]
+    public uint Annotations { get; init; }
+
     /// <summary>Whether anything the page asked for was left unpainted.</summary>
     [JsonIgnore]
     public bool IsEmpty =>
         TextRuns == 0 && Images == 0 && InlineImages == 0 && Shadings == 0
-        && SoftMasks == 0 && UndecodableContentStreams == 0 && Colors == 0;
+        && SoftMasks == 0 && UndecodableContentStreams == 0 && Colors == 0
+        && Annotations == 0;
 }
 
 /// <summary>A rendered page: a PNG, its size in pixels, and what it could not show.</summary>

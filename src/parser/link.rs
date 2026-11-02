@@ -7,7 +7,7 @@ use super::backend::{PageBox, PageId};
 use super::raw::tokenizer::{dict_get, PdfDict, PdfObject};
 use super::raw::RawDocument;
 
-const MAX_ANNOTATIONS: usize = 4096;
+pub(super) const MAX_ANNOTATIONS: usize = 4096;
 const MAX_AREAS: usize = 4096;
 const MAX_URI_BYTES: usize = 8192;
 const MAX_TARGET_BYTES: usize = 1024 * 1024;

@@ -1,13 +1,14 @@
 //! Page rasterization: what lands where, in what color, and what is reported as not painted.
 #![cfg(feature = "raster")]
 
-mod common;
-
 use common::{assemble, page_pdf, page_pdf_with_xobjects, stream_object, to_unicode};
 use unpdf::parser::raster::{PageRegion, RasterGaps, RasterOptions, RasteredPage};
 use unpdf::parser::PdfParser;
 
+mod common;
+
 const A4: &str = "/MediaBox[0 0 595 842]";
+
 /// One pixel per point.
 const PT: RasterOptions = RasterOptions {
     dpi: 72.0,
@@ -32,6 +33,7 @@ fn near(a: [u8; 3], b: [u8; 3]) -> bool {
 }
 
 const WHITE: [u8; 3] = [255, 255, 255];
+
 const RED: [u8; 3] = [255, 0, 0];
 
 #[test]
@@ -653,6 +655,7 @@ fn an_image_soft_mask_of_another_size_covers_the_same_square() {
 /// A spot color that is green at full tint and white at none, approximated in CMYK:
 /// full tint is (1, 0, .71, .43), which is RGB (0, 110, 81) on the press.
 const SPOT_GREEN: &str = "[/Separation/Spot/DeviceCMYK    <</FunctionType 2/Domain[0 1]/C0[0 0 0 0]/C1[1 0 .71 .43]/N 1>>]";
+
 const GREEN: [u8; 3] = [0, 110, 81];
 
 fn spot_resources(space: &str) -> String {
@@ -1222,6 +1225,7 @@ fn a_one_colorant_devicen_with_a_calculator_transform_reads_as_its_ink() {
 }
 
 const LAB_D50: &str = "[/Lab<</WhitePoint[0.9642 1 0.8249]>>]";
+
 /// Lab (75, -50, 60) in sRGB.
 const LAB_GREEN: [u8; 3] = [105, 207, 59];
 
@@ -1942,6 +1946,7 @@ fn a_color_key_mask_hides_the_pixels_inside_its_ranges() {
 /// A 16 x 8 fax image, white on the left half and black on the right, as MuPDF renders it:
 /// Group 4, and Group 3 one-dimensional with end-of-line codes (both written by libtiff).
 const G4_HALVES: &[u8] = &[0x33, 0x17, 0xff, 0xf0, 0x01, 0x00, 0x10];
+
 const G3_HALVES: &[u8] = &[
     0x00, 0x19, 0x8a, 0x00, 0x33, 0x14, 0x00, 0x66, 0x28, 0x00, 0xcc, 0x50, 0x01, 0x98, 0xa0, 0x03,
     0x31, 0x40, 0x06, 0x62, 0x80, 0x0c, 0xc5,
@@ -2349,6 +2354,7 @@ fn tiling_pdf(pattern_entries: &str, cell: &[u8], content: &[u8]) -> Vec<u8> {
 /// A red cell 10 pt square, repeated every 20 pt: its content paints the whole 20 pt step,
 /// but the `/BBox` clips it to its own 10.
 const RED_CHECKS: &str = "/PaintType 1/BBox[0 0 10 10]/XStep 20/YStep 20/Resources<<>>";
+
 const RED_CELL: &[u8] = b"1 0 0 rg 0 0 20 20 re f";
 
 #[test]
@@ -2473,8 +2479,8 @@ fn a_page_out_of_range_is_an_error() {
 // ---------------------------------------------------------------------------------------
 // Text. The fixture fonts (tests/fixtures/make_square_fonts.py) draw `A` as a filled square
 // over 100..900 x 0..800 of a 1000-unit em; `space` has no outline.
-
 const SQUARE_TTF: &[u8] = include_bytes!("fixtures/square.ttf");
+
 const SQUARE_CFF: &[u8] = include_bytes!("fixtures/square.cff");
 
 /// One page drawing `content` with `/F1` = `font` (object 5); `extra` objects follow from 6.
@@ -2968,8 +2974,10 @@ fn a_soft_mask_applies_to_a_whole_group_whatever_its_content_sets() {
 
 /// Red over the whole page, painted under the soft mask `/Mk`.
 const RED_PAGE: &[u8] = b"/Mk gs 1 0 0 rg 0 0 595 842 re f";
+
 /// The mask group's shape: x 100..200, y 100..300.
 const IN_MASK: (u32, u32) = (150, 842 - 200);
+
 const OUT_OF_MASK: (u32, u32) = (400, 842 - 400);
 
 #[test]
@@ -3598,6 +3606,7 @@ fn a_glyph_without_an_outline_is_reported_unless_its_text_is_blank() {
 /// The `.notdef` of `SQUARE_TTF`, which has no outline and no character in its `cmap`, under
 /// `Identity-H`.
 const UNREAD_NOTDEF: &str = "<0000>";
+
 /// Its space, which has no outline and the character its `cmap` gives.
 const SPACE: &str = "<0001>";
 
@@ -3847,6 +3856,7 @@ fn a_form_cut_by_the_nesting_limit_leaves_its_form_s_pattern_space_alone() {
 }
 
 const FILLED_GLYPH: &[u8] = b"1000 0 0 -200 1000 800 d1 0 0 1000 800 re f";
+
 const STROKED_GLYPH: &[u8] = b"1000 0 0 -200 1000 800 d1 80 w 0 0 1000 800 re S";
 
 /// A page whose `/P0` is a mesh shading pattern, `/P1` a tiling pattern whose cell fills
@@ -4014,4 +4024,748 @@ fn a_stencil_mask_paints_a_shading_pattern_where_it_marks() {
         );
     }
     assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+}
+
+fn annotated_pdf(
+    page_entries: &str,
+    content: &[u8],
+    annots: &str,
+    objects: Vec<Vec<u8>>,
+) -> Vec<u8> {
+    let mut all = vec![
+        b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+        format!(
+            "<</Type/Page/Parent 2 0 R{page_entries}/Annots[{annots}]/Resources<<>>/Contents 4 0 R>>"
+        )
+        .into_bytes(),
+        stream_object(&format!("<</Length {}>>", content.len()), content),
+    ];
+    all.extend(objects);
+    assemble(all)
+}
+
+fn annotation(subtype: &str, entries: &str) -> Vec<u8> {
+    format!("<</Type/Annot/Subtype/{subtype}{entries}>>").into_bytes()
+}
+
+fn appearance(entries: &str, content: &str) -> Vec<u8> {
+    stream_object(
+        &format!(
+            "<</Type/XObject/Subtype/Form{entries}/Length {}>>",
+            content.len()
+        ),
+        content.as_bytes(),
+    )
+}
+
+const RED_SQUARE: &str = "1 0 0 rg 0 0 10 10 re f";
+
+/// A page of `annotations` (objects 5, 6, ...) followed by the `appearances` they name.
+fn annotated_page(annotations: Vec<Vec<u8>>, appearances: Vec<Vec<u8>>) -> RasteredPage {
+    let refs: Vec<String> = (5..5 + annotations.len())
+        .map(|n| format!("{n} 0 R"))
+        .collect();
+    let objects = [annotations, appearances].concat();
+    render(&annotated_pdf(A4, b"", &refs.join(" "), objects), &PT)
+}
+
+#[test]
+fn an_annotation_s_appearance_is_fitted_from_its_box_to_its_rect() {
+    let page = annotated_page(
+        vec![annotation("Stamp", "/Rect[100 100 200 150]/AP<</N 6 0 R>>")],
+        vec![appearance("/BBox[10 20 20 25]", "1 0 0 rg 10 20 10 5 re f")],
+    );
+    for (x, y) in [(101, 693), (198, 740), (101, 740), (198, 693)] {
+        assert!(near(px(&page, x, y), RED), "{x},{y}: {:?}", px(&page, x, y));
+    }
+    for (x, y) in [(98, 720), (202, 720), (150, 690), (150, 744)] {
+        assert!(
+            near(px(&page, x, y), WHITE),
+            "{x},{y}: {:?}",
+            px(&page, x, y)
+        );
+    }
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+}
+
+#[test]
+fn an_appearance_matrix_applies_before_its_box_is_fitted_to_the_rect() {
+    let page = annotated_page(
+        vec![annotation("Stamp", "/Rect[100 100 150 200]/AP<</N 6 0 R>>")],
+        vec![appearance(
+            "/BBox[0 0 100 50]/Matrix[0 1 -1 0 0 0]",
+            "1 0 0 rg 0 0 50 50 re f 0 0 1 rg 50 0 50 50 re f",
+        )],
+    );
+    assert!(near(px(&page, 125, 842 - 125), RED));
+    assert!(near(px(&page, 125, 842 - 175), [0, 0, 255]));
+    assert!(near(px(&page, 125, 842 - 205), WHITE));
+    assert!(near(px(&page, 125, 842 - 95), WHITE));
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+}
+
+#[test]
+fn the_appearance_state_picks_the_stream_and_a_state_without_one_paints_nothing() {
+    let page = annotated_page(
+        vec![
+            annotation(
+                "Widget",
+                "/Rect[100 100 150 150]/AS/On/AP<</N<</On 7 0 R/Off 8 0 R>>>>",
+            ),
+            annotation(
+                "Widget",
+                "/Rect[300 100 350 150]/AS/Off/AP<</N<</On 7 0 R>>>>",
+            ),
+        ],
+        vec![
+            appearance("/BBox[0 0 10 10]", RED_SQUARE),
+            appearance("/BBox[0 0 10 10]", "0 0 1 rg 0 0 10 10 re f"),
+        ],
+    );
+    assert!(near(px(&page, 125, 842 - 125), RED));
+    assert!(near(px(&page, 325, 842 - 125), WHITE));
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+}
+
+#[test]
+fn hidden_annotations_and_pop_ups_are_not_painted() {
+    let page = annotated_page(
+        vec![
+            annotation("Stamp", "/F 2/Rect[100 100 150 150]/AP<</N 9 0 R>>"),
+            annotation("Stamp", "/F 32/Rect[200 100 250 150]/AP<</N 9 0 R>>"),
+            annotation("Popup", "/Rect[300 100 350 150]/AP<</N 9 0 R>>"),
+            annotation("Stamp", "/F 4/Rect[400 100 450 150]/AP<</N 9 0 R>>"),
+        ],
+        vec![appearance("/BBox[0 0 10 10]", RED_SQUARE)],
+    );
+    for x in [125, 225, 325] {
+        assert!(near(px(&page, x, 842 - 125), WHITE), "{x}");
+    }
+    assert!(near(px(&page, 425, 842 - 125), RED));
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+}
+
+#[test]
+fn an_invisible_annotation_is_not_painted_only_when_its_type_is_not_standard() {
+    let page = annotated_page(
+        vec![
+            annotation("Custom", "/F 1/Rect[100 100 150 150]/AP<</N 8 0 R>>"),
+            annotation("Custom", "/Rect[200 100 250 150]/AP<</N 8 0 R>>"),
+            annotation("Stamp", "/F 1/Rect[300 100 350 150]/AP<</N 8 0 R>>"),
+        ],
+        vec![appearance("/BBox[0 0 10 10]", RED_SQUARE)],
+    );
+    assert!(near(px(&page, 125, 842 - 125), WHITE));
+    assert!(near(px(&page, 225, 842 - 125), RED));
+    assert!(near(px(&page, 325, 842 - 125), RED));
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+}
+
+#[test]
+fn an_isolated_appearance_blends_with_nothing_beneath_it() {
+    let blue_multiplied = |group: &str| {
+        appearance(
+            &format!("/BBox[0 0 10 10]{group}/Resources<</ExtGState<</M<</BM/Multiply>>>>>>"),
+            "/M gs 0 0 1 rg 0 0 10 10 re f",
+        )
+    };
+    let page = render(
+        &annotated_pdf(
+            A4,
+            b"1 0 0 rg 0 0 595 842 re f",
+            "5 0 R 6 0 R",
+            vec![
+                annotation("Stamp", "/Rect[100 100 150 150]/AP<</N 7 0 R>>"),
+                annotation("Stamp", "/Rect[200 100 250 150]/AP<</N 8 0 R>>"),
+                blue_multiplied("/Group<</S/Transparency/I true>>"),
+                blue_multiplied("/Group<</S/Transparency>>"),
+            ],
+        ),
+        &PT,
+    );
+    assert!(near(px(&page, 125, 842 - 125), [0, 0, 255]));
+    assert!(near(px(&page, 225, 842 - 125), [0, 0, 0]));
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+}
+
+#[test]
+fn annotations_are_painted_over_the_page_in_a_fresh_graphics_state() {
+    let content = b"0 1 0 rg 290 290 120 120 re f \
+        q 0 0 100 100 re W n 2 0 0 2 0 0 cm 0 0 1 rg 0 0 297 421 re";
+    let page = render(
+        &annotated_pdf(
+            A4,
+            content,
+            "5 0 R 7 0 R 9 0 R",
+            vec![
+                annotation("Stamp", "/Rect[450 450 470 470]/AP<</N 6 0 R>>"),
+                appearance("/BBox[0 0 10 10]", "1 0 0 rg 0 0 20 20 re f"),
+                annotation("Stamp", "/Rect[300 300 400 400]/AP<</N 8 0 R>>"),
+                appearance("/BBox[0 0 10 10]", "Q Q 0 0 10 10 re f"),
+                annotation("Stamp", "/Rect[320 320 380 380]/AP<</N 10 0 R>>"),
+                appearance("/BBox[0 0 10 10]", RED_SQUARE),
+            ],
+        ),
+        &PT,
+    );
+    assert!(near(px(&page, 295, 842 - 295), [0, 255, 0]));
+    assert!(near(px(&page, 310, 842 - 310), [0, 0, 0]));
+    assert!(near(px(&page, 350, 842 - 350), RED));
+    assert!(near(px(&page, 460, 842 - 460), RED));
+    assert!(near(px(&page, 480, 842 - 480), WHITE));
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+}
+
+#[test]
+fn an_annotation_is_painted_on_a_rotated_page_as_displayed() {
+    let page = render(
+        &annotated_pdf(
+            &format!("{A4}/Rotate 90"),
+            b"",
+            "5 0 R",
+            vec![
+                annotation("Stamp", "/Rect[0 0 50 50]/AP<</N 6 0 R>>"),
+                appearance("/BBox[0 0 10 10]", RED_SQUARE),
+            ],
+        ),
+        &PT,
+    );
+    assert_eq!((page.width, page.height), (842, 595));
+    assert!(near(px(&page, 25, 25), RED));
+    assert!(near(px(&page, 842 - 25, 595 - 25), WHITE));
+}
+
+#[cfg(feature = "standard-fonts")]
+#[test]
+fn a_widget_s_text_is_painted() {
+    let page = annotated_page(
+        vec![annotation(
+            "Widget",
+            "/Rect[100 100 300 140]/AP<</N 6 0 R>>",
+        )],
+        vec![appearance(
+            "/BBox[0 0 200 40]/Resources<</Font<</Helv<</Type/Font/Subtype/Type1\
+             /BaseFont/Helvetica>>>>>>",
+            "BT /Helv 24 Tf 4 10 Td (Name) Tj ET",
+        )],
+    );
+    assert!(inked(&page, 100, 300, 842 - 140, 842 - 100));
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+}
+
+#[test]
+fn an_appearance_that_cannot_be_painted_is_counted() {
+    let cases = [
+        (
+            "a stream that is not there",
+            vec![annotation(
+                "Stamp",
+                "/Rect[100 100 150 150]/AP<</N 99 0 R>>",
+            )],
+            vec![],
+        ),
+        (
+            "a value that is not a stream",
+            vec![annotation("Stamp", "/Rect[100 100 150 150]/AP<</N 5>>")],
+            vec![],
+        ),
+        (
+            "states and no /AS",
+            vec![annotation(
+                "Widget",
+                "/Rect[100 100 150 150]/AP<</N<</On 6 0 R>>>>",
+            )],
+            vec![appearance("/BBox[0 0 10 10]", RED_SQUARE)],
+        ),
+        (
+            "no /BBox",
+            vec![annotation("Stamp", "/Rect[100 100 150 150]/AP<</N 6 0 R>>")],
+            vec![appearance("", RED_SQUARE)],
+        ),
+        (
+            "a stream that does not decode",
+            vec![annotation("Stamp", "/Rect[100 100 150 150]/AP<</N 6 0 R>>")],
+            vec![appearance("/BBox[0 0 10 10]/Filter/DCTDecode", RED_SQUARE)],
+        ),
+        (
+            "no /Rect",
+            vec![annotation("Stamp", "/AP<</N 6 0 R>>")],
+            vec![appearance("/BBox[0 0 10 10]", RED_SQUARE)],
+        ),
+        (
+            "a box too small to scale",
+            vec![annotation("Stamp", "/Rect[100 100 150 150]/AP<</N 6 0 R>>")],
+            vec![appearance(
+                "/BBox[0 0 0.00000000000000000000000000000000000001 1]",
+                RED_SQUARE,
+            )],
+        ),
+        (
+            "a knockout group",
+            vec![annotation("Stamp", "/Rect[100 100 150 150]/AP<</N 6 0 R>>")],
+            vec![appearance(
+                "/BBox[0 0 10 10]/Group<</S/Transparency/K true>>",
+                RED_SQUARE,
+            )],
+        ),
+        (
+            "a knockout group inside it",
+            vec![annotation("Stamp", "/Rect[100 100 150 150]/AP<</N 6 0 R>>")],
+            vec![
+                appearance(
+                    "/BBox[0 0 10 10]/Resources<</XObject<</Fm 7 0 R>>>>",
+                    "/Fm Do",
+                ),
+                appearance(
+                    "/BBox[0 0 10 10]/Group<</S/Transparency/K true>>",
+                    RED_SQUARE,
+                ),
+            ],
+        ),
+    ];
+    for (case, annotations, appearances) in cases {
+        let page = annotated_page(annotations, appearances);
+        let gaps = RasterGaps {
+            annotations: 1,
+            ..RasterGaps::default()
+        };
+        assert_eq!(page.gaps, gaps, "{case}");
+        assert!(near(px(&page, 125, 842 - 125), WHITE), "{case}");
+    }
+}
+
+#[test]
+fn a_form_inside_an_appearance_that_does_not_decode_is_lost_content() {
+    let page = annotated_page(
+        vec![annotation("Stamp", "/Rect[100 100 150 150]/AP<</N 6 0 R>>")],
+        vec![
+            appearance(
+                "/BBox[0 0 10 10]/Resources<</XObject<</Fm 7 0 R>>>>",
+                "/Fm Do",
+            ),
+            stream_object(
+                "<</Type/XObject/Subtype/Form/BBox[0 0 10 10]/Filter/DCTDecode/Length 1>>",
+                b"x",
+            ),
+        ],
+    );
+    let gaps = RasterGaps {
+        undecodable_content_streams: 1,
+        ..RasterGaps::default()
+    };
+    assert_eq!(page.gaps, gaps);
+}
+
+#[test]
+fn an_appearance_with_a_form_nested_past_the_limit_is_counted() {
+    let mut objects = vec![annotation("Stamp", "/Rect[100 100 150 150]/AP<</N 6 0 R>>")];
+    objects.extend((6..38).map(|n| {
+        appearance(
+            &format!(
+                "/BBox[0 0 10 10]/Resources<</XObject<</Fm {} 0 R>>>>",
+                n + 1
+            ),
+            "/Fm Do",
+        )
+    }));
+    objects.push(appearance("/BBox[0 0 10 10]", RED_SQUARE));
+    let page = render(&annotated_pdf(A4, b"", "5 0 R", objects), &PT);
+    assert!(near(px(&page, 125, 842 - 125), WHITE));
+    let gaps = RasterGaps {
+        annotations: 1,
+        ..RasterGaps::default()
+    };
+    assert_eq!(page.gaps, gaps);
+}
+
+fn behind_forms(count: usize, first: usize, content: &str) -> Vec<Vec<u8>> {
+    let mut forms: Vec<Vec<u8>> = (first..first + count - 1)
+        .map(|n| {
+            appearance(
+                &format!(
+                    "/BBox[0 0 10 10]/Resources<</XObject<</Fm {} 0 R>>>>",
+                    n + 1
+                ),
+                "/Fm Do",
+            )
+        })
+        .collect();
+    forms.push(appearance("/BBox[0 0 10 10]", content));
+    forms
+}
+
+#[test]
+fn a_pattern_or_soft_mask_in_an_appearance_with_a_form_past_the_limit_is_counted() {
+    let cell = "/Fm Do";
+    let pattern = stream_object(
+        &format!(
+            "<</PatternType 1/PaintType 1/TilingType 1/BBox[0 0 10 10]/XStep 10/YStep 10\
+             /Resources<</XObject<</Fm 8 0 R>>>>/Length {}>>",
+            cell.len()
+        ),
+        cell.as_bytes(),
+    );
+    let group = appearance(
+        "/BBox[0 0 10 10]/Group<</S/Transparency>>/Resources<</XObject<</Fm 8 0 R>>>>",
+        cell,
+    );
+    let cases = [
+        (
+            "/Pattern<</P 7 0 R>>",
+            "/Pattern cs /P scn 0 0 10 10 re f",
+            pattern,
+            behind_forms(33, 8, RED_SQUARE),
+        ),
+        (
+            "/ExtGState<</M<</SMask<</S/Alpha/G 7 0 R>>>>>>",
+            "/M gs 1 0 0 rg 0 0 10 10 re f",
+            group,
+            behind_forms(33, 8, "0 0 10 10 re f"),
+        ),
+    ];
+    for (resources, content, painter, forms) in cases {
+        let mut objects = vec![
+            annotation("Stamp", "/Rect[100 100 150 150]/AP<</N 6 0 R>>"),
+            appearance(
+                &format!("/BBox[0 0 10 10]/Resources<<{resources}>>"),
+                content,
+            ),
+            painter,
+        ];
+        objects.extend(forms);
+        let page = render(&annotated_pdf(A4, b"", "5 0 R", objects), &PT);
+        assert!(near(px(&page, 125, 842 - 125), WHITE), "{resources}");
+        let gaps = RasterGaps {
+            annotations: 1,
+            ..RasterGaps::default()
+        };
+        assert_eq!(page.gaps, gaps, "{resources}");
+    }
+}
+
+#[test]
+fn an_isolated_form_inside_an_appearance_blends_with_nothing_beneath_it() {
+    let blue_multiplied = |group: &str| {
+        appearance(
+            &format!("/BBox[0 0 10 10]{group}/Resources<</ExtGState<</M<</BM/Multiply>>>>>>"),
+            "/M gs 0 0 1 rg 0 0 10 10 re f",
+        )
+    };
+    let page = render(
+        &annotated_pdf(
+            A4,
+            b"1 0 0 rg 0 0 595 842 re f",
+            "5 0 R 6 0 R",
+            vec![
+                annotation("Stamp", "/Rect[100 100 150 150]/AP<</N 7 0 R>>"),
+                annotation("Stamp", "/Rect[200 100 250 150]/AP<</N 8 0 R>>"),
+                appearance(
+                    "/BBox[0 0 10 10]/Resources<</XObject<</Fm 9 0 R>>>>",
+                    "/Fm Do",
+                ),
+                appearance(
+                    "/BBox[0 0 10 10]/Resources<</XObject<</Fm 10 0 R>>>>",
+                    "/Fm Do",
+                ),
+                blue_multiplied("/Group<</S/Transparency/I true>>"),
+                blue_multiplied("/Group<</S/Transparency>>"),
+            ],
+        ),
+        &PT,
+    );
+    assert!(near(px(&page, 125, 842 - 125), [0, 0, 255]));
+    assert!(near(px(&page, 225, 842 - 125), [0, 0, 0]));
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+}
+
+#[test]
+fn an_annotation_blend_mode_of_pdf_2_0_is_counted_unless_normal() {
+    let page = annotated_page(
+        vec![
+            annotation("Stamp", "/BM/Multiply/Rect[100 100 150 150]/AP<</N 9 0 R>>"),
+            annotation(
+                "Stamp",
+                "/BM[/Unknown/Screen]/Rect[200 100 250 150]/AP<</N 9 0 R>>",
+            ),
+            annotation("Stamp", "/BM/Normal/Rect[300 100 350 150]/AP<</N 9 0 R>>"),
+            annotation(
+                "Stamp",
+                "/BM/Compatible/Rect[400 100 450 150]/AP<</N 9 0 R>>",
+            ),
+        ],
+        vec![appearance("/BBox[0 0 10 10]", RED_SQUARE)],
+    );
+    for (x, color) in [(125, WHITE), (225, WHITE), (325, RED), (425, RED)] {
+        assert!(near(px(&page, x, 842 - 125), color), "{x}");
+    }
+    let gaps = RasterGaps {
+        annotations: 2,
+        ..RasterGaps::default()
+    };
+    assert_eq!(page.gaps, gaps);
+}
+
+#[test]
+fn a_knockout_soft_mask_in_an_appearance_is_counted() {
+    let page = annotated_page(
+        vec![annotation("Stamp", "/Rect[100 100 150 150]/AP<</N 6 0 R>>")],
+        vec![
+            appearance(
+                "/BBox[0 0 10 10]/Resources<</ExtGState<</M<</SMask<</S/Alpha/G 7 0 R>>>>>>>>",
+                "/M gs 0 0 1 rg 0 0 10 10 re f",
+            ),
+            appearance(
+                "/BBox[0 0 10 10]/Group<</S/Transparency/K true>>\
+                 /Resources<</ExtGState<</H<</ca 0.5>>>>>>",
+                "/H gs 0 0 10 10 re f 0 0 10 10 re f",
+            ),
+        ],
+    );
+    let gaps = RasterGaps {
+        annotations: 1,
+        ..RasterGaps::default()
+    };
+    assert_eq!(page.gaps, gaps);
+}
+
+#[test]
+fn a_form_that_does_not_decode_is_counted_once_wherever_it_is_painted() {
+    let bad = stream_object(
+        "<</Type/XObject/Subtype/Form/BBox[0 0 10 10]/Filter/DCTDecode/Length 1>>",
+        b"x",
+    );
+    let cell = "/Bad Do";
+    let pattern = stream_object(
+        &format!(
+            "<</PatternType 1/PaintType 1/TilingType 1/BBox[0 0 10 10]/XStep 10/YStep 10\
+             /Resources<</XObject<</Bad 9 0 R>>>>/Length {}>>",
+            cell.len()
+        ),
+        cell.as_bytes(),
+    );
+    let pdf = assemble(vec![
+        b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+        format!(
+            "<</Type/Page/Parent 2 0 R{A4}/Annots[5 0 R 6 0 R 6 0 R]\
+             /Resources<</XObject<</Bad 9 0 R>>>>/Contents 4 0 R>>"
+        )
+        .into_bytes(),
+        stream_object("<</Length 7>>", b"/Bad Do"),
+        annotation("Stamp", "/Rect[100 100 150 150]/AP<</N 7 0 R>>"),
+        annotation("Stamp", "/Rect[200 100 250 150]/AP<</N 8 0 R>>"),
+        appearance(
+            "/BBox[0 0 10 10]/Resources<</XObject<</Bad 9 0 R>>>>",
+            "/Bad Do",
+        ),
+        appearance(
+            "/BBox[0 0 10 10]/Resources<</Pattern<</P 10 0 R>>>>",
+            "/Pattern cs /P scn 0 0 10 10 re f",
+        ),
+        bad,
+        pattern,
+    ]);
+    let page = render(&pdf, &PT);
+    let gaps = RasterGaps {
+        undecodable_content_streams: 1,
+        ..RasterGaps::default()
+    };
+    assert_eq!(page.gaps, gaps);
+}
+
+#[test]
+fn a_group_inside_an_appearance_that_is_not_isolated_and_needs_a_layer_is_counted() {
+    let multiplied = |isolated: &str| {
+        appearance(
+            &format!(
+                "/BBox[0 0 10 10]/Group<</S/Transparency/I {isolated}>>\
+                 /Resources<</ExtGState<</M<</BM/Multiply>>>>>>"
+            ),
+            "/M gs 0 0 1 rg 0 0 10 10 re f",
+        )
+    };
+    let half = |form: u32| {
+        appearance(
+            &format!(
+                "/BBox[0 0 10 10]/Resources<</ExtGState<</H<</ca 0.5>>>>\
+                 /XObject<</Fm {form} 0 R>>>>"
+            ),
+            "/H gs /Fm Do",
+        )
+    };
+    let page = render(
+        &annotated_pdf(
+            A4,
+            b"1 0 0 rg 0 0 595 842 re f",
+            "5 0 R 6 0 R",
+            vec![
+                annotation("Stamp", "/Rect[100 100 150 150]/AP<</N 7 0 R>>"),
+                annotation("Stamp", "/Rect[200 100 250 150]/AP<</N 8 0 R>>"),
+                half(9),
+                half(10),
+                multiplied("false"),
+                multiplied("true"),
+            ],
+        ),
+        &PT,
+    );
+    assert!(near(px(&page, 125, 842 - 125), RED));
+    assert!(near(px(&page, 225, 842 - 125), [128, 0, 127]));
+    let gaps = RasterGaps {
+        annotations: 1,
+        ..RasterGaps::default()
+    };
+    assert_eq!(page.gaps, gaps);
+}
+
+#[test]
+fn an_annotation_blend_mode_array_is_counted_unread() {
+    let names = "/Unknown".repeat(2000);
+    let long = annotation(
+        "Stamp",
+        &format!("/BM[{names}/Multiply]/Rect[100 100 150 150]/AP<</N 7 0 R>>"),
+    );
+    let normal = annotation("Stamp", "/BM[/Normal]/Rect[200 100 250 150]/AP<</N 7 0 R>>");
+    let refs = format!("{}6 0 R", "5 0 R ".repeat(1000));
+    let page = render(
+        &annotated_pdf(
+            A4,
+            b"",
+            &refs,
+            vec![long, normal, appearance("/BBox[0 0 10 10]", RED_SQUARE)],
+        ),
+        &PT,
+    );
+    assert!(near(px(&page, 225, 842 - 125), WHITE));
+    let gaps = RasterGaps {
+        annotations: 1001,
+        ..RasterGaps::default()
+    };
+    assert_eq!(page.gaps, gaps);
+}
+
+#[test]
+fn a_shading_a_form_writes_inline_is_painted_though_the_page_names_another_alike() {
+    let axial = |rgb: &str| {
+        format!(
+            "<</ShadingType 2/ColorSpace/DeviceRGB/Coords[0 0 1 0]/Extend[true true]\
+             /Function<</FunctionType 2/Domain[0 1]/C0[{rgb}]/C1[{rgb}]/N 1>>>>"
+        )
+    };
+    let red = axial("1 0 0");
+    let content = b"/Pattern cs /P scn 0 0 595 842 re f /Sh sh /A Do /B Do";
+    let form = |bbox: &str, resources: String, content: &str| {
+        stream_object(
+            &format!(
+                "<</Type/XObject/Subtype/Form/BBox[{bbox}]/Resources<<{resources}>>/Length {}>>",
+                content.len()
+            ),
+            content.as_bytes(),
+        )
+    };
+    let pdf = assemble(vec![
+        b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+        format!(
+            "<</Type/Page/Parent 2 0 R{A4}/Resources<</Shading<</Sh 5 0 R>>/Pattern<</P 6 0 R>>\
+             /XObject<</A 7 0 R/B 8 0 R>>>>/Contents 4 0 R>>"
+        )
+        .into_bytes(),
+        stream_object(&format!("<</Length {}>>", content.len()), content),
+        axial("0 0 1").into_bytes(),
+        b"<</PatternType 2/Shading 5 0 R>>".to_vec(),
+        form("0 0 50 50", format!("/Shading<</Sh {red}>>"), "/Sh sh"),
+        form(
+            "100 0 150 50",
+            format!("/Pattern<</P<</PatternType 2/Shading {red}>>>>"),
+            "/Pattern cs /P scn 100 0 50 50 re f",
+        ),
+    ]);
+    let page = render(&pdf, &PT);
+    assert!(
+        near(px(&page, 25, 842 - 25), RED),
+        "{:?}",
+        px(&page, 25, 842 - 25)
+    );
+    assert!(
+        near(px(&page, 125, 842 - 25), RED),
+        "{:?}",
+        px(&page, 125, 842 - 25)
+    );
+    assert!(near(px(&page, 300, 400), [0, 0, 255]));
+}
+
+#[test]
+fn annotations_past_the_first_4096_entries_are_counted_unread() {
+    let long = "A".repeat(10_000);
+    let refs = format!("{}6 0 R", "5 0 R ".repeat(5000));
+    let page = render(
+        &annotated_pdf(
+            A4,
+            b"",
+            &refs,
+            vec![
+                annotation(
+                    "Widget",
+                    &format!("/Rect[100 100 150 150]/AS/{long}/AP<</N<</{long}B 7 0 R>>>>"),
+                ),
+                annotation("Stamp", "/Rect[200 100 250 150]/AP<</N 7 0 R>>"),
+                appearance("/BBox[0 0 10 10]", RED_SQUARE),
+            ],
+        ),
+        &PT,
+    );
+    assert!(near(px(&page, 225, 842 - 125), WHITE));
+    let gaps = RasterGaps {
+        annotations: 5001 - 4096,
+        ..RasterGaps::default()
+    };
+    assert_eq!(page.gaps, gaps);
+}
+
+#[test]
+fn an_annotation_with_nothing_to_show_is_not_a_gap() {
+    let page = annotated_page(
+        vec![
+            annotation("Link", "/Rect[100 100 150 150]/Border[0 0 0]"),
+            annotation("Stamp", "/Rect[0 0 0 0]/AP<</N 14 0 R>>"),
+            annotation("Stamp", "/Rect[200 100 250 150]/AP<</N 12 0 R>>"),
+            annotation("Stamp", "/Rect[300 100 350 150]/AP<</N 13 0 R>>"),
+            annotation("Stamp", "/Rect[400 100 450 150]/AP<</D 11 0 R>>"),
+            annotation("Stamp", "/Rect[100 200 150 250]"),
+        ],
+        vec![
+            appearance("/BBox[0 0 10 10]", RED_SQUARE),
+            appearance("/BBox[0 0 0 0]", RED_SQUARE),
+            appearance("/BBox[0 0 10 10]/Matrix[0 0 0 0 0 0]", RED_SQUARE),
+            appearance(
+                "/BBox[0 0 10 10]/Resources<</XObject<</Fm 15 0 R>>>>",
+                "/Fm Do",
+            ),
+            stream_object(
+                "<</Type/XObject/Subtype/Form/BBox[0 0 10 10]/Filter/DCTDecode/Length 1>>",
+                b"x",
+            ),
+        ],
+    );
+    assert!(page.rgba.chunks(4).all(|p| p[..3] == WHITE));
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+}
+
+#[test]
+fn annotations_past_the_bound_are_counted_and_not_painted() {
+    let mut objects = vec![appearance("/BBox[0 0 10 10]", RED_SQUARE)];
+    objects.extend((0..4097).map(|i| {
+        let x = if i < 4096 { 100 } else { 300 };
+        annotation(
+            "Stamp",
+            &format!("/Rect[{x} 100 {} 150]/AP<</N 5 0 R>>", x + 50),
+        )
+    }));
+    let refs: Vec<String> = (6..6 + 4097).map(|n| format!("{n} 0 R")).collect();
+    let page = render(&annotated_pdf(A4, b"", &refs.join(" "), objects), &PT);
+    assert!(near(px(&page, 125, 842 - 125), RED));
+    assert!(near(px(&page, 325, 842 - 125), WHITE));
+    assert_eq!(page.gaps.annotations, 1, "{:?}", page.gaps);
 }

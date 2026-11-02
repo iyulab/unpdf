@@ -2,19 +2,18 @@
 //! PNG, and its size before it is painted, through the C ABI.
 #![cfg(feature = "ffi")]
 
-mod common;
-
+use common::{assemble, image_only_pdf, page_pdf, stream_object, text_pdf};
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::ptr;
-
-use common::{image_only_pdf, page_pdf, text_pdf};
 use unpdf::error::ErrorKind;
 use unpdf::ffi::{
     unpdf_free_bytes, unpdf_free_document, unpdf_free_string, unpdf_last_error_kind,
     unpdf_open_bytes_with_options, unpdf_page_pixels, unpdf_page_size, unpdf_parse_bytes,
     unpdf_render_page,
 };
+
+mod common;
 
 unsafe fn take_string(ptr: *mut c_char) -> String {
     assert!(!ptr.is_null());
@@ -275,6 +274,28 @@ fn a_size_that_cannot_be_read_fails_with_its_kind() {
         assert!(!doc.is_null());
         assert!(unpdf_page_size(doc, 1, ptr::null()).is_null());
         assert_eq!(unpdf_last_error_kind(), ErrorKind::Render as i32);
+        unpdf_free_document(doc);
+    }
+}
+
+#[test]
+fn an_annotation_appearance_that_cannot_be_painted_is_reported() {
+    let bytes = assemble(vec![
+        b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+        b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 100 100]/Annots[5 0 R]/Contents 4 0 R>>".to_vec(),
+        stream_object("<</Length 0>>", b""),
+        b"<</Type/Annot/Subtype/Stamp/Rect[10 10 50 50]/AP<</N 99 0 R>>>>".to_vec(),
+    ]);
+    unsafe {
+        let doc = unpdf_parse_bytes(bytes.as_ptr(), bytes.len());
+        let mut len = 0usize;
+        let mut info: *mut c_char = ptr::null_mut();
+        let png = unpdf_render_page(doc, 1, ptr::null(), &mut len, &mut info);
+        assert!(!png.is_null());
+        unpdf_free_bytes(png, len);
+        let info: serde_json::Value = serde_json::from_str(&take_string(info)).unwrap();
+        assert_eq!(info["gaps"]["annotations"], 1, "{info}");
         unpdf_free_document(doc);
     }
 }
