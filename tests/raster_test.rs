@@ -1087,6 +1087,84 @@ fn a_four_component_jpeg_its_encoder_transformed_is_counted_in_a_devicen_space()
     assert_eq!(transformed.gaps.images, 1, "{:?}", transformed.gaps);
 }
 
+#[test]
+fn an_image_whose_transform_fails_for_a_value_its_samples_can_take_is_counted() {
+    let image = stream_object(
+        "<</Type/XObject/Subtype/Image/Width 2/Height 1/ColorSpace[/Separation/X/DeviceGray 6 0 R]\
+          /BitsPerComponent 8/Length 2>>",
+        &[0, 0],
+    );
+    let program = b"{ dup 0.5 gt { pop } if }";
+    let transform = stream_object(
+        &format!(
+            "<</FunctionType 4/Domain[0 1]/Range[0 1]/Length {}>>",
+            program.len()
+        ),
+        program,
+    );
+    let page = render(
+        &page_pdf_with_xobjects(
+            A4,
+            b"q 200 0 0 100 50 50 cm /J Do Q",
+            vec![("J", image), ("T", transform)],
+        ),
+        &PT,
+    );
+    assert_eq!(page.gaps.images, 1, "{:?}", page.gaps);
+}
+
+#[test]
+fn an_image_whose_soft_mask_does_not_convert_is_counted_and_not_painted_unmasked() {
+    let black = stream_object(
+        "<</Type/XObject/Subtype/Image/Width 2/Height 1/ColorSpace/DeviceGray\
+          /BitsPerComponent 8/SMask 6 0 R/Length 2>>",
+        &[0, 0],
+    );
+    let transparent_mask = stream_object(
+        "<</Type/XObject/Subtype/Image/Width 2/Height 1/ColorSpace[/Separation/X/DeviceGray 7 0 R]\
+          /BitsPerComponent 8/Length 2>>",
+        &[0, 0],
+    );
+    let fails_past_one_half = b"{ dup 0.5 gt { pop } if }";
+    let transform = stream_object(
+        &format!(
+            "<</FunctionType 4/Domain[0 1]/Range[0 1]/Length {}>>",
+            fails_past_one_half.len()
+        ),
+        fails_past_one_half,
+    );
+    let page = render(
+        &page_pdf_with_xobjects(
+            A4,
+            b"q 200 0 0 100 50 50 cm /J Do Q",
+            vec![("J", black), ("M", transparent_mask), ("T", transform)],
+        ),
+        &PT,
+    );
+    assert_eq!(page.gaps.images, 1, "{:?}", page.gaps);
+    assert!(
+        near(px(&page, 150, 742), WHITE),
+        "{:?}",
+        px(&page, 150, 742)
+    );
+}
+
+/// A page whose `/S0` color space is `space`, `objects` being objects 5 on, painting `content`.
+fn space_page(space: &str, objects: Vec<Vec<u8>>, content: &[u8]) -> RasteredPage {
+    let mut pdf = vec![
+        b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+        format!(
+            "<</Type/Page/Parent 2 0 R{A4}/Resources<</ColorSpace<</S0 {space}>>\
+             /Font<</F1<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>>>>>/Contents 4 0 R>>"
+        )
+        .into_bytes(),
+        stream_object(&format!("<</Length {}>>", content.len()), content),
+    ];
+    pdf.extend(objects);
+    render(&assemble(pdf), &PT)
+}
+
 /// A page whose `/S0` color space is `space` with the calculator function `program` (object 5)
 /// as its tint transform, painting `content`.
 fn calculator_page(
@@ -1096,24 +1174,16 @@ fn calculator_page(
     program: &str,
     content: &[u8],
 ) -> RasteredPage {
-    render(
-        &assemble(vec![
-            b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
-            b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
-            format!(
-                "<</Type/Page/Parent 2 0 R{A4}/Resources<</ColorSpace<</S0 {space}>>>>                 /Contents 4 0 R>>"
-            )
-            .into_bytes(),
-            stream_object(&format!("<</Length {}>>", content.len()), content),
-            stream_object(
-                &format!(
-                    "<</FunctionType 4/Domain {domain}/Range {range}/Length {}>>",
-                    program.len()
-                ),
-                program.as_bytes(),
+    space_page(
+        space,
+        vec![stream_object(
+            &format!(
+                "<</FunctionType 4/Domain {domain}/Range {range}/Length {}>>",
+                program.len()
             ),
-        ]),
-        &PT,
+            program.as_bytes(),
+        )],
+        content,
     )
 }
 
@@ -1149,6 +1219,696 @@ fn a_one_colorant_devicen_with_a_calculator_transform_reads_as_its_ink() {
     let at = |x: u32, y: u32| px(&page, x, 842 - y);
     assert!(near(at(150, 150), WHITE), "{:?}", at(150, 150));
     assert!(near(at(350, 150), [35, 31, 32]), "{:?}", at(350, 150));
+}
+
+const LAB_D50: &str = "[/Lab<</WhitePoint[0.9642 1 0.8249]>>]";
+/// Lab (75, -50, 60) in sRGB.
+const LAB_GREEN: [u8; 3] = [105, 207, 59];
+
+fn only_colors(colors: u32) -> RasterGaps {
+    RasterGaps {
+        colors,
+        ..RasterGaps::default()
+    }
+}
+
+#[test]
+fn a_lab_color_is_converted_to_srgb() {
+    let page = space_page(
+        LAB_D50,
+        vec![],
+        b"/S0 cs 75 -50 60 sc 100 100 100 100 re f 50 0 0 sc 300 100 100 100 re f \
+          90 0 0 sc 500 100 50 50 re f",
+    );
+    let at = |x: u32, y: u32| px(&page, x, 842 - y);
+    assert!(near(at(150, 150), LAB_GREEN), "{:?}", at(150, 150));
+    assert!(near(at(350, 150), [119; 3]), "{:?}", at(350, 150));
+    assert!(near(at(520, 120), [226; 3]), "{:?}", at(520, 120));
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+}
+
+#[test]
+fn a_lab_color_is_converted_from_the_white_point_the_space_declares() {
+    let page = space_page(
+        "[/Lab<</WhitePoint[0.95047 1 1.08883]>>]",
+        vec![],
+        b"/S0 cs 75 -50 60 sc 100 100 100 100 re f 100 0 0 sc 300 100 100 100 re f",
+    );
+    let at = |x: u32, y: u32| px(&page, x, 842 - y);
+    assert!(near(at(150, 150), [119, 206, 63]), "{:?}", at(150, 150));
+    assert!(near(at(350, 150), WHITE), "{:?}", at(350, 150));
+}
+
+#[test]
+fn a_lab_color_is_clamped_to_its_ranges() {
+    let wide = space_page(
+        LAB_D50,
+        vec![],
+        b"/S0 cs 75 -300 300 sc 100 100 100 100 re f 75 -100 100 sc 300 100 100 100 re f",
+    );
+    assert!(
+        near(px(&wide, 150, 692), [0, 223, 0]),
+        "{:?}",
+        px(&wide, 150, 692)
+    );
+    assert_eq!(px(&wide, 150, 692), px(&wide, 350, 692));
+    let narrow = space_page(
+        "[/Lab<</WhitePoint[0.9642 1 0.8249]/Range[-50 50 -50 50]>>]",
+        vec![],
+        b"/S0 cs 75 -200 200 sc 100 100 100 100 re f 150 0 0 sc 300 100 100 100 re f",
+    );
+    assert!(
+        near(px(&narrow, 150, 692), [100, 207, 84]),
+        "{:?}",
+        px(&narrow, 150, 692)
+    );
+    assert!(
+        near(px(&narrow, 350, 692), WHITE),
+        "{:?}",
+        px(&narrow, 350, 692)
+    );
+}
+
+#[test]
+fn a_lab_stroke_color_space_starts_black() {
+    let page = space_page(LAB_D50, vec![], b"/S0 CS 20 w 300 100 m 400 100 l S");
+    assert!(near(px(&page, 350, 842 - 100), [0, 0, 0]));
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+}
+
+#[test]
+fn a_separation_with_a_lab_alternate_converts_through_its_transform() {
+    let space = "[/Separation/Pantone[/Lab<</WhitePoint[0.9642 1 0.8249]>>]\
+                 <</FunctionType 2/Domain[0 1]/C0[100 0 0]/C1[75 -50 60]/N 1>>]";
+    let page = space_page(
+        space,
+        vec![],
+        b"/S0 cs 1 scn 100 100 100 100 re f 0.5 scn 300 100 100 100 re f 0 scn 500 100 50 50 re f",
+    );
+    let at = |x: u32, y: u32| px(&page, x, 842 - y);
+    assert!(near(at(150, 150), LAB_GREEN), "full {:?}", at(150, 150));
+    assert!(
+        near(at(350, 150), [186, 232, 160]),
+        "half {:?}",
+        at(350, 150)
+    );
+    assert!(near(at(520, 120), WHITE), "none {:?}", at(520, 120));
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+}
+
+#[test]
+fn an_indexed_space_with_a_lab_base_scales_its_palette_onto_the_lab_ranges() {
+    let space = "[/Indexed[/Lab<</WhitePoint[0.9642 1 0.8249]>>] 1 <FF8080BF40CC>]";
+    let page = space_page(
+        space,
+        vec![],
+        b"/S0 cs 1 sc 100 100 100 100 re f 0 sc 300 100 100 100 re f",
+    );
+    let at = |x: u32, y: u32| px(&page, x, 842 - y);
+    assert!(near(at(150, 150), LAB_GREEN), "{:?}", at(150, 150));
+    assert!(near(at(350, 150), WHITE), "{:?}", at(350, 150));
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+}
+
+#[test]
+fn a_lab_image_is_converted_with_the_default_decode() {
+    let image = stream_object(
+        "<</Type/XObject/Subtype/Image/Width 2/Height 1\
+          /ColorSpace[/Lab<</WhitePoint[0.9642 1 0.8249]>>]/BitsPerComponent 8/Length 6>>",
+        &[191, 64, 204, 255, 128, 128],
+    );
+    let page = render(
+        &page_pdf_with_xobjects(A4, b"q 200 0 0 100 50 50 cm /J Do Q", vec![("J", image)]),
+        &PT,
+    );
+    assert!(
+        near(px(&page, 70, 742), LAB_GREEN),
+        "{:?}",
+        px(&page, 70, 742)
+    );
+    assert!(
+        near(px(&page, 230, 742), WHITE),
+        "{:?}",
+        px(&page, 230, 742)
+    );
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+}
+
+#[test]
+fn a_form_names_the_color_spaces_of_its_own_resources() {
+    let form_content = b"/S0 cs 1 scn 300 100 100 100 re f";
+    let form = stream_object(
+        &format!(
+            "<</Type/XObject/Subtype/Form/BBox[0 0 595 842]/Resources<</ColorSpace<</S0 \
+              [/Separation/X/DeviceRGB<</FunctionType 2/Domain[0 1]/C0[1 1 1]/C1[1 0 0]/N 1>>]\
+              >>>>/Length {}>>",
+            form_content.len()
+        ),
+        form_content,
+    );
+    let content = b"/S0 cs 75 -50 60 sc 100 100 100 100 re f /Fm Do";
+    let page = render(
+        &assemble(vec![
+            b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+            b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+            format!(
+                "<</Type/Page/Parent 2 0 R{A4}/Resources<</ColorSpace<</S0 {LAB_D50}>>\
+                 /XObject<</Fm 5 0 R>>>>/Contents 4 0 R>>"
+            )
+            .into_bytes(),
+            stream_object(&format!("<</Length {}>>", content.len()), content),
+            form,
+        ]),
+        &PT,
+    );
+    let at = |x: u32, y: u32| px(&page, x, 842 - y);
+    assert!(near(at(150, 150), LAB_GREEN), "{:?}", at(150, 150));
+    assert!(near(at(350, 150), RED), "{:?}", at(350, 150));
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+}
+
+#[test]
+fn a_shading_in_a_lab_space_is_converted_to_srgb() {
+    let shading = format!(
+        "<</ShadingType 2/ColorSpace{LAB_D50}/Coords[0 0 595 0]\
+          /Function<</FunctionType 2/Domain[0 1]/C0[100 0 0]/C1[75 -50 60]/N 1>>\
+          /Extend[true true]>>"
+    );
+    let page = render(&page_pdf(&with_shading(&shading), A4, b"/Sh sh"), &PT);
+    assert!(near(px(&page, 2, 400), WHITE), "{:?}", px(&page, 2, 400));
+    assert!(
+        near(px(&page, 592, 400), LAB_GREEN),
+        "{:?}",
+        px(&page, 592, 400)
+    );
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+}
+
+#[cfg(feature = "standard-fonts")]
+#[test]
+fn text_over_a_light_lab_background_stays_legible() {
+    let content = [
+        b"/S0 cs 90 0 0 sc 50 650 300 100 re f 0 g ".as_slice(),
+        HELLO_HELVETICA,
+    ]
+    .concat();
+    let page = space_page(LAB_D50, vec![], &content);
+    assert!(
+        near(px(&page, 60, 102), [226; 3]),
+        "{:?}",
+        px(&page, 60, 102)
+    );
+    assert!(inked(&page, 72, 175, 842 - 732, 842 - 700));
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+}
+
+/// A DeviceN of two colorants into RGB through a sampled function of two inputs (object 5) with
+/// the dictionary `entries` besides, the first input varying fastest: white, red, green, black
+/// at the corners.
+fn corner_page(entries: &str, content: &[u8]) -> RasteredPage {
+    let samples = [255, 255, 255, 255, 0, 0, 0, 255, 0, 0, 0, 0];
+    space_page(
+        "[/DeviceN[/A/B]/DeviceRGB 5 0 R]",
+        vec![stream_object(
+            &format!(
+                "<</FunctionType 0/Domain[0 1 0 1]/Range[0 1 0 1 0 1]/Size[2 2]/BitsPerSample 8\
+                  {entries}/Length 12>>"
+            ),
+            &samples,
+        )],
+        content,
+    )
+}
+
+#[test]
+fn a_devicen_with_a_sampled_transform_of_several_inputs_is_converted() {
+    let page = corner_page(
+        "",
+        b"/S0 cs 1 0 scn 100 100 100 100 re f 0 1 scn 300 100 100 100 re f \
+          0.5 0.5 scn 500 100 50 50 re f 1 1 scn 100 300 100 100 re f",
+    );
+    let at = |x: u32, y: u32| px(&page, x, 842 - y);
+    assert!(near(at(150, 150), RED), "first {:?}", at(150, 150));
+    assert!(near(at(350, 150), [0, 255, 0]), "second {:?}", at(350, 150));
+    assert!(
+        near(at(520, 120), [128, 128, 64]),
+        "both {:?}",
+        at(520, 120)
+    );
+    assert!(near(at(150, 350), [0, 0, 0]), "corner {:?}", at(150, 350));
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+}
+
+#[test]
+fn a_sampled_transform_applies_its_encode_and_decode() {
+    let content = b"/S0 cs 1 0 scn 100 100 100 100 re f 0 1 scn 300 100 100 100 re f";
+    let encoded = corner_page("/Encode[1 0 0 1]", content);
+    assert!(
+        near(px(&encoded, 150, 692), WHITE),
+        "{:?}",
+        px(&encoded, 150, 692)
+    );
+    assert!(
+        near(px(&encoded, 350, 692), [0, 0, 0]),
+        "{:?}",
+        px(&encoded, 350, 692)
+    );
+    let inverted = corner_page("/Decode[1 0 1 0 1 0]", content);
+    assert!(
+        near(px(&inverted, 150, 692), [0, 255, 255]),
+        "{:?}",
+        px(&inverted, 150, 692)
+    );
+    assert!(
+        near(px(&inverted, 350, 692), [255, 0, 255]),
+        "{:?}",
+        px(&inverted, 350, 692)
+    );
+}
+
+#[test]
+fn a_sampled_transform_clips_its_outputs_to_its_range() {
+    let page = space_page(
+        &format!("[/DeviceN[/A/B]{LAB_D50} 5 0 R]"),
+        vec![stream_object(
+            "<</FunctionType 0/Domain[0 1 0 1]/Range[90 100 0 0 0 0]/Decode[0 100 0 0 0 0]\
+              /Size[2 2]/BitsPerSample 8/Length 12>>",
+            &[0; 12],
+        )],
+        b"/S0 cs 0.5 0.5 scn 100 100 100 100 re f",
+    );
+    assert!(
+        near(px(&page, 150, 692), [226; 3]),
+        "{:?}",
+        px(&page, 150, 692)
+    );
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+}
+
+/// A DeviceN of two colorants into gray through a sampled function of `side` x `side` samples,
+/// all one half.
+fn table_page(side: usize) -> RasteredPage {
+    let samples = vec![128u8; side * side];
+    space_page(
+        "[/DeviceN[/A/B]/DeviceGray 5 0 R]",
+        vec![stream_object(
+            &format!(
+                "<</FunctionType 0/Domain[0 1 0 1]/Range[0 1]/Size[{side} {side}]\
+                  /BitsPerSample 8/Length {}>>",
+                samples.len()
+            ),
+            &samples,
+        )],
+        b"/S0 cs 0.5 0.5 scn 100 100 100 100 re f",
+    )
+}
+
+#[test]
+fn a_sampled_transform_is_read_up_to_a_million_samples() {
+    let page = table_page(1024);
+    assert!(
+        near(px(&page, 150, 692), [128; 3]),
+        "{:?}",
+        px(&page, 150, 692)
+    );
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+    assert_eq!(table_page(1025).gaps, only_colors(1));
+}
+
+#[test]
+fn a_sampled_transform_is_decoded_no_further_than_its_table() {
+    let lzw_codes_0_85_170_255_then_unassigned_511 = [0, 21, 85, 79, 255, 248];
+    let page = space_page(
+        "[/DeviceN[/A/B]/DeviceGray 5 0 R]",
+        vec![stream_object(
+            "<</FunctionType 0/Domain[0 1 0 1]/Range[0 1]/Size[2 2]/BitsPerSample 8\
+              /Filter/LZWDecode/Length 6>>",
+            &lzw_codes_0_85_170_255_then_unassigned_511,
+        )],
+        b"/S0 cs 1 0 scn 100 100 100 100 re f",
+    );
+    assert!(
+        near(px(&page, 150, 692), [85; 3]),
+        "{:?}",
+        px(&page, 150, 692)
+    );
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+}
+
+#[test]
+fn a_sampled_transform_s_table_is_read_across_a_partial_predictor_row() {
+    let lzw_rows_10_10_10_10_and_20_10_10_10 = [5, 2, 129, 64, 160, 160, 40, 20, 10, 128, 128];
+    let page = space_page(
+        "[/Separation/X/DeviceGray 5 0 R]",
+        vec![stream_object(
+            "<</FunctionType 0/Domain[0 1]/Range[0 1]/Size[6]/BitsPerSample 8/Filter/LZWDecode\
+              /DecodeParms<</Predictor 2/Columns 4>>/Length 11>>",
+            &lzw_rows_10_10_10_10_and_20_10_10_10,
+        )],
+        b"/S0 cs 1 scn 100 100 100 100 re f",
+    );
+    assert!(
+        near(px(&page, 150, 692), [30; 3]),
+        "{:?}",
+        px(&page, 150, 692)
+    );
+}
+
+#[test]
+fn a_sampled_transform_of_several_inputs_and_cubic_order_is_counted() {
+    let sampled = |inputs: &str, size: &str, samples: &[u8]| {
+        stream_object(
+            &format!(
+                "<</FunctionType 0/Domain[{inputs}]/Range[0 1]/Size[{size}]/BitsPerSample 8\
+                  /Order 3/Length {}>>",
+                samples.len()
+            ),
+            samples,
+        )
+    };
+    let two_inputs = space_page(
+        "[/DeviceN[/A/B]/DeviceGray 5 0 R]",
+        vec![sampled("0 1 0 1", "2 2", &[0, 0, 255, 0])],
+        b"/S0 cs 0.5 0.5 scn 100 100 100 100 re f",
+    );
+    assert_eq!(two_inputs.gaps, only_colors(1));
+    let one_input = space_page(
+        "[/Separation/X/DeviceGray 5 0 R]",
+        vec![sampled("0 1", "2", &[0, 255])],
+        b"/S0 cs 0.5 scn 100 100 100 100 re f",
+    );
+    assert!(one_input.gaps.is_empty(), "{:?}", one_input.gaps);
+    assert!(
+        near(px(&one_input, 150, 692), [128; 3]),
+        "{:?}",
+        px(&one_input, 150, 692)
+    );
+}
+
+#[test]
+fn a_sampled_transform_spreads_its_inputs_over_the_whole_table_by_default() {
+    let samples: Vec<u8> = (0..9).map(|i| i * 20).collect();
+    let page = space_page(
+        "[/DeviceN[/A/B]/DeviceGray 5 0 R]",
+        vec![stream_object(
+            "<</FunctionType 0/Domain[0 1 0 1]/Range[0 1]/Size[3 3]/BitsPerSample 8/Length 9>>",
+            &samples,
+        )],
+        b"/S0 cs 0.5 0.5 scn 100 100 100 100 re f 1 0 scn 300 100 100 100 re f \
+          0 1 scn 500 100 50 50 re f",
+    );
+    let at = |x: u32, y: u32| px(&page, x, 842 - y);
+    assert!(near(at(150, 150), [80; 3]), "middle {:?}", at(150, 150));
+    assert!(near(at(350, 150), [40; 3]), "first {:?}", at(350, 150));
+    assert!(near(at(520, 120), [120; 3]), "second {:?}", at(520, 120));
+}
+
+/// A DeviceN of `inputs` colorants into gray through a sampled function whose corner `i` holds
+/// `i.count_ones() * (255 / inputs)`, every tint at one half.
+fn halves_page(inputs: usize) -> RasteredPage {
+    let names: String = (0..inputs).map(|i| format!("/C{i}")).collect();
+    let samples: Vec<u8> = (0..1usize << inputs)
+        .map(|i| (i.count_ones() as usize * (255 / inputs)) as u8)
+        .collect();
+    space_page(
+        &format!("[/DeviceN[{names}]/DeviceGray 5 0 R]"),
+        vec![stream_object(
+            &format!(
+                "<</FunctionType 0/Domain[{}]/Range[0 1]/Size[{}]/BitsPerSample 8/Length {}>>",
+                "0 1 ".repeat(inputs),
+                "2 ".repeat(inputs),
+                samples.len()
+            ),
+            &samples,
+        )],
+        format!("/S0 cs {}scn 100 100 100 100 re f", "0.5 ".repeat(inputs)).as_bytes(),
+    )
+}
+
+#[test]
+fn a_sampled_transform_reads_up_to_eight_inputs() {
+    let page = halves_page(8);
+    assert!(
+        near(px(&page, 150, 692), [124; 3]),
+        "{:?}",
+        px(&page, 150, 692)
+    );
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+    assert_eq!(halves_page(9).gaps, only_colors(1));
+}
+
+#[test]
+fn a_color_in_a_space_that_does_not_convert_is_counted_and_painted_dark() {
+    let sampled = |dict: &str| {
+        stream_object(
+            &format!("<</FunctionType 0{dict}/Range[0 1 0 1 0 1]/BitsPerSample 8/Length 12>>"),
+            &[0; 12],
+        )
+    };
+    let devicen = "[/DeviceN[/A/B]/DeviceRGB 5 0 R]";
+    let cases: Vec<(&str, &str, &str, Vec<Vec<u8>>)> = vec![
+        ("no such resource", LAB_D50, "Nope", vec![]),
+        (
+            "a transform that does not read",
+            "[/DeviceN[/A/B]/DeviceRGB<</FunctionType 9>>]",
+            "S0",
+            vec![],
+        ),
+        (
+            "a transform of one input for two colorants",
+            "[/DeviceN[/A/B]/DeviceGray<</FunctionType 2/Domain[0 1]/C0[1]/C1[0]/N 1>>]",
+            "S0",
+            vec![],
+        ),
+        (
+            "an alternate that is no space",
+            "[/Separation/X/Nonsense<</FunctionType 2/Domain[0 1]/C0[0]/C1[1]/N 1>>]",
+            "S0",
+            vec![],
+        ),
+        (
+            "an ICC profile of two channels",
+            "[/ICCBased 5 0 R]",
+            "S0",
+            vec![stream_object("<</N 2/Length 0>>", b"")],
+        ),
+        ("Lab without a white point", "[/Lab<<>>]", "S0", vec![]),
+        (
+            "Lab with a white point of zero",
+            "[/Lab<</WhitePoint[0 1 1]>>]",
+            "S0",
+            vec![],
+        ),
+        (
+            "a sampled transform with a size for one input only",
+            devicen,
+            "S0",
+            vec![sampled("/Domain[0 1 0 1]/Size[2]")],
+        ),
+        (
+            "a sampled transform with a size of zero",
+            devicen,
+            "S0",
+            vec![sampled("/Domain[0 1 0 1]/Size[2 0]")],
+        ),
+        (
+            "a sampled transform with more samples than a count holds",
+            devicen,
+            "S0",
+            vec![sampled("/Domain[0 1 0 1]/Size[4294967296 4294967296]")],
+        ),
+    ];
+    for (label, space, name, objects) in cases {
+        let content = format!("/{name} cs 1 1 scn 100 100 100 100 re f");
+        let page = space_page(space, objects, content.as_bytes());
+        assert_eq!(page.gaps, only_colors(1), "{label}");
+        assert!(
+            near(px(&page, 150, 692), [0, 0, 0]),
+            "{label} {:?}",
+            px(&page, 150, 692)
+        );
+    }
+    let initial = space_page(
+        LAB_D50,
+        vec![],
+        b"/Nope cs /Nope CS 100 100 100 100 re f 20 w 300 100 m 400 100 l S",
+    );
+    assert_eq!(initial.gaps, only_colors(2));
+    assert!(near(px(&initial, 150, 692), [0, 0, 0]));
+    assert!(near(px(&initial, 350, 742), [0, 0, 0]));
+    let shade = |tints: &str| {
+        let content = format!("/Nope cs {tints} scn 100 100 100 100 re f");
+        px(&space_page(LAB_D50, vec![], content.as_bytes()), 150, 692)
+    };
+    assert!(
+        near(shade("0.25 0.75"), [64; 3]),
+        "{:?}",
+        shade("0.25 0.75")
+    );
+    assert!(
+        near(shade("0.75 0.25"), [64; 3]),
+        "{:?}",
+        shade("0.75 0.25")
+    );
+    assert!(near(shade("7 0"), [0; 3]), "{:?}", shade("7 0"));
+}
+
+#[test]
+fn a_color_that_does_not_convert_in_a_pattern_cell_is_counted() {
+    let page = render(
+        &tiling_pdf(
+            "/PaintType 1/BBox[0 0 10 10]/XStep 10/YStep 10/Resources<<>>",
+            b"/Nope cs 1 scn 0 0 5 5 re f",
+            b"/Pattern cs /P0 scn 100 100 200 200 re f",
+        ),
+        &PT,
+    );
+    assert_eq!(page.gaps, only_colors(1));
+}
+
+#[test]
+fn a_pattern_counts_a_color_that_does_not_convert_only_when_it_paints_in_it() {
+    let gaps = |paint_type: u8, set: &str| {
+        let entries =
+            format!("/PaintType {paint_type}/BBox[0 0 10 10]/XStep 20/YStep 20/Resources<<>>");
+        let content = format!("/CS1 cs {set} 100 100 200 200 re f");
+        render(
+            &tiling_pdf(&entries, b"0 0 10 10 re f", content.as_bytes()),
+            &PT,
+        )
+        .gaps
+    };
+    assert_eq!(gaps(2, "1 /P0 scn"), only_colors(1));
+    assert_eq!(gaps(1, "1 /P0 scn"), only_colors(0));
+    assert_eq!(gaps(1, "/P0 scn"), only_colors(0));
+    assert_eq!(
+        gaps(1, ""),
+        RasterGaps {
+            shadings: 1,
+            ..RasterGaps::default()
+        }
+    );
+}
+
+#[test]
+fn an_uncolored_pattern_in_a_pattern_space_without_a_base_it_reads_is_counted() {
+    let gaps = |paint_type: u8, set: &str| {
+        let entries =
+            format!("/PaintType {paint_type}/BBox[0 0 10 10]/XStep 20/YStep 20/Resources<<>>");
+        let content = format!("{set} 100 100 200 200 re f");
+        render(
+            &tiling_pdf(&entries, b"0 0 10 10 re f", content.as_bytes()),
+            &PT,
+        )
+        .gaps
+    };
+    assert_eq!(gaps(2, "/CS2 cs 1 1 /P0 scn"), only_colors(1));
+    assert_eq!(gaps(2, "/Pattern cs /P0 scn"), only_colors(1));
+    assert_eq!(gaps(1, "/CS2 cs /P0 scn"), only_colors(0));
+    assert_eq!(gaps(1, "/Pattern cs /P0 scn"), only_colors(0));
+}
+
+#[test]
+fn a_color_that_fails_to_evaluate_is_counted_and_does_not_keep_the_one_before() {
+    let one_output_for_rgb =
+        "[/Separation/X/DeviceRGB<</FunctionType 2/Domain[0 1]/C0[1]/C1[0]/N 1>>]";
+    let page = space_page(
+        one_output_for_rgb,
+        vec![],
+        b"1 0 0 rg /S0 cs 1 scn 100 100 100 100 re f",
+    );
+    assert_eq!(page.gaps, only_colors(1));
+    assert!(
+        near(px(&page, 150, 692), [0, 0, 0]),
+        "{:?}",
+        px(&page, 150, 692)
+    );
+}
+
+#[test]
+fn a_color_that_does_not_convert_is_counted_where_it_paints_and_nowhere_else() {
+    let gaps = |content: &str| space_page(LAB_D50, vec![], content.as_bytes()).gaps;
+    let set = "/Nope cs /Nope CS 1 scn 1 SCN";
+    let square = "100 100 50 50 re";
+    assert_eq!(gaps(&format!("{set} {square} f")), only_colors(1));
+    assert_eq!(gaps(&format!("{set} {square} S")), only_colors(1));
+    assert_eq!(gaps(&format!("{set} {square} B")), only_colors(2));
+    assert_eq!(gaps(&format!("{set} {square} n")), only_colors(0));
+    assert_eq!(gaps(&format!("{square} B")), only_colors(0));
+    assert_eq!(
+        gaps(&format!("q {set} Q 0 0 1 rg {square} f")),
+        only_colors(0)
+    );
+    assert_eq!(
+        gaps(&format!("{set} 0 1 0 rg 0 0 1 RG {square} B")),
+        only_colors(0)
+    );
+}
+
+#[cfg(feature = "standard-fonts")]
+#[test]
+fn text_in_a_color_that_does_not_convert_is_counted_once_per_run() {
+    let show = |content: &str| {
+        space_page(
+            LAB_D50,
+            vec![],
+            format!("/Nope cs /Nope CS 1 scn 1 SCN BT /F1 40 Tf 72 700 Td {content} ET").as_bytes(),
+        )
+    };
+    let page = show("(Hello) Tj");
+    assert_eq!(page.gaps, only_colors(1));
+    assert!(inked(&page, 72, 175, 842 - 732, 842 - 700));
+    assert_eq!(show("(Hel) Tj (lo) Tj").gaps, only_colors(2));
+    let by_mode = |mode: i32, fill_lost: bool, stroke_lost: bool| {
+        let fill = if fill_lost { "/Nope cs 1 scn" } else { "0 g" };
+        let stroke = if stroke_lost { "/Nope CS 1 SCN" } else { "0 G" };
+        let content = format!("{fill} {stroke} BT {mode} Tr /F1 40 Tf 72 700 Td (Hello) Tj ET");
+        space_page(LAB_D50, vec![], content.as_bytes()).gaps
+    };
+    for mode in 0..=7 {
+        for (fill_lost, stroke_lost) in [(true, false), (false, true), (true, true)] {
+            let fills = [0, 2, 4, 6].contains(&mode) && fill_lost;
+            let strokes = [1, 2, 5, 6].contains(&mode) && stroke_lost;
+            assert_eq!(
+                by_mode(mode, fill_lost, stroke_lost),
+                only_colors(u32::from(fills || strokes)),
+                "render mode {mode}, fill lost {fill_lost}, stroke lost {stroke_lost}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_stencil_mask_in_a_color_that_does_not_convert_is_counted() {
+    let mask = stream_object(
+        "<</Type/XObject/Subtype/Image/Width 8/Height 1/ImageMask true/BitsPerComponent 1\
+          /Length 1>>",
+        &[0],
+    );
+    let gray = stream_object(
+        "<</Type/XObject/Subtype/Image/Width 1/Height 1/ColorSpace/DeviceGray\
+          /BitsPerComponent 8/Length 1>>",
+        &[0x80],
+    );
+    let draw = |image: &Vec<u8>, color: &[u8]| {
+        let content = [color, b" q 100 0 0 50 50 50 cm /J Do Q"].concat();
+        render(
+            &page_pdf_with_xobjects(A4, &content, vec![("J", image.clone())]),
+            &PT,
+        )
+    };
+    assert_eq!(draw(&mask, b"/Nope cs 1 scn").gaps, only_colors(1));
+    assert_eq!(draw(&gray, b"/Nope cs 1 scn").gaps, RasterGaps::default());
+    assert_eq!(draw(&mask, b"0 g").gaps, RasterGaps::default());
+    // A pattern the page does not define leaves the mask unpainted: a shading gap, as it is for
+    // a path filled with it -- not a color the renderer failed to convert.
+    assert_eq!(
+        draw(&mask, b"/Pattern cs /P0 scn").gaps,
+        RasterGaps {
+            shadings: 1,
+            ..RasterGaps::default()
+        }
+    );
 }
 
 #[test]
@@ -1559,15 +2319,19 @@ fn text_in_a_shading_pattern_is_painted_in_its_colors() {
 }
 
 /// A page whose resources hold the tiling pattern `/P0` (an indirect stream, as a pattern with a
-/// content stream must be), the color space `/CS0` = `[/Pattern /DeviceRGB]`, and `/F1`
-/// Helvetica.
+/// content stream must be), the color spaces `/CS0` = `[/Pattern /DeviceRGB]`, `/CS1`, a
+/// pattern space over a `Separation` that gives no RGB color, and `/CS2`, one over a `DeviceN`
+/// whose transform does not read; and `/F1` Helvetica.
 fn tiling_pdf(pattern_entries: &str, cell: &[u8], content: &[u8]) -> Vec<u8> {
     assemble(vec![
         b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
         b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
         format!(
             "<</Type/Page/Parent 2 0 R{A4}/Resources<</Pattern<</P0 5 0 R>>\
-             /ColorSpace<</CS0[/Pattern/DeviceRGB]>>/Font<</F1 6 0 R>>>>/Contents 4 0 R>>"
+             /ColorSpace<</CS0[/Pattern/DeviceRGB]/CS1[/Pattern[/Separation/X/DeviceRGB\
+             <</FunctionType 2/Domain[0 1]/C0[1]/C1[0]/N 1>>]]\
+             /CS2[/Pattern[/DeviceN[/A/B]/DeviceRGB<</FunctionType 9>>]]>>/Font<</F1 6 0 R>>>>\
+             /Contents 4 0 R>>"
         )
         .into_bytes(),
         stream_object(&format!("<</Length {}>>", content.len()), content),

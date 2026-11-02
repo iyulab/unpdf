@@ -23,9 +23,9 @@ pub fn image_only_pdf() -> Vec<u8> {
     assemble(objects)
 }
 
-/// One page drawn as a 1x1 image in a color space unpdf does not convert (Lab) — samples
-/// that cannot be turned into a usable image format.
-pub fn lab_image_pdf() -> Vec<u8> {
+/// One page drawn as a 1x1 image in a color space unpdf does not convert (a `DeviceN` whose
+/// transform it does not read) — samples that cannot be turned into a usable image format.
+pub fn unconverted_color_image_pdf() -> Vec<u8> {
     let content = b"q 595 0 0 842 0 0 cm /Im0 Do Q\n";
     let objects: Vec<Vec<u8>> = vec![
         b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
@@ -36,7 +36,8 @@ pub fn lab_image_pdf() -> Vec<u8> {
         stream_object(&format!("<</Length {}>>", content.len()), content),
         stream_object(
             "<</Type/XObject/Subtype/Image/Width 1/Height 1\
-              /ColorSpace[/Lab<</WhitePoint[0.9505 1 1.089]>>]/BitsPerComponent 8/Length 3>>",
+              /ColorSpace[/DeviceN[/A/B/C]/DeviceRGB<</FunctionType 9>>]\
+              /BitsPerComponent 8/Length 3>>",
             &[0x80u8, 0x80, 0x80],
         ),
     ];

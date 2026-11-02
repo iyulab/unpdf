@@ -25,7 +25,41 @@
   bitmap with, so a caller can size a bitmap or check a candidate `dpi` before painting. C ABI:
   `unpdf_page_size`, `unpdf_page_pixels`; Python: `Document.page_size`, `PageSize.pixels`;
   .NET: `UnpdfDocument.GetPageSize`, `PageSize.Pixels`.
-
+- **Breaking: a page reports the colors it could not convert.** `RasterGaps::colors` (`colors` in
+  the `unpdf_render_page` info, .NET `RenderGaps.Colors`, Python `RenderedPage.gaps`) counts the
+  fills and strokes (each path a Type 3 glyph paints among them), runs of text in other fonts and
+  stencil masks painted in a color the renderer does not convert: a `DeviceN` or `Separation`
+  whose transform or alternate space it cannot evaluate, a color space the page does not define,
+  or a color its space gives no value for. Such a color was painted as a tint of its first
+  component, or as the color before it, and counted nowhere; it is now painted in the shade of
+  its strongest component, dark where the tint is high, and counted. Rust code that builds or
+  matches `RasterGaps` exhaustively needs the new field.
+- **Breaking: `Lab` colors are converted.** A `Lab` space is read, with its `/WhitePoint` and
+  `/Range`, as the color space of a fill, stroke, shading or image, as the alternate space of a
+  `Separation` or `DeviceN` and as the base of an `Indexed` space, and converted to sRGB by
+  adapting its white point to D65 with the Bradford transform. A `Lab` rectangle used to be
+  painted black from L* 1 up, and a `Lab` image was dropped as unsupported by the renderer and
+  by resource extraction alike. Rust code that matches `ImageColorSpace` exhaustively needs the
+  new `Lab` variant.
+- **A sampled tint transform of several inputs is read.** A `DeviceN` of two to eight colorants
+  whose tint transform is a sampled function (type 0) converts through it, interpolating linearly
+  across every input; it was read as a function of its first input, and the space fell back to a
+  tint. One whose `/Order 3` asks for cubic interpolation is counted as a color that does not
+  convert.
+- **Sampled functions are charged to the render budget.** One that a color space, an image or a
+  shading holds is charged its samples and its stream's bytes before it is read, whether the
+  space then reads or not: once for each name a color space has in each content stream painted
+  (the page's, a form's, a pattern cell's or a soft mask's), and each time an image is drawn, a
+  shading painted or a shading pattern set. Its stream is decoded only as far as its table
+  reaches, and one whose filters expand before the last is not read. Evaluating a shading's
+  sampled function, and converting a color through a sampled transform, a `Separation`'s
+  included, are charged the samples they read: for each color set, each color of a shading and
+  each pixel of an image, or each value a sample can take in an image of one colorant and at
+  most 8 bits. Such an image whose transform gives no color for one of those values is counted
+  in `RasterGaps::images` rather than converted pixel by pixel. `PdfBackend` gains
+  `named_color_space_with`, `named_pattern_space_with`, `image_xobject_with`,
+  `inline_image_with`, `shading_with` and `shading_pattern_with`, which take the charge as
+  `admit` and by default call the lookup without it.
 
 ### Changed
 
@@ -38,6 +72,7 @@
   R, G and B, is counted in `RasterGaps::images`; it was painted as the decoder read it.
   `CodecParms::Dct` carries the value: Rust code that matches `CodecParms` exhaustively needs the
   new arm.
+
 
 
 ### Fixed
@@ -66,6 +101,13 @@
   filled with a pattern was painted in the color set before it; it now takes the pattern as a
   path does, and one that is not painted is counted, painted in black in a Type 3 glyph and not
   at all elsewhere.
+- **A stroke color space set to one the renderer does not convert no longer starts white.** `CS`
+  starts the stroke at full tint, as `cs` starts the fill, and a color that fails to evaluate no
+  longer keeps the one before it.
+- **An image whose soft mask does not decode is counted in `RasterGaps::images`.** It was painted
+  without its mask, as if opaque, and counted nowhere.
+- **A sampled function's outputs are clipped to its `/Range`** (ISO 32000-1 §7.10.2), in a
+  shading as in a tint transform; a `/Decode` past the range gave colors outside it.
 
 ## 0.52.3 — 2026-11-03
 

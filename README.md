@@ -698,7 +698,8 @@ assert_eq!((page.width, page.height), (width, height));
 ```
 
 Painted: text in embedded Type 1, TrueType, OpenType and CFF fonts and in Type 3 fonts, paths,
-clipping, colors, axial and radial shadings (`sh` and shading patterns), tiling patterns (colored
+clipping, colors (device, `Lab`, `Indexed`, and `Separation` and `DeviceN` through their tint
+transforms), axial and radial shadings (`sh` and shading patterns), tiling patterns (colored
 and uncolored), and images, inline ones included (Flate-family, JPEG, JPEG 2000, CCITT fax and
 JBIG2, with soft and stencil masks), blend modes (all sixteen of ISO 32000-1 §11.3.5) and soft
 masks (`/SMask`, luminosity and alpha). Not yet: mesh and function-based shadings and a soft
@@ -707,6 +708,8 @@ Text filled with a pattern that is not painted is painted in black. Text it cann
 with no outline whose text does not decode or is more than whitespace and default-ignorable
 characters, a Type 3 glyph nested past four deep, text shown before any `Tf` — and forms nested
 past 32 deep are counted in `gaps` too.
+A color in a space it does not read (a `DeviceN` or `Separation` whose transform or alternate
+space it cannot evaluate) is painted in the shade of its ink and counted in `gaps.colors`.
 
 Text in a font the PDF names but does not embed — the standard 14, or a system font such as
 Arial or Times New Roman — is painted in a stand-in face of the same class (sans, serif or

@@ -23,6 +23,7 @@ use super::backend::{
 };
 use super::cmyk::cmyk_to_rgb_unit;
 use super::form_xobject;
+use super::lab::lab_to_rgb_unit;
 use super::png_encode::{self, PngColorType};
 use super::raster_text::LoadedFont;
 use super::text_state::{TextMatrix, TextParams};
@@ -122,6 +123,12 @@ pub struct RasterGaps {
     /// Content streams of the page that could not be decoded, and Form XObjects nested more
     /// than 32 deep; whatever they held is missing.
     pub undecodable_content_streams: u32,
+    /// Fills and strokes (each path a Type 3 glyph paints among them), runs of text in other
+    /// fonts and stencil masks painted in a color this does not convert: a color space it does
+    /// not read (a `DeviceN` or `Separation` whose transform or alternate space is not one it
+    /// reads, a resource that is missing), or a color its space gives no value for. Each is
+    /// painted in the shade of its ink, dark where the tint is high.
+    pub colors: u32,
 }
 
 impl RasterGaps {
@@ -133,6 +140,7 @@ impl RasterGaps {
         self.shadings += other.shadings;
         self.soft_masks += other.soft_masks;
         self.undecodable_content_streams += other.undecodable_content_streams;
+        self.colors += other.colors;
     }
 
     /// Whether anything the page asked for was left unpainted.
@@ -299,14 +307,18 @@ enum PaintSpace {
     Gray,
     Rgb,
     Cmyk,
+    Lab {
+        white: [f32; 3],
+        range: [f32; 4],
+    },
     Indexed(ImageColorSpace),
     /// A pattern, with the space an uncolored pattern's color is given in.
     Pattern(Option<Box<PaintSpace>>),
-    /// A `Separation` space: a tint its transform maps into an alternate space.
+    /// A `Separation` or `DeviceN` space: a tint per colorant its transform maps into an
+    /// alternate space.
     Spot(TintSpace),
-    /// A space this does not convert (`DeviceN` of several colorants, `Lab`): its components
-    /// are read as a tint, 0 white to 1 black.
-    Tint(usize),
+    /// A space this does not read: every color in it is counted in [`RasterGaps::colors`].
+    Unconverted,
 }
 
 impl PaintSpace {
@@ -317,6 +329,12 @@ impl PaintSpace {
             PaintSpace::Rgb => Rgb(v(0), v(1), v(2)),
             PaintSpace::Cmyk => {
                 let [r, g, b] = cmyk_to_rgb_unit(v(0), v(1), v(2), v(3));
+                Rgb(r, g, b)
+            }
+            PaintSpace::Lab { white, range } => {
+                let component = |i: usize| values.get(i).copied().unwrap_or(0.0);
+                let [r, g, b] =
+                    lab_to_rgb_unit(*white, *range, [component(0), component(1), component(2)]);
                 Rgb(r, g, b)
             }
             PaintSpace::Indexed(space) => {
@@ -331,8 +349,7 @@ impl PaintSpace {
                 let index = (values.first()?.round().max(0.0) as usize).min(*hival as usize);
                 let n = base.components();
                 let entry = lookup.get(index * n..index * n + n)?;
-                let comps: Vec<f32> = entry.iter().map(|&b| f32::from(b) / 255.0).collect();
-                PaintSpace::of_image_space(base).color(&comps)?
+                PaintSpace::of_image_space(base).color(&base.palette_entry(entry))?
             }
             PaintSpace::Pattern(base) => return base.as_ref()?.color(values),
             PaintSpace::Spot(space) => {
@@ -340,11 +357,26 @@ impl PaintSpace {
                 let (alternate, components) = space.alternate_color(&tints)?;
                 PaintSpace::of_image_space(alternate).color(&components)?
             }
-            PaintSpace::Tint(n) => {
-                let tint = (0..*n).map(v).fold(0.0f32, f32::max);
-                Rgb(1.0 - tint, 1.0 - tint, 1.0 - tint)
-            }
+            PaintSpace::Unconverted => return None,
         })
+    }
+
+    /// The color `values` stand for, and whether this converted it. One it cannot is the shade
+    /// of its strongest component, 0 white to 1 black; a pattern space without a base this
+    /// reads, given no components, keeps `previous`.
+    fn resolve(&self, values: &[f32], previous: Rgb) -> (Rgb, bool) {
+        if values.is_empty() && matches!(self, PaintSpace::Pattern(None)) {
+            return (previous, true);
+        }
+        match self.color(values) {
+            Some(color) => (color, false),
+            None => {
+                let tint = values
+                    .iter()
+                    .fold(0.0f32, |tint, &v| tint.max(v.clamp(0.0, 1.0)));
+                (Rgb(1.0 - tint, 1.0 - tint, 1.0 - tint), true)
+            }
+        }
     }
 
     fn of_image_space(space: &ImageColorSpace) -> PaintSpace {
@@ -352,8 +384,22 @@ impl PaintSpace {
             ImageColorSpace::Gray => PaintSpace::Gray,
             ImageColorSpace::Rgb => PaintSpace::Rgb,
             ImageColorSpace::Cmyk => PaintSpace::Cmyk,
+            ImageColorSpace::Lab { white, range } => PaintSpace::Lab {
+                white: *white,
+                range: *range,
+            },
             indexed @ ImageColorSpace::Indexed { .. } => PaintSpace::Indexed(indexed.clone()),
             ImageColorSpace::Tint(space) => PaintSpace::Spot(space.clone()),
+        }
+    }
+
+    /// The samples of a tint transform converting one color in this space reads.
+    fn samples_read(&self) -> u64 {
+        match self {
+            PaintSpace::Spot(space) => space.samples_read(),
+            PaintSpace::Indexed(space) => space.pixel_work(),
+            PaintSpace::Pattern(Some(base)) => base.samples_read(),
+            _ => 0,
         }
     }
 }
@@ -376,6 +422,8 @@ struct GState {
     stroke: Rgb,
     fill_space: PaintSpace,
     stroke_space: PaintSpace,
+    fill_unconverted: bool,
+    stroke_unconverted: bool,
     fill_alpha: f32,
     stroke_alpha: f32,
     /// How what is painted combines with what is under it (`/BM`, ISO 32000-1 §11.3.5).
@@ -423,6 +471,8 @@ impl GState {
             stroke: Rgb::BLACK,
             fill_space: PaintSpace::Gray,
             stroke_space: PaintSpace::Gray,
+            fill_unconverted: false,
+            stroke_unconverted: false,
             fill_alpha: 1.0,
             stroke_alpha: 1.0,
             blend: BlendMode::SourceOver,
@@ -471,6 +521,10 @@ struct Painter<'a> {
     /// By the same key, whether a code whose glyph has no outline is
     /// [blank](PdfBackend::blank_code).
     blank_codes: HashMap<FontResource, HashMap<u32, bool>>,
+    /// Color spaces looked up so far, by the form whose resources name them (`None`: the
+    /// page's) and their name: a sampled tint transform is read from the file once, not at
+    /// every `cs`.
+    spaces: HashMap<(Option<ObjectId>, Vec<u8>), PaintSpace>,
     /// How many Type 3 glyph procedures are running, one inside another.
     glyph_depth: usize,
     /// How many tiling pattern cells are being painted, one inside another: this painter's.
@@ -499,11 +553,13 @@ type TileKey = (Option<ObjectId>, Vec<u8>, [u32; 6], [u32; 3]);
 
 /// What a pattern color paints with, placed on the device.
 enum PatternPaint {
-    /// A shading pattern: its shading, and pattern space → device pixels.
-    Shading(Shading, Transform),
-    /// A tiling pattern: one cell, rendered, and its pixels → device pixels. The cell repeats.
-    /// `false` when the cell left something unpainted.
-    Tile(Pixmap, Transform, bool),
+    /// A shading pattern: its shading, the colors of its samples, and pattern space → device
+    /// pixels.
+    Shading(Shading, Vec<Rgb>, Transform),
+    /// A tiling pattern: one cell, rendered, its pixels → device pixels, whether it is
+    /// uncolored (painted in the color given with it), and — last — whether the cell was
+    /// painted in full (`false` when it left something unpainted). The cell repeats.
+    Tile(Pixmap, Transform, bool, bool),
 }
 
 /// The paint for one drawing operation. It owns what it paints with, so drawing with it does
@@ -574,6 +630,7 @@ impl<'a> Painter<'a> {
             fonts: HashMap::new(),
             type3: HashMap::new(),
             blank_codes: HashMap::new(),
+            spaces: HashMap::new(),
             glyph_depth: 0,
             pattern_depth: 0,
             tiles: HashMap::new(),
@@ -811,10 +868,11 @@ impl Painter<'_> {
                 // first palette entry.
                 let initial = match &space {
                     PaintSpace::Cmyk => vec![0.0, 0.0, 0.0, 1.0],
-                    PaintSpace::Gray | PaintSpace::Tint(_) | PaintSpace::Indexed(_) => vec![0.0],
-                    PaintSpace::Rgb => vec![0.0, 0.0, 0.0],
+                    PaintSpace::Gray | PaintSpace::Indexed(_) => vec![0.0],
+                    PaintSpace::Rgb | PaintSpace::Lab { .. } => vec![0.0, 0.0, 0.0],
                     // Full tint.
                     PaintSpace::Spot(space) => vec![1.0; space.components()],
+                    PaintSpace::Unconverted => vec![1.0],
                     PaintSpace::Pattern(_) => Vec::new(),
                 };
                 if op.operator == "cs" {
@@ -822,24 +880,18 @@ impl Painter<'_> {
                 } else {
                     self.set_stroke(space, &initial);
                 }
-                // `Tint` spaces start at full tint (black) — tint 1, read as 1 - 1 = 0.
-                if let PaintSpace::Tint(_) = self.state.fill_space {
-                    if op.operator == "cs" {
-                        self.state.fill = Rgb::BLACK;
-                    }
-                }
             }
             "sc" | "scn" => {
                 let space = self.state.fill_space.clone();
                 self.set_fill(space, &all());
-                if self.state.fill_pattern {
+                if self.state.fill_pattern && !self.stopped {
                     self.state.fill_pattern_paint = self.pattern_named(op, self.state.fill);
                 }
             }
             "SC" | "SCN" => {
                 let space = self.state.stroke_space.clone();
                 self.set_stroke(space, &all());
-                if self.state.stroke_pattern {
+                if self.state.stroke_pattern && !self.stopped {
                     self.state.stroke_pattern_paint = self.pattern_named(op, self.state.stroke);
                 }
             }
@@ -909,7 +961,10 @@ impl Painter<'_> {
                 if let Some(PdfValue::Name(name)) = op.operands.first() {
                     // Forms were interpreted in place; a `Do` left is an image, or a kind of
                     // XObject nothing paints (PostScript).
-                    if let Some(image) = self.backend.image_xobject(op.scope(self.page), name) {
+                    let (backend, scope) = (self.backend, op.scope(self.page));
+                    if let Some(image) =
+                        backend.image_xobject_with(scope, name, &mut |work| self.admit(work))
+                    {
                         self.draw_image(&image);
                     }
                 }
@@ -917,7 +972,8 @@ impl Painter<'_> {
             "BI" => {
                 let image = match op.operands.first() {
                     Some(PdfValue::Str(body)) => {
-                        self.backend.inline_image(op.scope(self.page), body)
+                        let (backend, scope) = (self.backend, op.scope(self.page));
+                        backend.inline_image_with(scope, body, &mut |work| self.admit(work))
                     }
                     _ => None,
                 };
@@ -933,7 +989,10 @@ impl Painter<'_> {
             "d1" if self.glyph_depth > 0 => self.uncolored = true,
             "sh" => {
                 let shading = match op.operands.first() {
-                    Some(PdfValue::Name(name)) => self.backend.shading(op.scope(self.page), name),
+                    Some(PdfValue::Name(name)) => {
+                        let (backend, scope) = (self.backend, op.scope(self.page));
+                        backend.shading_with(scope, name, &mut |work| self.admit(work))
+                    }
                     _ => None,
                 };
                 match shading {
@@ -1002,6 +1061,7 @@ impl Painter<'_> {
         let mut substituted = false;
         let mut unpainted_color = false;
         let mut blank_codes = self.blank_codes.remove(&key).unwrap_or_default();
+        let mut unconverted_color = false;
         // Taken out of the cache while its glyphs are painted, put back after.
         let mut loaded = self.fonts.remove(&key).flatten();
 
@@ -1090,6 +1150,7 @@ impl Painter<'_> {
                                 .pre_concat(glyph_space);
                             unpainted_color |=
                                 !self.paint_glyph(&outline, transform, text.render_mode);
+                            unconverted_color |= self.paints_unconverted_color(text.render_mode);
                         } else if !missing {
                             let blank = *blank_codes.entry(code).or_insert_with(|| {
                                 let (blank, decoded) =
@@ -1120,6 +1181,7 @@ impl Painter<'_> {
         if unpainted_color {
             self.gaps.shadings += 1;
         }
+        self.gaps.colors += u32::from(unconverted_color);
         if substituted {
             self.substituted_text_runs += 1;
         }
@@ -1151,6 +1213,28 @@ impl Painter<'_> {
         }
     }
 
+    fn paints_unconverted_color(&self, mode: i64) -> bool {
+        glyph_fills(mode) && self.paints_unconverted(false)
+            || glyph_strokes(mode) && self.paints_unconverted(true)
+    }
+
+    /// Whether filling (`stroke` false) or stroking paints in a color this did not convert: a
+    /// pattern paints in its own colors unless it is an uncolored tiling pattern.
+    fn paints_unconverted(&self, stroke: bool) -> bool {
+        let s = &self.state;
+        let (unconverted, pattern, paint) = if stroke {
+            (
+                s.stroke_unconverted,
+                s.stroke_pattern,
+                &s.stroke_pattern_paint,
+            )
+        } else {
+            (s.fill_unconverted, s.fill_pattern, &s.fill_pattern_paint)
+        };
+        unconverted
+            && (!pattern || matches!(paint.as_deref(), Some(PatternPaint::Tile(_, _, true, _))))
+    }
+
     fn glyph_transform(&self, text: &TextParams, measured: &GlyphAdvance) -> Transform {
         let origin = text.origin_offset(measured);
         let to_text = Transform::from_row(
@@ -1180,7 +1264,7 @@ impl Painter<'_> {
             .and_then(|b| Rect::from_ltrb(b.llx, b.lly, b.urx, b.ury))
             .and_then(|b| b.transform(self.glyph_transform(text, measured)))
             .and_then(|b| {
-                let reach = if follows_render_mode && matches!(text.render_mode, 1 | 2 | 5 | 6) {
+                let reach = if follows_render_mode && glyph_strokes(text.render_mode) {
                     let width = self.state.line_width * transform_scale(&self.state.ctm);
                     width.max(1.0) / 2.0 * Stroke::default().miter_limit
                 } else {
@@ -1417,8 +1501,8 @@ impl Painter<'_> {
                     .push_path(&device);
             }
         }
-        let fill = matches!(mode, 0 | 2 | 4 | 6);
-        let stroke = matches!(mode, 1 | 2 | 5 | 6);
+        let fill = glyph_fills(mode);
+        let stroke = glyph_strokes(mode);
         let mut painted = true;
         if fill {
             let (source, exact) = self.glyph_paint(false, transform);
@@ -1477,8 +1561,20 @@ impl Painter<'_> {
         PaintSource::Ready(paint)
     }
 
-    fn space_named(&self, op: &ContentOp, name: &[u8]) -> PaintSpace {
-        if let Some(base) = self.backend.named_pattern_space(op.scope(self.page), name) {
+    fn space_named(&mut self, op: &ContentOp, name: &[u8]) -> PaintSpace {
+        let key = (op.form, name.to_vec());
+        if let Some(space) = self.spaces.get(&key) {
+            return space.clone();
+        }
+        let space = self.read_space(op, name);
+        self.spaces.insert(key, space.clone());
+        space
+    }
+
+    fn read_space(&mut self, op: &ContentOp, name: &[u8]) -> PaintSpace {
+        let (backend, scope) = (self.backend, op.scope(self.page));
+        let mut admit = |work| self.admit(work);
+        if let Some(base) = backend.named_pattern_space_with(scope, name, &mut admit) {
             return PaintSpace::Pattern(base.map(|b| Box::new(PaintSpace::of_image_space(&b))));
         }
         match name {
@@ -1486,30 +1582,40 @@ impl Painter<'_> {
             b"DeviceRGB" | b"RGB" | b"CalRGB" => PaintSpace::Rgb,
             b"DeviceCMYK" | b"CMYK" => PaintSpace::Cmyk,
             b"Pattern" => PaintSpace::Pattern(None),
-            _ => match self.backend.named_color_space(op.scope(self.page), name) {
+            _ => match backend.named_color_space_with(scope, name, &mut admit) {
                 Some(space) => PaintSpace::of_image_space(&space),
-                // `Separation`, `DeviceN`, `Lab`, or a `Pattern` space with a base: read as
-                // a tint, so separations still come out dark where they are inked.
-                None => PaintSpace::Tint(1),
+                None => PaintSpace::Unconverted,
             },
         }
     }
 
+    /// [`Self::admit`] `work` when there is any: `false` once the painting has stopped.
+    fn admit_work(&mut self, work: u64) -> bool {
+        if work > 0 {
+            self.admit(work)
+        } else {
+            !self.stopped
+        }
+    }
+
     fn set_fill(&mut self, space: PaintSpace, values: &[f32]) {
+        if !self.admit_work(space.samples_read()) {
+            return;
+        }
         self.state.fill_pattern = matches!(space, PaintSpace::Pattern(_));
         self.state.fill_pattern_paint = None;
-        if let Some(color) = space.color(values) {
-            self.state.fill = color;
-        }
+        (self.state.fill, self.state.fill_unconverted) = space.resolve(values, self.state.fill);
         self.state.fill_space = space;
     }
 
     fn set_stroke(&mut self, space: PaintSpace, values: &[f32]) {
+        if !self.admit_work(space.samples_read()) {
+            return;
+        }
         self.state.stroke_pattern = matches!(space, PaintSpace::Pattern(_));
         self.state.stroke_pattern_paint = None;
-        if let Some(color) = space.color(values) {
-            self.state.stroke = color;
-        }
+        (self.state.stroke, self.state.stroke_unconverted) =
+            space.resolve(values, self.state.stroke);
         self.state.stroke_space = space;
     }
 
@@ -1523,6 +1629,7 @@ impl Painter<'_> {
         let path = builder.finish();
         if let Some(path) = &path {
             if let Some(rule) = fill {
+                self.gaps.colors += u32::from(self.paints_unconverted(false));
                 if let Some(source) = self.path_paint(false, self.state.ctm) {
                     if self.admit_path(path, self.state.ctm) {
                         self.pixmap.fill_path(
@@ -1536,6 +1643,7 @@ impl Painter<'_> {
                 }
             }
             if stroke {
+                self.gaps.colors += u32::from(self.paints_unconverted(true));
                 if let Some(source) = self.path_paint(true, self.state.ctm) {
                     self.stroke(path, &source.paint());
                 }
@@ -1572,14 +1680,18 @@ impl Painter<'_> {
         let Some(PdfValue::Name(name)) = op.operands.last() else {
             return None;
         };
-        let scope = op.scope(self.page);
-        let place = |[a, b, c, d, e, f]: [f32; 6]| {
-            self.state
-                .pattern_base
-                .pre_concat(Transform::from_row(a, b, c, d, e, f))
-        };
-        if let Some((shading, matrix)) = self.backend.shading_pattern(scope, name) {
-            return Some(Rc::new(PatternPaint::Shading(shading, place(matrix))));
+        let (backend, scope, base) = (self.backend, op.scope(self.page), self.state.pattern_base);
+        let place =
+            |[a, b, c, d, e, f]: [f32; 6]| base.pre_concat(Transform::from_row(a, b, c, d, e, f));
+        if let Some((shading, matrix)) =
+            backend.shading_pattern_with(scope, name, &mut |work| self.admit(work))
+        {
+            let colors = self.shading_colors(&shading)?;
+            return Some(Rc::new(PatternPaint::Shading(
+                shading,
+                colors,
+                place(matrix),
+            )));
         }
         let pattern = self.backend.tiling_pattern(scope, name)?;
         let to_device = place(pattern.matrix);
@@ -1677,10 +1789,17 @@ impl Painter<'_> {
         }
         self.gaps.absorb(&tile.gaps);
         self.substituted_text_runs += tile.substituted_text_runs;
+        // A color painted in the shade of its ink (`colors`) is painted; only content left out
+        // makes the cell incomplete.
+        let left_out = RasterGaps {
+            colors: 0,
+            ..tile.gaps
+        };
         Some(PatternPaint::Tile(
             tile.pixmap,
             tile_to_device,
-            tile.gaps.is_empty(),
+            pattern.uncolored,
+            left_out.is_empty(),
         ))
     }
 
@@ -1708,19 +1827,32 @@ impl Painter<'_> {
         let pattern_paint = pattern_paint.as_ref()?;
         let to_path = path_transform.invert()?;
         match &**pattern_paint {
-            PatternPaint::Shading(shading, to_device) => {
-                shading_paint(shading, to_path.pre_concat(*to_device), alpha).map(|mut paint| {
-                    paint.blend_mode = blend;
-                    PaintSource::Ready(paint)
-                })
+            PatternPaint::Shading(shading, colors, to_device) => {
+                shading_paint(shading, colors, to_path.pre_concat(*to_device), alpha).map(
+                    |mut paint| {
+                        paint.blend_mode = blend;
+                        PaintSource::Ready(paint)
+                    },
+                )
             }
-            PatternPaint::Tile(_, to_device, _) => Some(PaintSource::Tile(
+            PatternPaint::Tile(_, to_device, ..) => Some(PaintSource::Tile(
                 pattern_paint.clone(),
                 to_path.pre_concat(*to_device),
                 alpha,
                 blend,
             )),
         }
+    }
+
+    /// The colors of `shading`'s samples, once the budget admits what converting them reads:
+    /// `None` when it does not, or a color does not convert.
+    fn shading_colors(&mut self, shading: &Shading) -> Option<Vec<Rgb>> {
+        let space = PaintSpace::of_image_space(&shading.color);
+        let work = (shading.samples.len() as u64).saturating_mul(space.samples_read());
+        if !self.admit_work(work) {
+            return None;
+        }
+        shading.samples.iter().map(|s| space.color(s)).collect()
     }
 
     /// `sh`: paint a shading over the clip — or over its `/BBox` — in the current user space,
@@ -1744,10 +1876,14 @@ impl Painter<'_> {
                 )
             }
         };
-        let paint = shading_paint(shading, shader_transform, self.state.fill_alpha).map(|mut p| {
-            p.blend_mode = self.state.blend;
-            p
-        });
+        let alpha = self.state.fill_alpha;
+        let paint = self
+            .shading_colors(shading)
+            .and_then(|colors| shading_paint(shading, &colors, shader_transform, alpha))
+            .map(|mut p| {
+                p.blend_mode = self.state.blend;
+                p
+            });
         let (Some(rect), Some(paint)) = (rect, paint) else {
             self.gaps.shadings += 1;
             return;
@@ -1941,6 +2077,9 @@ impl Painter<'_> {
             self.gaps.images += 1;
             return;
         };
+        if image.image_mask {
+            self.gaps.colors += u32::from(self.paints_unconverted(false));
+        }
         // How many device pixels the image's width and height land on. An image drawn much
         // smaller than its samples is averaged down first: sampling it directly drops the
         // thin strokes of a scanned page's text.
@@ -2463,15 +2602,17 @@ fn ink_amount(sample: f32, (lo, hi): (f32, f32)) -> f32 {
 }
 
 /// A paint whose shader is `shading`, its shading space mapped by `transform` into the space
-/// the paint is drawn in. `None` when its colors do not convert or its geometry is degenerate.
+/// the paint is drawn in. `None` when its geometry is degenerate.
 ///
-/// The colors are the shading's samples as gradient stops. Where the shading does not extend
+/// The colors, those of the shading's samples, are its gradient stops. Where the shading does not extend
 /// past an end, a transparent stop sits exactly at that end and the first color just inside
 /// it, so padding past the end paints nothing.
-fn shading_paint(shading: &Shading, transform: Transform, alpha: f32) -> Option<Paint<'static>> {
-    let space = PaintSpace::of_image_space(&shading.color);
-    let colors: Option<Vec<Rgb>> = shading.samples.iter().map(|s| space.color(s)).collect();
-    let colors = colors?;
+fn shading_paint(
+    shading: &Shading,
+    colors: &[Rgb],
+    transform: Transform,
+    alpha: f32,
+) -> Option<Paint<'static>> {
     let last = colors.len().checked_sub(1)?;
     // How far inside an end its first color starts when the end is not extended.
     const EDGE: f32 = 1.0 / 4096.0;
@@ -2549,6 +2690,14 @@ fn blend_mode(mode: super::backend::BlendMode) -> BlendMode {
     }
 }
 
+fn glyph_fills(mode: i64) -> bool {
+    matches!(mode, 0 | 2 | 4 | 6)
+}
+
+fn glyph_strokes(mode: i64) -> bool {
+    matches!(mode, 1 | 2 | 5 | 6)
+}
+
 fn solid(color: Rgb, alpha: f32) -> Paint<'static> {
     let mut paint = Paint::default();
     paint.set_color_rgba8(
@@ -2585,20 +2734,36 @@ fn stroke_bounds(path: &Path, stroke: &Stroke, transform: Transform) -> Option<R
 }
 
 /// What drawing `image` decodes, for it and its soft mask: the bytes its filters gave, and the
-/// samples its codec makes -- its declared size, or a JBIG2 page's own when that is larger.
+/// samples its codec makes -- its declared size, or a JBIG2 page's own when that is larger --
+/// and the samples its tint transform reads to convert each pixel, or each value a sample can
+/// take when [`png_encode::lut_entries`] converts those instead.
 fn decode_work(image: &RawXObject) -> u64 {
-    let decoded = |x: &RawXObject| {
-        let declared = x
-            .width
+    let declared_samples = |x: &RawXObject| {
+        x.width
             .zip(x.height)
-            .map_or(0, |(w, h)| u64::from(w) * u64::from(h));
+            .map_or(0, |(w, h)| u64::from(w) * u64::from(h))
+    };
+    let decoded = |x: &RawXObject| {
+        let declared = declared_samples(x);
         let page = match (x.filter.as_deref(), &x.codec_parms) {
             (Some("JBIG2Decode"), Some(CodecParms::Jbig2 { globals })) => {
                 super::jbig2::page_samples(&x.data, globals.as_deref())
             }
             _ => 0,
         };
-        declared.max(page).saturating_add(x.data.len() as u64)
+        let space = x.color.as_ref().map_or(0, |color| {
+            let bits = match x.filter.as_deref() {
+                Some("DCTDecode" | "JPXDecode") => Some(8),
+                _ => x.bits_per_component,
+            };
+            bits.and_then(|bits| png_encode::lut_entries(color, bits))
+                .map_or(declared, u64::from)
+                .saturating_mul(color.pixel_work())
+        });
+        declared
+            .max(page)
+            .saturating_add(x.data.len() as u64)
+            .saturating_add(space)
     };
     decoded(image).saturating_add(image.smask.as_deref().map_or(0, decoded))
 }
@@ -2680,6 +2845,58 @@ mod tests {
             assert_eq!(painter.stopped, !painted);
             let blue = painter.pixmap.pixels().iter().any(|p| p.red() == 0);
             assert_eq!(blue, painted, "{refused}");
+        }
+    }
+
+    #[test]
+    fn a_color_the_budget_refuses_to_read_or_convert_is_not_set() {
+        use super::super::backend::RawBackend;
+        use super::super::test_pdf::{pdf, stream};
+        let content = b"1 0 0 rg /S0 cs /S1 cs /P0 scn";
+        let bytes = pdf(
+            vec![
+                b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+                b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+                b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 100 100]\
+                  /Resources<</ColorSpace<</S0[/DeviceN[/A/B]/DeviceGray 5 0 R]\
+                  /S1[/Pattern[/DeviceN[/A/B]/DeviceGray 5 0 R]]>>/Pattern<</P0 6 0 R>>>>\
+                  /Contents 4 0 R>>"
+                    .to_vec(),
+                stream(&format!("<</Length {}>>", content.len()), content),
+                stream(
+                    "<</FunctionType 0/Domain[0 1 0 1]/Range[0 1]/Size[2 2]/BitsPerSample 8\
+                      /Length 4>>",
+                    &[0; 4],
+                ),
+                b"<</PatternType 2/Shading<</ShadingType 2/ColorSpace/DeviceGray\
+                  /Coords[0 0 100 0]/Function<</FunctionType 2/Domain[0 1]/C0[0]/C1[1]/N 1>>>>>>"
+                    .to_vec(),
+            ],
+            1,
+        );
+        let backend = RawBackend::load_bytes(&bytes).unwrap();
+        let page = backend.pages()[&1];
+        let ops = form_xobject::page_operations(&backend, page).unwrap().ops;
+        let (red, black) = (Rgb(1.0, 0.0, 0.0), Rgb(0.0, 0.0, 0.0));
+        for (refused_call, fill) in [(3, red), (4, red), (9, black)] {
+            let mut calls = 0;
+            let mut budget = |_| {
+                calls += 1;
+                if calls < refused_call {
+                    ControlFlow::Continue(())
+                } else {
+                    ControlFlow::Break(())
+                }
+            };
+            let base = Transform::from_row(1.0, 0.0, 0.0, -1.0, 0.0, 100.0);
+            let mut painter =
+                Painter::new(&backend, page, solid(100, 100, [255; 4]), base, &mut budget);
+            for op in &ops {
+                painter.apply(op);
+            }
+            assert!(painter.stopped, "{refused_call}");
+            assert_eq!(painter.state.fill, fill, "{refused_call}");
+            assert!(painter.state.fill_pattern_paint.is_none(), "{refused_call}");
         }
     }
 

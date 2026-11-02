@@ -665,9 +665,10 @@ class RenderedPage:
     whose dictionary does not read), ``shadings`` (mesh shadings, and tiling
     patterns nested more than three deep), ``soft_masks`` (a soft mask whose
     group does not decode or nests too deep, or whose transfer function is not
-    applied) and ``undecodable_content_streams`` (forms nested more than 32 deep
-    included). All zero means everything was painted;
-    otherwise the rest of the page still was.
+    applied), ``undecodable_content_streams`` (forms nested more than 32 deep
+    included) and ``colors`` (fills, strokes, text runs and stencil masks painted in a
+    color the renderer does not convert, each in the shade of its ink). All zero means
+    everything was painted; otherwise the rest of the page still was.
 
     ``substituted_text_runs`` counts text painted in a standard face standing in
     for a font the PDF does not embed — readable, but not the page's own typeface.

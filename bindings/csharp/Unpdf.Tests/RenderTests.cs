@@ -61,6 +61,16 @@ public class RenderTests
     }
 
     [Fact]
+    public void RenderPage_AColorInASpaceThePageDoesNotDefine_IsCounted()
+    {
+        using var doc = UnpdfDocument.ParseBytes(
+            PdfFixtures.TextPdf("/Nope cs 72 72 100 100 re f\n"));
+        var page = doc.RenderPage(1, new RenderPageOptions { Dpi = 72 });
+        Assert.Equal(1u, page.Gaps.Colors);
+        Assert.False(page.Gaps.IsEmpty);
+    }
+
+    [Fact]
     public void RenderPage_PastMaxWork_ThrowsWithItsKind()
     {
         using var doc = UnpdfDocument.ParseBytes(PdfFixtures.ImageOnlyPdf());

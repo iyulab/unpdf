@@ -30,6 +30,7 @@ mod inline;
 mod jbig2;
 #[cfg(feature = "raster")]
 mod jpx;
+mod lab;
 mod lattice;
 mod layout;
 mod link;

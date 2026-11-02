@@ -29,15 +29,15 @@ public class ParseOptionsTests
     }
 
     /// <summary>
-    /// Samples unpdf cannot convert (<see cref="PdfFixtures.LabImagePdf"/>) are a buffer
-    /// most <c>GetResourceData</c> callers cannot use — they must never be surfaced, opt-in
-    /// or not, regardless of <see cref="ParseOptions.MinImageDimension"/>.
+    /// Samples unpdf cannot convert (<see cref="PdfFixtures.UnconvertedColorImagePdf"/>) are
+    /// a buffer most <c>GetResourceData</c> callers cannot use — they must never be surfaced,
+    /// opt-in or not, regardless of <see cref="ParseOptions.MinImageDimension"/>.
     /// </summary>
     [Fact]
     public void ParseBytes_ExtractResources_NeverSurfacesRawUndecodedImages()
     {
         using var doc = UnpdfDocument.ParseBytes(
-            PdfFixtures.LabImagePdf(),
+            PdfFixtures.UnconvertedColorImagePdf(),
             new ParseOptions { ExtractResources = true, MinImageDimension = 0 });
 
         Assert.Equal(0, doc.ResourceCount);

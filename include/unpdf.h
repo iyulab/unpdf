@@ -442,7 +442,7 @@ int unpdf_page_pixels(float width, float height, float dpi,
  * @param out_len Receives the PNG length in bytes.
  * @param out_info NULL, or receives {"width":N,"height":N,"gaps":{"text_runs":N,
  *        "images":N,"inline_images":N,"shadings":N,"soft_masks":N,
- *        "undecodable_content_streams":N}}
+ *        "undecodable_content_streams":N,"colors":N}}
  *        (must be freed with unpdf_free_string).
  * @return PNG bytes (must be freed with unpdf_free_bytes), or NULL on error
  *         (PageOutOfRange, Render, RasterStopped, InvalidArgument).
