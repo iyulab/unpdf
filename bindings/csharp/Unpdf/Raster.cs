@@ -12,6 +12,35 @@ public enum PageRegion
     Media,
 }
 
+/// <summary>
+/// A page's size as displayed, in points (1/72 inch): the region a render covers, the page's
+/// <c>/Rotate</c> applied. <see cref="Pixels"/> gives the pixels a render at a dpi has.
+/// </summary>
+public sealed class PageSize
+{
+    /// <summary>Width in points.</summary>
+    [JsonPropertyName("width")]
+    public float Width { get; init; }
+
+    /// <summary>Height in points.</summary>
+    [JsonPropertyName("height")]
+    public float Height { get; init; }
+
+    /// <summary>
+    /// The pixels <see cref="UnpdfDocument.RenderPage"/> paints this size in at
+    /// <paramref name="dpi"/>, by the native arithmetic painting sizes its bitmap with: each
+    /// side <c>points * (dpi / 72)</c> in single precision, rounded half away from zero, at
+    /// least 1. That can be a pixel off exact arithmetic (396 points at 93 dpi paint 511
+    /// pixels), so <c>72 * edge / points</c> is only a candidate dpi for a side of
+    /// <c>edge</c> pixels, to check here before rendering.
+    /// </summary>
+    public (uint Width, uint Height) Pixels(float dpi)
+    {
+        _ = NativeMethods.unpdf_page_pixels(Width, Height, dpi, out var width, out var height);
+        return (width, height);
+    }
+}
+
 /// <summary>Options for <see cref="UnpdfDocument.RenderPage"/>.</summary>
 public sealed class RenderPageOptions
 {

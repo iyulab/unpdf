@@ -291,6 +291,25 @@ internal static class PdfFixtures
         });
     }
 
+    /// <summary>One blank page whose dictionary holds <paramref name="pageEntries"/>.</summary>
+    public static byte[] BlankPagePdf(string pageEntries)
+    {
+        return Assemble(new[]
+        {
+            "<</Type/Catalog/Pages 2 0 R>>",
+            "<</Type/Pages/Kids[3 0 R]/Count 1>>",
+            $"<</Type/Page/Parent 2 0 R{pageEntries}>>",
+        });
+    }
+
+    /// <summary>One blank A4 page with a 200 x 300 pt crop box, turned a quarter.</summary>
+    public static byte[] CroppedPagePdf() =>
+        BlankPagePdf("/MediaBox[0 0 595 842]/CropBox[100 100 300 400]/Rotate 90");
+
+    /// <summary>One page whose media box is wider than a float holds.</summary>
+    public static byte[] UnboundedPagePdf() =>
+        BlankPagePdf($"/MediaBox[0 0 1{new string('0', 39)}.0 792]");
+
     public static byte[] ImageOnlyPdf()
     {
         var content = "q 595 0 0 842 0 0 cm /Im0 Do Q\n";

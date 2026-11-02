@@ -221,6 +221,18 @@ _lib.unpdf_render_page.argtypes = [
 ]
 _lib.unpdf_render_page.restype = ctypes.POINTER(ctypes.c_uint8)
 
+_lib.unpdf_page_size.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_char_p]
+_lib.unpdf_page_size.restype = ctypes.c_void_p
+
+_lib.unpdf_page_pixels.argtypes = [
+    ctypes.c_float,
+    ctypes.c_float,
+    ctypes.c_float,
+    ctypes.POINTER(ctypes.c_uint32),
+    ctypes.POINTER(ctypes.c_uint32),
+]
+_lib.unpdf_page_pixels.restype = ctypes.c_int
+
 _lib.unpdf_to_markdown_with_options.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
 _lib.unpdf_to_markdown_with_options.restype = ctypes.c_void_p
 

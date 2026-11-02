@@ -681,6 +681,22 @@ if !page.gaps.is_empty() {
 }
 ```
 
+`PdfParser::page_size` reads the size a page is painted at — its crop box (or the media box,
+with `PageRegion::Media`), `/Rotate` applied, in points — before painting, and
+`PageSize::pixels(dpi)` gives the pixels `render_page` paints it in at a `dpi`, by the same
+arithmetic. `72 * edge / longest side` is a candidate `dpi` for a long edge of `edge` pixels:
+rounding in `f32` can land it a pixel off, so check it with `pixels`:
+
+```rust
+use unpdf::parser::raster::{PageRegion, RasterOptions};
+
+let size = parser.page_size(3, PageRegion::Crop)?;
+let dpi = 72.0 * 1024.0 / size.width.max(size.height);
+let (width, height) = size.pixels(dpi);
+let page = parser.render_page(3, &RasterOptions { dpi, ..Default::default() })?;
+assert_eq!((page.width, page.height), (width, height));
+```
+
 Painted: text in embedded Type 1, TrueType, OpenType and CFF fonts and in Type 3 fonts, paths,
 clipping, colors, axial and radial shadings (`sh` and shading patterns), tiling patterns (colored
 and uncolored), and images, inline ones included (Flate-family, JPEG, JPEG 2000, CCITT fax and

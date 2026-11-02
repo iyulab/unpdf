@@ -363,8 +363,8 @@ public class UnpdfDocument : IDisposable
     /// <remarks>
     /// Opening reads the file's structure (and decrypts it with a password); the content is
     /// extracted the first time something asks for it, with <paramref name="options"/>.
-    /// <see cref="PageCount"/> and <see cref="RenderPage"/> never need it, so counting or
-    /// rendering the pages of a large file costs no extraction.
+    /// <see cref="PageCount"/>, <see cref="GetPageSize"/> and <see cref="RenderPage"/> never need
+    /// it, so counting, measuring or rendering the pages of a large file costs no extraction.
     /// </remarks>
     /// <exception cref="UnpdfException">If the file cannot be opened</exception>
     /// <exception cref="FileNotFoundException">If file doesn't exist</exception>
@@ -843,6 +843,37 @@ public class UnpdfDocument : IDisposable
         {
             var json = PtrToStringUtf8(ptr);
             return JsonDocument.Parse(json);
+        }
+        finally
+        {
+            NativeMethods.unpdf_free_string(ptr);
+        }
+    }
+
+    /// <summary>
+    /// A page's size as <see cref="RenderPage"/> paints <paramref name="region"/> of it, before
+    /// painting anything -- what a caller needs to size a bitmap or choose a
+    /// <see cref="RenderPageOptions.Dpi"/>; <see cref="PageSize.Pixels"/> gives the pixels a dpi
+    /// paints. Needs no extraction.
+    /// </summary>
+    /// <param name="pageNumber">Page number (1-indexed).</param>
+    /// <param name="region">The box measured. Default <see cref="PageRegion.Crop"/>.</param>
+    /// <exception cref="UnpdfException">
+    /// <see cref="UnpdfErrorKind.PageOutOfRange"/> for a page the document does not have;
+    /// <see cref="UnpdfErrorKind.Render"/> for a box too large for a finite size.
+    /// </exception>
+    public PageSize GetPageSize(int pageNumber, PageRegion region = PageRegion.Crop)
+    {
+        ThrowIfDisposed();
+        var ptr = NativeMethods.unpdf_page_size(
+            _handle, pageNumber, region == PageRegion.Media ? "media" : "crop");
+        if (ptr == IntPtr.Zero)
+            throw Failure($"Failed to get the size of page {pageNumber}");
+
+        try
+        {
+            return JsonSerializer.Deserialize(PtrToStringUtf8(ptr), UnpdfJsonContext.Default.PageSize)
+                ?? throw new UnpdfException("Failed to deserialize the page size");
         }
         finally
         {

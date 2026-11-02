@@ -1,4 +1,5 @@
-//! `unpdf_render_page`: a page of a parsed document as a PNG, through the C ABI.
+//! `unpdf_render_page`, `unpdf_page_size` and `unpdf_page_pixels`: a page of a document as a
+//! PNG, and its size before it is painted, through the C ABI.
 #![cfg(feature = "ffi")]
 
 mod common;
@@ -7,11 +8,12 @@ use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::ptr;
 
-use common::{image_only_pdf, text_pdf};
+use common::{image_only_pdf, page_pdf, text_pdf};
 use unpdf::error::ErrorKind;
 use unpdf::ffi::{
     unpdf_free_bytes, unpdf_free_document, unpdf_free_string, unpdf_last_error_kind,
-    unpdf_parse_bytes, unpdf_render_page,
+    unpdf_open_bytes_with_options, unpdf_page_pixels, unpdf_page_size, unpdf_parse_bytes,
+    unpdf_render_page,
 };
 
 unsafe fn take_string(ptr: *mut c_char) -> String {
@@ -128,6 +130,130 @@ fn malformed_options_are_an_invalid_argument() {
                 "{bad}"
             );
         }
+        unpdf_free_document(doc);
+    }
+}
+
+fn size_of(
+    doc: *const unpdf::ffi::UnpdfDocument,
+    page: i32,
+    region: *const c_char,
+) -> serde_json::Value {
+    unsafe { serde_json::from_str(&take_string(unpdf_page_size(doc, page, region))).unwrap() }
+}
+
+#[test]
+fn a_pages_size_is_read_before_it_is_painted() {
+    let bytes = page_pdf(
+        "",
+        "/MediaBox[0 0 595 842]/CropBox[100 100 300 400]/Rotate 90",
+        b"",
+    );
+    unsafe {
+        let doc = unpdf_open_bytes_with_options(bytes.as_ptr(), bytes.len(), ptr::null());
+        assert!(!doc.is_null());
+
+        let crop = size_of(doc, 1, ptr::null());
+        assert_eq!(
+            (crop["width"].as_f64(), crop["height"].as_f64()),
+            (Some(300.0), Some(200.0))
+        );
+        let named = CString::new("crop").unwrap();
+        assert_eq!(size_of(doc, 1, named.as_ptr()), crop);
+        let media = CString::new("media").unwrap();
+        let whole = size_of(doc, 1, media.as_ptr());
+        assert_eq!(
+            (whole["width"].as_f64(), whole["height"].as_f64()),
+            (Some(842.0), Some(595.0))
+        );
+
+        let options = CString::new(r#"{"dpi": 72}"#).unwrap();
+        let mut len = 0usize;
+        let mut info: *mut c_char = ptr::null_mut();
+        let png = unpdf_render_page(doc, 1, options.as_ptr(), &mut len, &mut info);
+        assert!(!png.is_null());
+        unpdf_free_bytes(png, len);
+        let info: serde_json::Value = serde_json::from_str(&take_string(info)).unwrap();
+        assert_eq!(
+            (info["width"].as_f64(), info["height"].as_f64()),
+            (crop["width"].as_f64(), crop["height"].as_f64())
+        );
+        unpdf_free_document(doc);
+    }
+}
+
+#[test]
+fn a_sizes_pixels_are_the_pixels_render_page_paints() {
+    let bytes = page_pdf("", "/MediaBox[0 0 396 612]", b"");
+    unsafe {
+        let doc = unpdf_open_bytes_with_options(bytes.as_ptr(), bytes.len(), ptr::null());
+        assert!(!doc.is_null());
+        let size = size_of(doc, 1, ptr::null());
+        let side = |name: &str| size[name].as_f64().unwrap() as f32;
+        let (mut width, mut height) = (0u32, 0u32);
+        assert_eq!(
+            unpdf_page_pixels(side("width"), side("height"), 93.0, &mut width, &mut height),
+            0
+        );
+        assert_eq!((width, height), (511, 791));
+
+        let options = CString::new(r#"{"dpi": 93}"#).unwrap();
+        let mut len = 0usize;
+        let mut info: *mut c_char = ptr::null_mut();
+        let png = unpdf_render_page(doc, 1, options.as_ptr(), &mut len, &mut info);
+        assert!(!png.is_null());
+        unpdf_free_bytes(png, len);
+        let info: serde_json::Value = serde_json::from_str(&take_string(info)).unwrap();
+        assert_eq!(
+            (info["width"].as_u64(), info["height"].as_u64()),
+            (Some(u64::from(width)), Some(u64::from(height)))
+        );
+        unpdf_free_document(doc);
+
+        assert_eq!(
+            unpdf_page_pixels(396.0, 612.0, 93.0, ptr::null_mut(), &mut height),
+            -1
+        );
+        assert_eq!(
+            unpdf_last_error_kind(),
+            unparser_shared::kind::INVALID_ARGUMENT
+        );
+    }
+}
+
+#[test]
+fn a_size_that_cannot_be_read_fails_with_its_kind() {
+    let bytes = image_only_pdf();
+    unsafe {
+        let doc = unpdf_parse_bytes(bytes.as_ptr(), bytes.len());
+        assert!(unpdf_page_size(doc, 2, ptr::null()).is_null());
+        assert_eq!(unpdf_last_error_kind(), ErrorKind::PageOutOfRange as i32);
+        assert!(unpdf_page_size(doc, 0, ptr::null()).is_null());
+        assert_eq!(unpdf_last_error_kind(), ErrorKind::PageOutOfRange as i32);
+        let bleed = CString::new("bleed").unwrap();
+        assert!(unpdf_page_size(doc, 1, bleed.as_ptr()).is_null());
+        assert_eq!(
+            unpdf_last_error_kind(),
+            unparser_shared::kind::INVALID_ARGUMENT
+        );
+        assert!(unpdf_page_size(ptr::null(), 1, ptr::null()).is_null());
+        assert_eq!(
+            unpdf_last_error_kind(),
+            unparser_shared::kind::INVALID_ARGUMENT
+        );
+        unpdf_free_document(doc);
+    }
+
+    let unbounded = page_pdf(
+        "",
+        &format!("/MediaBox[0 0 1{}.0 792]", "0".repeat(39)),
+        b"",
+    );
+    unsafe {
+        let doc = unpdf_open_bytes_with_options(unbounded.as_ptr(), unbounded.len(), ptr::null());
+        assert!(!doc.is_null());
+        assert!(unpdf_page_size(doc, 1, ptr::null()).is_null());
+        assert_eq!(unpdf_last_error_kind(), ErrorKind::Render as i32);
         unpdf_free_document(doc);
     }
 }

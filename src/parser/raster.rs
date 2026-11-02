@@ -56,6 +56,41 @@ pub enum PageRegion {
     Media,
 }
 
+/// A page's size as displayed: the width and height, in points (1/72 inch), of the region a
+/// raster covers with the page's `/Rotate` applied — the box [`PdfParser::render_page`] paints.
+///
+/// [`PdfParser::render_page`]: super::PdfParser::render_page
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PageSize {
+    pub width: f32,
+    pub height: f32,
+}
+
+impl PageSize {
+    fn displayed(page_box: PageBox, rotation: u16) -> Self {
+        let (width, height) = (page_box.width(), page_box.height());
+        match rotation {
+            90 | 270 => Self {
+                width: height,
+                height: width,
+            },
+            _ => Self { width, height },
+        }
+    }
+
+    /// The pixels `render_page` paints this size in at `dpi`, as it sizes its bitmap with this
+    /// function: each side is `points * (dpi / 72)` in `f32`, rounded half away from zero and at
+    /// least one. That can be a pixel off exact arithmetic (396 points at 93 dpi paint 511
+    /// pixels, not 512), so `72 * edge / points` is only a candidate `dpi` for a side of `edge`
+    /// pixels, to check here before painting. `render_page` refuses a page of more than
+    /// 200,000,000 pixels.
+    pub fn pixels(&self, dpi: f32) -> (u32, u32) {
+        let scale = dpi / 72.0;
+        let side = |points: f32| (points * scale).round().max(1.0) as u32;
+        (side(self.width), side(self.height))
+    }
+}
+
 /// What a rasterized page could not show, by reason. All zero means everything the page's
 /// content asks for was painted.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -132,6 +167,38 @@ impl RasteredPage {
 /// Pages larger than this many pixels are refused rather than allocated.
 const MAX_PIXELS: u64 = 200_000_000;
 
+fn page_id(backend: &dyn PdfBackend, page_num: u32) -> Result<PageId> {
+    let pages = backend.pages();
+    pages
+        .get(&page_num)
+        .copied()
+        .ok_or(Error::PageOutOfRange(page_num, pages.len() as u32))
+}
+
+fn region_box(backend: &dyn PdfBackend, page: PageId, region: PageRegion) -> PageBox {
+    match region {
+        PageRegion::Crop => backend.crop_box(page),
+        PageRegion::Media => backend.page_box(page),
+    }
+}
+
+/// The size of page `page_num` as [`render_page`] paints `region` of it.
+pub(crate) fn page_size(
+    backend: &dyn PdfBackend,
+    page_num: u32,
+    region: PageRegion,
+) -> Result<PageSize> {
+    let page = page_id(backend, page_num)?;
+    let size = PageSize::displayed(
+        region_box(backend, page, region),
+        backend.page_rotation(page),
+    );
+    if !(size.width.is_finite() && size.height.is_finite()) {
+        return Err(Error::Render(format!("page {page_num} has no finite size")));
+    }
+    Ok(size)
+}
+
 /// Rasterize page `page_num` of the document `backend` reads, charging `budget` as
 /// [`PdfParser::render_page_with`](super::PdfParser::render_page_with) says.
 pub(crate) fn render_page(
@@ -140,10 +207,7 @@ pub(crate) fn render_page(
     options: &RasterOptions,
     budget: &mut dyn FnMut(u64) -> ControlFlow<()>,
 ) -> Result<RasteredPage> {
-    let pages = backend.pages();
-    let page = *pages
-        .get(&page_num)
-        .ok_or(Error::PageOutOfRange(page_num, pages.len() as u32))?;
+    let page = page_id(backend, page_num)?;
     if !(options.dpi.is_finite() && options.dpi > 0.0) {
         return Err(Error::Render(format!(
             "dpi must be positive, got {}",
@@ -151,18 +215,11 @@ pub(crate) fn render_page(
         )));
     }
 
-    let page_box = match options.region {
-        PageRegion::Crop => backend.crop_box(page),
-        PageRegion::Media => backend.page_box(page),
-    };
+    let page_box = region_box(backend, page, options.region);
     let rotation = backend.page_rotation(page);
     let scale = options.dpi / 72.0;
     let (w, h) = (page_box.width() * scale, page_box.height() * scale);
-    let (px_w, px_h) = match rotation {
-        90 | 270 => (h, w),
-        _ => (w, h),
-    };
-    let (px_w, px_h) = (px_w.round().max(1.0) as u32, px_h.round().max(1.0) as u32);
+    let (px_w, px_h) = PageSize::displayed(page_box, rotation).pixels(options.dpi);
     if u64::from(px_w) * u64::from(px_h) > MAX_PIXELS {
         return Err(Error::Render(format!(
             "page {page_num} at {} dpi would be {px_w} x {px_h} pixels",

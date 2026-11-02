@@ -88,6 +88,17 @@ def _encode_path(path: "str | os.PathLike[str]") -> bytes:
     return os.fspath(path).encode("utf-8")
 
 
+def _page_number(page_number: int) -> int:
+    """A page number for a native ``int`` parameter, which ctypes would wrap silently
+    onto another page when the ``int`` cannot hold it."""
+    if not -(2**31) <= page_number < 2**31:
+        raise UnpdfError(
+            f"unpdf error: page {page_number} is out of range",
+            ErrorKind.PAGE_OUT_OF_RANGE,
+        )
+    return page_number
+
+
 def _check_last_error(lib: ctypes.CDLL) -> str:
     """Get the last error message from the native library."""
     err = lib.unpdf_last_error()
@@ -668,6 +679,31 @@ class RenderedPage:
     substituted_text_runs: int = 0
 
 
+@dataclass(frozen=True)
+class PageSize:
+    """A page's size as displayed, in points (1/72 inch): ``width`` and ``height`` of the
+    region a render covers, the page's ``/Rotate`` applied. :meth:`pixels` gives the pixels
+    a render at a ``dpi`` has.
+    """
+
+    width: float
+    height: float
+
+    def pixels(self, dpi: float) -> "tuple[int, int]":
+        """The pixels :meth:`Document.render_page` paints this size in at ``dpi``, by the
+        native arithmetic painting sizes its bitmap with: each side ``points * (dpi / 72)``
+        in single precision, rounded half away from zero, at least 1. That can be a pixel
+        off exact arithmetic (396 points at 93 dpi paint 511 pixels), so
+        ``72 * edge / points`` is only a candidate ``dpi`` for a side of ``edge`` pixels, to
+        check here before rendering.
+        """
+        width, height = ctypes.c_uint32(), ctypes.c_uint32()
+        get_library().unpdf_page_pixels(
+            self.width, self.height, dpi, ctypes.byref(width), ctypes.byref(height)
+        )
+        return width.value, height.value
+
+
 def _render(
     lib: ctypes.CDLL,
     handle: Any,
@@ -676,7 +712,7 @@ def _render(
     region: str,
     max_work: "int | None",
 ) -> RenderedPage:
-    payload: "dict[str, Any]" = {"dpi": dpi, "region": region}
+    payload: "dict[str, Any]" = {"dpi": ctypes.c_float(dpi).value, "region": region}
     if max_work is not None:
         payload["max_work"] = max_work
     options = json.dumps(payload).encode("utf-8")
@@ -707,8 +743,8 @@ class Document:
 
     Opening reads the file's structure, and fails for a file that is not a PDF. The
     content is extracted the first time something needs it (:meth:`get_page_stats`,
-    :meth:`get_tables`) — so an extraction error is raised there — and counting or
-    rendering pages never needs it.
+    :meth:`get_tables`) — so an extraction error is raised there — and counting,
+    measuring or rendering pages never needs it.
 
     Use it as a context manager, or call :meth:`close`::
 
@@ -732,6 +768,28 @@ class Document:
         if count < 0:
             raise _native_error(self._lib)
         return count
+
+    def page_size(self, page_number: int, region: str = "crop") -> PageSize:
+        """A page's size (1-indexed) as :meth:`render_page` paints ``region`` of it,
+        before painting anything — see :class:`PageSize`. Needs no extraction.
+
+        Raises:
+            UnpdfError: ``kind == ErrorKind.PAGE_OUT_OF_RANGE`` for a page the
+                document does not have; ``RENDER`` for a box too large for a finite
+                size; ``INVALID_ARGUMENT`` for an unknown ``region``.
+        """
+        if "\0" in region:
+            raise UnpdfError(
+                f'unpdf error: region must be "crop" or "media", got {region!r}',
+                ErrorKind.INVALID_ARGUMENT,
+            )
+        result = self._lib.unpdf_page_size(
+            self._live(), _page_number(page_number), region.encode("utf-8")
+        )
+        if not result:
+            raise _native_error(self._lib)
+        report = json.loads(_take_string(self._lib, result))
+        return PageSize(width=float(report["width"]), height=float(report["height"]))
 
     def render_page(
         self,

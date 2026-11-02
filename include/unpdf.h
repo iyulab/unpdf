@@ -164,7 +164,7 @@ UnpdfDocument* unpdf_parse_bytes_with_options(const uint8_t* data, size_t len,
  * Open a document from a file path, with options, without extracting it.
  * Opening reads the file's structure (and decrypts it with a `password`); the
  * content is extracted the first time something asks for it, with these options.
- * unpdf_page_count() and unpdf_render_page() never need it.
+ * unpdf_page_count(), unpdf_page_size() and unpdf_render_page() never need it.
  * Same `options_json` contract as unpdf_parse_file_with_options().
  * @return Document handle, or NULL on error. Must be freed with
  *         unpdf_free_document.
@@ -395,6 +395,36 @@ char* unpdf_get_resource_info(const UnpdfDocument* doc, const char* resource_id)
 uint8_t* unpdf_get_resource_data(const UnpdfDocument* doc,
                                  const char* resource_id,
                                  size_t* out_len);
+
+/**
+ * A page's size before it is painted: {"width":F,"height":F} in points (1/72
+ * inch), the page as unpdf_render_page() paints `region` of it, its /Rotate
+ * applied; unpdf_page_pixels() gives the pixels a dpi paints it in. Needs no
+ * extraction.
+ *
+ * @param page_number 1-indexed page number.
+ * @param region NULL or "crop" (what a viewer shows), or "media" (the whole
+ *        sheet).
+ * @return JSON string (must be freed with unpdf_free_string), or NULL on error
+ *         (PageOutOfRange, Render for a box too large for a finite size,
+ *         InvalidArgument).
+ */
+char* unpdf_page_size(const UnpdfDocument* doc, int page_number, const char* region);
+
+/**
+ * The pixels unpdf_render_page() paints a page of `width` x `height` points
+ * (from unpdf_page_size()) in at `dpi`, by the arithmetic painting sizes its
+ * bitmap with: each side points * (dpi / 72) in float, rounded half away from
+ * zero, at least 1. That can be a pixel off exact arithmetic (396 points at 93
+ * dpi paint 511 pixels), so dpi = 72 * edge / points is only a candidate for a
+ * side of `edge` pixels, to check here before painting.
+ *
+ * @param out_width Receives the width in pixels.
+ * @param out_height Receives the height in pixels.
+ * @return 0, or -1 when out_width or out_height is NULL (InvalidArgument).
+ */
+int unpdf_page_pixels(float width, float height, float dpi,
+                      uint32_t* out_width, uint32_t* out_height);
 
 /**
  * Render a page to a PNG, painted from the content the document was parsed

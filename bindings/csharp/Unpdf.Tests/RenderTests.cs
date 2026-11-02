@@ -74,6 +74,68 @@ public class RenderTests
     }
 
     [Fact]
+    public void GetPageSize_IsTheSizeRenderPagePaintsAt72Dpi()
+    {
+        using var doc = UnpdfDocument.OpenBytes(PdfFixtures.CroppedPagePdf());
+        var crop = doc.GetPageSize(1);
+        Assert.Equal(300f, crop.Width);
+        Assert.Equal(200f, crop.Height);
+        var media = doc.GetPageSize(1, PageRegion.Media);
+        Assert.Equal(842f, media.Width);
+        Assert.Equal(595f, media.Height);
+
+        var page = doc.RenderPage(1, new RenderPageOptions { Dpi = 72 });
+        Assert.Equal(300, page.Width);
+        Assert.Equal(200, page.Height);
+    }
+
+    [Fact]
+    public void GetPageSize_GivesTheDpiOfTheLongEdgeOfACommonPage()
+    {
+        using var doc = UnpdfDocument.OpenBytes(PdfFixtures.CroppedPagePdf());
+        var size = doc.GetPageSize(1);
+        var page = doc.RenderPage(1, new RenderPageOptions { Dpi = 72f * 1024 / Math.Max(size.Width, size.Height) });
+        Assert.Equal(1024, page.Width);
+        Assert.Equal(683, page.Height);
+    }
+
+    [Fact]
+    public void Pixels_AreThePixelsRenderPagePaints()
+    {
+        using var doc = UnpdfDocument.OpenBytes(PdfFixtures.BlankPagePdf("/MediaBox[0 0 396 612]"));
+        var page = doc.RenderPage(1, new RenderPageOptions { Dpi = 93 });
+        Assert.Equal((511u, 791u), doc.GetPageSize(1).Pixels(93));
+        Assert.Equal((511, 791), (page.Width, page.Height));
+    }
+
+    [Fact]
+    public void Pixels_CheckADpiFromThePageSize()
+    {
+        using var doc = UnpdfDocument.OpenBytes(PdfFixtures.BlankPagePdf("/MediaBox[0 0 842 0.00001]"));
+        var size = doc.GetPageSize(1);
+        var dpi = 72f * 3_066_127 / Math.Max(size.Width, size.Height);
+        var page = doc.RenderPage(1, new RenderPageOptions { Dpi = dpi });
+        Assert.Equal((3_066_128u, 1u), size.Pixels(dpi));
+        Assert.Equal((3_066_128, 1), (page.Width, page.Height));
+    }
+
+    [Fact]
+    public void GetPageSize_PageOutOfRange_ThrowsWithItsKind()
+    {
+        using var doc = UnpdfDocument.ParseBytes(PdfFixtures.ImageOnlyPdf());
+        var ex = Assert.Throws<UnpdfException>(() => doc.GetPageSize(2));
+        Assert.Equal(UnpdfErrorKind.PageOutOfRange, ex.Kind);
+    }
+
+    [Fact]
+    public void GetPageSize_NoFiniteSize_ThrowsRender()
+    {
+        using var doc = UnpdfDocument.OpenBytes(PdfFixtures.UnboundedPagePdf());
+        var ex = Assert.Throws<UnpdfException>(() => doc.GetPageSize(1));
+        Assert.Equal(UnpdfErrorKind.Render, ex.Kind);
+    }
+
+    [Fact]
     public void RenderPage_PageOutOfRange_ThrowsWithItsKind()
     {
         using var doc = UnpdfDocument.ParseBytes(PdfFixtures.ImageOnlyPdf());

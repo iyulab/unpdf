@@ -107,6 +107,7 @@ internal sealed class PageListPayload
 [JsonSerializable(typeof(ExtractionQuality))]
 [JsonSerializable(typeof(PageStats))]
 [JsonSerializable(typeof(TableText[]))]
+[JsonSerializable(typeof(PageSize))]
 [JsonSerializable(typeof(RenderInfoPayload))]
 [JsonSerializable(typeof(RenderOptionsPayload))]
 [JsonSerializable(typeof(string[]))]

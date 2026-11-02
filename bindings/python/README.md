@@ -216,6 +216,11 @@ with unpdf.Document("report.pdf") as doc:
         print(page.substituted_text_runs)           # text in a stand-in for a font not embedded
 ```
 
+`doc.page_size(3)` reads a page's size in points as displayed (`region` as in `render_page`),
+its `/Rotate` applied, without painting, and `size.pixels(dpi)` gives the pixels `render_page`
+paints at that `dpi`. `72 * edge / max(size.width, size.height)` is a candidate `dpi` for a long
+edge of `edge` pixels: rounding can land it a pixel off, so check it with `pixels`.
+
 `unpdf.render_page(source, page_number, dpi=150, region="crop")` renders one page in one call
 (parsing the document for it).
 

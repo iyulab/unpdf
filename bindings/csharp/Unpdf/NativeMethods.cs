@@ -220,6 +220,29 @@ internal static class NativeMethods
         out UIntPtr outLen);
 
     /// <summary>
+    /// A page's size as displayed, in points, as JSON <c>{"width":F,"height":F}</c> (free with
+    /// <see cref="unpdf_free_string"/>); <paramref name="region"/> is <c>"crop"</c>,
+    /// <c>"media"</c> or null for the crop box.
+    /// </summary>
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+    public static extern IntPtr unpdf_page_size(
+        IntPtr doc,
+        int pageNum,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string? region);
+
+    /// <summary>
+    /// The pixels <see cref="unpdf_render_page"/> paints a page of <paramref name="width"/> x
+    /// <paramref name="height"/> points in at <paramref name="dpi"/>; 0, or -1 on error.
+    /// </summary>
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern int unpdf_page_pixels(
+        float width,
+        float height,
+        float dpi,
+        out uint outWidth,
+        out uint outHeight);
+
+    /// <summary>
     /// Render a page to a PNG. <paramref name="outInfo"/> receives a JSON report (free with
     /// <see cref="unpdf_free_string"/>); the PNG is freed with <see cref="unpdf_free_bytes"/>.
     /// </summary>
