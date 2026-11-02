@@ -332,6 +332,9 @@ pub enum CodecParms {
     Ccitt(CcittParms),
     /// `/JBIG2Decode`: the segments of `/JBIG2Globals`, decoded, when the image has them.
     Jbig2 { globals: Option<Vec<u8>> },
+    /// `/DCTDecode`'s `/ColorTransform`, when the image gives one: whether the encoder turned RGB
+    /// into YCbCr, or CMYK into YCCK, where the JPEG's own Adobe marker does not say.
+    Dct { color_transform: bool },
 }
 
 /// `/CCITTFaxDecode`'s parameters (ISO 32000-1 §7.4.6, Table 11), defaults filled in.
@@ -1867,6 +1870,13 @@ impl RawBackend {
                     .and_then(|g| self.doc.resolve(g).as_stream())
                     .and_then(|g| raw_stream::decompress(g).ok()),
             }),
+            Some("DCTDecode") => self
+                .last_decode_parms(dict)
+                .and_then(|parms| raw_dict_get(parms, b"ColorTransform"))
+                .and_then(|t| self.doc.resolve(t).as_i64())
+                .map(|t| CodecParms::Dct {
+                    color_transform: t != 0,
+                }),
             _ => None,
         };
         let smask = (depth == 0)
