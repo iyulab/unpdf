@@ -4,7 +4,7 @@
 
 mod common;
 
-use common::{bordered_table_pdf, page_pdf};
+use common::{bordered_table_pdf, page_pdf, page_pdf_with_xobjects, stream_object};
 use unpdf::parse_bytes;
 
 const A4: &str = "/MediaBox[0 0 595 842]";
@@ -67,6 +67,244 @@ fn an_inline_image_is_an_image_paint() {
     assert!(
         doc.extraction_quality.is_scan_pdf,
         "an inline-image scan is a scan"
+    );
+}
+
+fn image_xobject(entries: &str) -> Vec<u8> {
+    stream_object(
+        &format!("<</Type/XObject/Subtype/Image/Width 8/Height 8{entries}/Length 1>>"),
+        &[0x80],
+    )
+}
+
+fn page_with_image(entries: &str) -> unpdf::model::Page {
+    only_page(&page_pdf_with_xobjects(
+        A4,
+        b"q 595 0 0 842 0 0 cm /Im Do Q",
+        vec![("Im", image_xobject(entries))],
+    ))
+}
+
+#[test]
+fn stencils_one_bit_samples_fax_and_jbig2_images_are_bilevel() {
+    for (kind, entries) in [
+        ("one bit", "/ColorSpace/DeviceGray/BitsPerComponent 1"),
+        ("stencil", "/ImageMask true"),
+        ("fax", "/Filter/CCITTFaxDecode"),
+        ("jbig2 after flate", "/Filter[/FlateDecode/JBIG2Decode]"),
+    ] {
+        let page = page_with_image(entries);
+        assert!(close(page.image_coverage, 1.0), "{kind}");
+        assert!(
+            close(page.bilevel_image_coverage, 1.0),
+            "{kind}: {}",
+            page.bilevel_image_coverage
+        );
+    }
+}
+
+#[test]
+fn colour_and_grey_images_are_not_bilevel() {
+    for (kind, entries) in [
+        ("grey", "/ColorSpace/DeviceGray/BitsPerComponent 8"),
+        (
+            "jpeg",
+            "/ColorSpace/DeviceRGB/BitsPerComponent 8/Filter/DCTDecode",
+        ),
+        ("no stencil", "/ImageMask false/BitsPerComponent 8"),
+    ] {
+        let page = page_with_image(entries);
+        assert!(close(page.image_coverage, 1.0), "{kind}");
+        assert_eq!(page.bilevel_image_coverage, 0.0, "{kind}");
+    }
+}
+
+#[test]
+fn a_painted_xobject_that_is_not_an_image_is_not_bilevel() {
+    let postscript = stream_object("<</Type/XObject/Subtype/PS/ImageMask true/Length 1>>", &[0]);
+    let page = only_page(&page_pdf_with_xobjects(
+        A4,
+        b"q 595 0 0 842 0 0 cm /Ps Do Q",
+        vec![("Ps", postscript)],
+    ));
+    assert_eq!(page.image_op_count, 1);
+    assert_eq!(page.bilevel_image_coverage, 0.0);
+}
+
+fn stencil_and_grey() -> Vec<(&'static str, Vec<u8>)> {
+    vec![
+        ("Bw", image_xobject("/ImageMask true")),
+        (
+            "Gr",
+            image_xobject("/ColorSpace/DeviceGray/BitsPerComponent 8"),
+        ),
+    ]
+}
+
+#[test]
+fn bilevel_coverage_is_the_union_of_the_bilevel_paints_clipped_to_the_page() {
+    let top_half_twice_and_grey_bottom = only_page(&page_pdf_with_xobjects(
+        A4,
+        b"q 595 0 0 421 0 421 cm /Bw Do Q q 595 0 0 421 0 421 cm /Bw Do Q \
+          q 595 0 0 421 0 0 cm /Gr Do Q",
+        stencil_and_grey(),
+    ));
+    assert!(close(top_half_twice_and_grey_bottom.image_coverage, 1.0));
+    assert!(
+        close(top_half_twice_and_grey_bottom.bilevel_image_coverage, 0.5),
+        "{}",
+        top_half_twice_and_grey_bottom.bilevel_image_coverage
+    );
+
+    let off_edge = only_page(&page_pdf_with_xobjects(
+        A4,
+        b"q 595 0 0 421 300 0 cm /Bw Do Q q 595 0 0 421 0 421 cm /Bw Do Q",
+        stencil_and_grey(),
+    ));
+    assert!(
+        close(off_edge.bilevel_image_coverage, 890.0 / 1190.0),
+        "{}",
+        off_edge.bilevel_image_coverage
+    );
+
+    let clipped = only_page(&page_pdf_with_xobjects(
+        A4,
+        b"0 0 100 100 re W n q 595 0 0 842 0 0 cm /Bw Do Q",
+        stencil_and_grey(),
+    ));
+    assert!(
+        close(clipped.bilevel_image_coverage, 10_000.0 / (595.0 * 842.0)),
+        "{}",
+        clipped.bilevel_image_coverage
+    );
+}
+
+#[test]
+fn bilevel_coverage_stays_within_image_coverage_when_many_paints_are_sampled() {
+    let mut content = b"q 300.9 0 0 421 0 0 cm /Bw Do Q".to_vec();
+    content.extend(b" q 0.5 0 0 842 594.5 0 cm /Gr Do Q".repeat(299));
+    let page = only_page(&page_pdf_with_xobjects(A4, &content, stencil_and_grey()));
+    assert_eq!(page.image_op_count, 300);
+    assert!(
+        page.bilevel_image_coverage > 0.25 && page.bilevel_image_coverage <= page.image_coverage,
+        "{} of {}",
+        page.bilevel_image_coverage,
+        page.image_coverage
+    );
+}
+
+#[test]
+fn a_jpx_image_is_not_bilevel_by_its_dictionary_s_bit_depth() {
+    let jp2 = include_bytes!("fixtures/halves_red_blue_8x4.jp2");
+    let bilevel: Vec<f32> = [
+        "/JPXDecode",
+        "[/FlateDecode/JPXDecode]",
+        "6 0 R",
+        "[/FlateDecode 6 0 R]",
+    ]
+    .iter()
+    .map(|filter| {
+        let image = stream_object(
+            &format!(
+                "<</Type/XObject/Subtype/Image/Width 8/Height 4/BitsPerComponent 1\
+                  /Filter {filter}/Length {}>>",
+                jp2.len()
+            ),
+            jp2,
+        );
+        let page = only_page(&page_pdf_with_xobjects(
+            A4,
+            b"q 595 0 0 842 0 0 cm /Im Do Q",
+            vec![("Im", image), ("Jpx", b"/JPXDecode".to_vec())],
+        ));
+        assert!(close(page.image_coverage, 1.0), "{filter}");
+        page.bilevel_image_coverage
+    })
+    .collect();
+    assert_eq!(bilevel, [0.0; 4]);
+}
+
+#[test]
+fn a_bilevel_entry_given_by_reference_is_resolved() {
+    for entries in [
+        "/Subtype 6 0 R/ColorSpace/DeviceGray/BitsPerComponent 1",
+        "/Subtype/Image/ImageMask 7 0 R",
+        "/Subtype/Image/ColorSpace/DeviceGray/BitsPerComponent 8 0 R",
+    ] {
+        let image = stream_object(
+            &format!("<</Type/XObject{entries}/Width 8/Height 8/Length 1>>"),
+            &[0x80],
+        );
+        let page = only_page(&page_pdf_with_xobjects(
+            A4,
+            b"q 595 0 0 842 0 0 cm /Im Do Q",
+            vec![
+                ("Im", image),
+                ("Image", b"/Image".to_vec()),
+                ("Yes", b"true".to_vec()),
+                ("One", b"1".to_vec()),
+            ],
+        ));
+        assert!(close(page.image_coverage, 1.0), "{entries}");
+        assert!(
+            close(page.bilevel_image_coverage, 1.0),
+            "{entries}: {}",
+            page.bilevel_image_coverage
+        );
+    }
+}
+
+#[test]
+fn an_inline_image_is_bilevel_by_its_own_dictionary() {
+    for (dictionary, bilevel) in [
+        ("/IM true", true),
+        ("/IM true %comment\n", true),
+        ("/CS /G /BPC 1", true),
+        ("/F /CCF", true),
+        ("/CS /G /BPC 8", false),
+        ("/IM false /CS /G /BPC 8", false),
+    ] {
+        let content = format!("q 595 0 0 842 0 0 cm BI /W 8 /H 8 {dictionary} ID \x01 EI Q");
+        let page = only_page(&page_pdf("", A4, content.as_bytes()));
+        assert_eq!(page.image_op_count, 1, "{dictionary}");
+        assert!(close(page.image_coverage, 1.0), "{dictionary}");
+        let expected = if bilevel { 1.0 } else { 0.0 };
+        assert!(
+            close(page.bilevel_image_coverage, expected),
+            "{dictionary}: {}",
+            page.bilevel_image_coverage
+        );
+    }
+}
+
+#[test]
+fn an_image_inside_a_form_is_named_in_the_form_s_own_resources() {
+    let form_content = b"q 595 0 0 421 0 0 cm /Im0 Do Q";
+    let form = stream_object(
+        &format!(
+            "<</Type/XObject/Subtype/Form/BBox[0 0 595 421]\
+              /Resources<</XObject<</Im0 7 0 R>>>>/Length {}>>",
+            form_content.len()
+        ),
+        form_content,
+    );
+    let page = only_page(&page_pdf_with_xobjects(
+        A4,
+        b"q 595 0 0 421 0 0 cm /Im0 Do Q q 1 0 0 1 0 421 cm /Fm1 Do Q",
+        vec![
+            (
+                "Im0",
+                image_xobject("/ColorSpace/DeviceGray/BitsPerComponent 8"),
+            ),
+            ("Fm1", form),
+            ("Stencil", image_xobject("/ImageMask true")),
+        ],
+    ));
+    assert!(close(page.image_coverage, 1.0), "{}", page.image_coverage);
+    assert!(
+        close(page.bilevel_image_coverage, 0.5),
+        "{}",
+        page.bilevel_image_coverage
     );
 }
 

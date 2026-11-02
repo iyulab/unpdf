@@ -240,6 +240,14 @@ public sealed class PageStats
     public double ImageCoverage { get; init; }
 
     /// <summary>
+    /// The part of <see cref="ImageCoverage"/> the bilevel images make up, 0 to 1: image
+    /// masks, images of one bit per component, and CCITT or JBIG2 coded images. A
+    /// black-and-white page scan is bilevel; a photograph is not.
+    /// </summary>
+    [JsonPropertyName("bilevel_image_coverage")]
+    public double BilevelImageCoverage { get; init; }
+
+    /// <summary>
     /// Text runs not set horizontally left to right (rotated, vertical or upside-down). The
     /// reading order treats them as horizontal, so their order may be wrong.
     /// </summary>

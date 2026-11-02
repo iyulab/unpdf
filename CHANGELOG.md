@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Breaking: a page reports how much of it bilevel images cover.** `bilevel_image_coverage`
+  (page JSON, `unpdf_page_stats`, .NET `PageStats.BilevelImageCoverage`, Python `get_page_stats`)
+  is the part of `image_coverage` made up of image masks, images of one bit per component and
+  CCITT or JBIG2 coded images, 0 to 1: the union of their paints, clipped to what the page shows.
+  It is read from the image dictionaries, nothing decoded, so a black-and-white page scan can be
+  told from a photograph or a figure that covers as much of the page. `Page` and
+  `parser::PageFacts` gain the field: Rust code that builds or matches either exhaustively needs it.
+
 ## 0.52.3 — 2026-11-03
 
 ### Fixed

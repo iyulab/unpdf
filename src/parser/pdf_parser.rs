@@ -283,6 +283,7 @@ pub(crate) fn parse_single_page(
             super::inline::clear_links(&mut page);
         }
         page.image_coverage = facts.image_coverage;
+        page.bilevel_image_coverage = facts.bilevel_image_coverage;
         page.rotated_text_runs = facts.rotated_text_runs;
         page.invisible_text_chars = facts.invisible_text_chars;
         page.painted_text_chars = facts.painted_text_chars;
