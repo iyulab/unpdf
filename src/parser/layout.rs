@@ -1745,7 +1745,11 @@ impl<'a> LayoutAnalyzer<'a> {
                                     let DecodedRun {
                                         decoded, glyphs, ..
                                     } = run;
-                                    suppressions.extend(decoded.suppressed);
+                                    suppressions.extend(
+                                        decoded
+                                            .suppressed
+                                            .map(|reason| (reason, decoded.suppressed_codes)),
+                                    );
                                     undecoded_codes += decoded.undecoded_codes;
                                     if let Some(room) = room.take() {
                                         maybe_insert_space_tj(&mut text, room - letter_room);
@@ -1880,9 +1884,10 @@ impl<'a> LayoutAnalyzer<'a> {
                             continue;
                         }
                         undecoded_text_codes += undecoded_codes;
-                        for reason in suppressions {
+                        for (reason, codes) in suppressions {
                             note_suppression(
                                 reason,
+                                codes,
                                 &text_state,
                                 &mut suppressed_runs,
                                 &mut unreadable_fonts,
@@ -3490,13 +3495,14 @@ fn concat_matrix(a: &[f32; 6], b: &[f32; 6]) -> [f32; 6] {
 
 /// Tally a decoded run that the font decoder discarded.
 ///
-/// Counted per run rather than per character: the discarded text was never decoded,
-/// so its length is unknown — the only honest unit is "how many runs went missing".
+/// The run counts once, whatever its length: the discarded text was never decoded, so its
+/// characters are unknown. `codes` adds the codes of the font's string to the font's tally.
 ///
 /// The run is also attributed to the font it was set in, so a consumer can say which
 /// font could not be read.
 fn note_suppression(
     reason: TextSuppression,
+    codes: u32,
     text_state: &TextState,
     suppressed_runs: &mut usize,
     unreadable_fonts: &mut Vec<UnreadableFont>,
@@ -3513,11 +3519,15 @@ fn note_suppression(
         .iter_mut()
         .find(|f| f.reason == reason && f.name == name)
     {
-        Some(entry) => entry.runs += 1,
+        Some(entry) => {
+            entry.runs += 1;
+            entry.codes = entry.codes.saturating_add(codes);
+        }
         None => unreadable_fonts.push(UnreadableFont {
             name,
             reason,
             runs: 1,
+            codes,
         }),
     }
     log::debug!("dropped an unreadable text run: {:?}", reason);
@@ -5722,6 +5732,22 @@ mod tests {
         let mut spans = margin_page(vec![number("46", 200.0, 518.0, 9.3)]);
         filter_header_footer_spans(&mut spans, REPORT_PAGE);
         assert!(texts(&spans).contains(&"46"));
+    }
+
+    #[test]
+    fn a_font_counts_its_lost_codes_up_to_the_u32_maximum() {
+        let (mut runs, mut fonts) = (0, Vec::new());
+        for codes in [u32::MAX, 1] {
+            note_suppression(
+                TextSuppression::BinaryDensity,
+                codes,
+                &TextState::default(),
+                &mut runs,
+                &mut fonts,
+            );
+        }
+        assert_eq!((runs, fonts.len(), fonts[0].runs), (2, 1, 2));
+        assert_eq!(fonts[0].codes, u32::MAX);
     }
 }
 

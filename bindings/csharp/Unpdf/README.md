@@ -258,12 +258,17 @@ through Form XObjects count as the page's own; `FormOpCount` counts the form pai
 outlines.
 
 `UnreadableFonts` says which fonts `SuppressedTextRuns` came from: a list of
-`UnreadableFont` (`Name`, `Reason`, `Runs`), one per font and reason in order of first
+`UnreadableFont` (`Name`, `Reason`, `Runs`, `Codes`), one per font and reason in order of first
 loss (empty when nothing was discarded). `Name` is the font's `/BaseFont`, or its resource
 name when it has none. `Reason` is `"composite_unresolved"` (a Type0/CID font whose codes
 map to no text), `"binary_density"` (a simple font whose decode was binary noise) or
 `"unmapped_codes"` (a font that draws glyphs for codes it gives no character, its text lost); treat any other value as a generic "unreadable". The `Runs` sum to
-`SuppressedTextRuns`.
+`SuppressedTextRuns`, the `Codes` to `SuppressedTextCodes`, so `"unmapped_codes"` entries,
+whose glyphs the page may show, can be left out. `SuppressedTextCodes` counts the codes in the
+discarded runs, whatever their rendering mode, to weigh the text lost against
+`PaintedTextChars` and `InvisibleTextChars`. A simple font's code is a byte; a composite
+font's is as long as its `/Encoding` makes it and counts only when its glyph advances; a
+string the `/Encoding` cannot split counts none.
 `UndecodedTextCodes` counts codes a composite font's `ToUnicode` and own data give no
 character although their glyph advances, in runs that give other text.
 

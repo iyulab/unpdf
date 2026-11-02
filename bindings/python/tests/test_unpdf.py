@@ -156,7 +156,7 @@ def _suppressed_text_run_pdf() -> bytes:
 
     Mirrors the Rust fixture in ``tests/suppression_reporting_test.rs``.
     """
-    content = b"BT /F1 12 Tf 72 720 Td (BC) Tj ET\n"
+    content = b"BT /F1 12 Tf 72 720 Td (\\001\\102\\001\\103) Tj ET\n"
     return _assemble([
         b"<</Type/Catalog/Pages 2 0 R>>",
         b"<</Type/Pages/Kids[3 0 R]/Count 1>>",
@@ -526,16 +526,22 @@ class TestGetPageStats:
 
     def test_unresolvable_font_is_named_in_unreadable_fonts(self, tmp_path):
         """Which font lost the runs and why is on the page that lost them; the
-        runs add up to the page's ``suppressed_text_runs``."""
+        runs add up to the page's ``suppressed_text_runs`` and the codes to its
+        ``suppressed_text_codes``."""
         pdf_file = tmp_path / "suppressed.pdf"
         pdf_file.write_bytes(_suppressed_text_run_pdf())
         stats = unpdf.get_page_stats(str(pdf_file), 1)
         assert stats["unreadable_fonts"] == [
-            {"name": "NoMap", "reason": "composite_unresolved", "runs": 1}
+            {"name": "NoMap", "reason": "composite_unresolved", "runs": 1, "codes": 2}
         ]
         assert (
             sum(f["runs"] for f in stats["unreadable_fonts"])
             == stats["suppressed_text_runs"]
+        )
+        assert (
+            sum(f["codes"] for f in stats["unreadable_fonts"])
+            == stats["suppressed_text_codes"]
+            == 2
         )
 
     def test_readable_page_has_no_unreadable_fonts(self, tmp_path):

@@ -151,6 +151,7 @@ fn a_run_the_clip_hides_is_not_counted_as_suppressed() {
     .expect("fixture must parse");
 
     assert_eq!(doc.pages[0].suppressed_text_runs, 0);
+    assert_eq!(doc.pages[0].suppressed_text_codes, 0);
     assert!(doc.pages[0].unreadable_fonts.is_empty());
 }
 
@@ -225,7 +226,135 @@ fn unreadable_fonts_name_the_font_and_the_reason() {
     );
 }
 
-/// The attribution must account for every discarded run, per page and for the document.
+/// What a lost run held is counted in codes, as the font splits its string: a byte of the
+/// simple font, a two-byte code of the Identity-H ones.
+#[test]
+fn an_unreadable_font_counts_the_codes_of_its_discarded_runs() {
+    let doc = PdfParser::from_bytes(&three_unreadable_fonts_pdf())
+        .and_then(|p| p.parse())
+        .expect("fixture must parse");
+    let page = &doc.pages[0];
+
+    let codes: Vec<(&str, u32)> = page
+        .unreadable_fonts
+        .iter()
+        .map(|f| (f.name.as_str(), f.codes))
+        .collect();
+    assert_eq!(codes, vec![("Helvetica", 6), ("NoMap", 2), ("F3", 1)]);
+    assert_eq!(page.suppressed_text_codes, 9);
+}
+
+/// With the page's `painted_text_chars` (`invisible_text_chars` for a layer that paints
+/// nothing), the lost codes give the share of the page's text that did not come through.
+#[test]
+fn a_page_reports_the_lost_codes_beside_the_text_that_shows() {
+    for (mode, painted, invisible) in [("", 12, 0), ("3 Tr ", 0, 12)] {
+        let content = format!(
+            "BT /F1 12 Tf {mode}72 720 Td (Readable text) Tj /F2 12 Tf <0001000200030004> Tj ET"
+        );
+        let pdf = assemble(&[
+            "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+             /Resources << /Font << /F1 5 0 R /F2 6 0 R >> >> /Contents 4 0 R >>"
+                .to_string(),
+            format!(
+                "<< /Length {} >>\nstream\n{content}\nendstream",
+                content.len()
+            ),
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
+            "<< /Type /Font /Subtype /Type0 /BaseFont /NoMap /Encoding /Identity-H \
+             /DescendantFonts [7 0 R] >>"
+                .to_string(),
+            "<< /Type /Font /Subtype /CIDFontType2 /BaseFont /NoMap \
+             /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> >>"
+                .to_string(),
+        ]);
+        let (_, page) = parsed_page(&pdf);
+        assert_eq!(
+            (page.painted_text_chars, page.invisible_text_chars),
+            (painted, invisible),
+            "{mode}"
+        );
+        assert_eq!(page.suppressed_text_runs, 1, "{mode}");
+        assert_eq!(page.suppressed_text_codes, 4, "{mode}");
+    }
+}
+
+/// A lost code is one the font gives a glyph and the page a place: a code without width is
+/// no lost text, a font without widths loses every code, a code is as long as the font's
+/// `/Encoding` makes it, and a string the `/Encoding` cannot split has no codes to count.
+#[test]
+fn lost_codes_are_the_advancing_codes_the_encoding_splits() {
+    let cid_system = "/CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >>";
+    let identity = |shown: &str| {
+        one_page_pdf(
+            "<< /Type /Font /Subtype /Type0 /BaseFont /NoMap /Encoding /Identity-H \
+             /DescendantFonts [6 0 R] >>",
+            &format!("BT /F1 12 Tf 72 720 Td {shown} Tj ET"),
+            &[format!(
+                "<< /Type /Font /Subtype /CIDFontType2 /BaseFont /NoMap {cid_system} \
+                 /DW 500 /W [6 [0]] >>"
+            )],
+        )
+    };
+    for shown in ["<000100060007>", "1 Tc <000100060007>"] {
+        let (_, page) = parsed_page(&identity(shown));
+        assert_eq!(page.suppressed_text_runs, 1, "{shown}");
+        assert_eq!(page.suppressed_text_codes, 2, "{shown}");
+    }
+
+    let no_widths = one_page_pdf(
+        "<< /Type /Font /Subtype /Type0 /BaseFont /NoMap /Encoding /Identity-H >>",
+        "BT /F1 12 Tf 72 720 Td <000100060007> Tj ET",
+        &[],
+    );
+    let (_, page) = parsed_page(&no_widths);
+    assert_eq!(page.suppressed_text_runs, 1);
+    assert_eq!(page.suppressed_text_codes, 3);
+
+    let encoding = "/CIDInit /ProcSet findresource begin 12 dict begin begincmap \
+                    /CMapName /OneByte def 1 begincodespacerange <00> <FF> endcodespacerange \
+                    1 begincidrange <00> <FF> 0 endcidrange endcmap end end";
+    let one_byte = one_page_pdf(
+        "<< /Type /Font /Subtype /Type0 /BaseFont /NoMap /Encoding 7 0 R \
+         /DescendantFonts [6 0 R] >>",
+        "BT /F1 12 Tf 72 720 Td <80818283> Tj ET",
+        &[
+            format!("<< /Type /Font /Subtype /CIDFontType2 /BaseFont /NoMap {cid_system} >>"),
+            format!(
+                "<< /Type /CMap /CMapName /OneByte /Length {} >>\nstream\n{encoding}\nendstream",
+                encoding.len()
+            ),
+        ],
+    );
+    let (_, page) = parsed_page(&one_byte);
+    assert_eq!(page.suppressed_text_runs, 1);
+    assert_eq!(page.suppressed_text_codes, 4);
+
+    let unsplittable = one_page_pdf(
+        "<< /Type /Font /Subtype /Type0 /BaseFont /NoMap /Encoding /NoSuchCMap-H \
+         /DescendantFonts [6 0 R] >>",
+        "BT /F1 12 Tf 72 720 Td <80818283> Tj ET",
+        &[format!(
+            "<< /Type /Font /Subtype /CIDFontType2 /BaseFont /NoMap {cid_system} >>"
+        )],
+    );
+    let (_, page) = parsed_page(&unsplittable);
+    assert_eq!(page.suppressed_text_runs, 1);
+    assert_eq!(page.suppressed_text_codes, 0);
+}
+
+/// A string with more codes than a run can map to glyphs is counted whole.
+#[test]
+fn lost_codes_are_counted_in_a_string_too_long_to_map() {
+    let shown = format!("1 Tc <{}> Tj", "0200".repeat(65_537));
+    let (_, page) = parsed_page(&partially_mapped_composite_pdf(&shown));
+    assert_eq!(page.suppressed_text_runs, 1);
+    assert_eq!(page.suppressed_text_codes, 65_537);
+}
+
+/// The attribution must account for every discarded run and code, per page and for the document.
 #[test]
 fn unreadable_font_runs_sum_to_the_suppressed_run_count() {
     for pdf in [unresolvable_composite_pdf(), three_unreadable_fonts_pdf()] {
@@ -243,6 +372,9 @@ fn unreadable_font_runs_sum_to_the_suppressed_run_count() {
         for page in &doc.pages {
             let page_sum: usize = page.unreadable_fonts.iter().map(|f| f.runs).sum();
             assert_eq!(page_sum, page.suppressed_text_runs);
+            let codes: u32 = page.unreadable_fonts.iter().map(|f| f.codes).sum();
+            assert!(codes > 0);
+            assert_eq!(codes, page.suppressed_text_codes);
         }
     }
 }
@@ -255,6 +387,15 @@ fn readable_page_lists_no_unreadable_fonts() {
     assert!(doc.pages[0].unreadable_fonts.is_empty());
 }
 
+/// A page written before fonts counted their codes still reads, with none.
+#[test]
+fn an_unreadable_font_written_without_codes_still_reads() {
+    let font: unpdf::model::UnreadableFont =
+        serde_json::from_str(r#"{"name":"F","reason":"binary_density","runs":2}"#)
+            .expect("an entry without codes must deserialise");
+    assert_eq!((font.runs, font.codes), (2, 0));
+}
+
 /// The reason is a public string contract: the same text on every surface.
 #[test]
 fn unreadable_font_serialises_with_a_stable_reason_string() {
@@ -264,8 +405,9 @@ fn unreadable_font_serialises_with_a_stable_reason_string() {
     let json = serde_json::to_value(&doc.pages[0]).expect("page must serialise");
     assert_eq!(
         json["unreadable_fonts"][0],
-        serde_json::json!({"name": "Helvetica", "reason": "binary_density", "runs": 1})
+        serde_json::json!({"name": "Helvetica", "reason": "binary_density", "runs": 1, "codes": 6})
     );
+    assert_eq!(json["suppressed_text_codes"], 9);
     assert_eq!(
         json["unreadable_fonts"][1]["reason"],
         "composite_unresolved"
@@ -277,6 +419,7 @@ fn unreadable_font_serialises_with_a_stable_reason_string() {
         .expect("fixture must parse");
     let json = serde_json::to_value(&clean.pages[0]).expect("page must serialise");
     assert!(json.get("unreadable_fonts").is_none());
+    assert!(json.get("suppressed_text_codes").is_none());
 }
 
 /// A page that draws, in two fonts carrying their own glyphs, codes that have no character:
@@ -348,6 +491,8 @@ fn codes_a_font_gives_no_character_are_unmapped_not_binary_noise() {
             ("UnpdfSquare", TextSuppression::UnmappedCodes, 1),
         ]
     );
+    let codes: Vec<u32> = page.unreadable_fonts.iter().map(|f| f.codes).collect();
+    assert_eq!(codes, vec![1, 1]);
     let json = serde_json::to_value(page).expect("page must serialise");
     assert_eq!(json["unreadable_fonts"][0]["reason"], "unmapped_codes");
 }
@@ -446,6 +591,7 @@ fn a_kerned_string_of_codes_left_out_is_judged_by_each_element() {
         page.unreadable_fonts[0].reason,
         TextSuppression::CompositeUnresolved
     );
+    assert_eq!(page.suppressed_text_codes, 1);
 
     let (text, page) = parsed_page(&partially_mapped_composite_pdf(
         "[<0005> -64 <0006> 777 <0007>] TJ",
@@ -456,6 +602,7 @@ fn a_kerned_string_of_codes_left_out_is_judged_by_each_element() {
         page.suppressed_text_runs, 1,
         "code 7 advances, code 6 does not"
     );
+    assert_eq!(page.suppressed_text_codes, 1);
 }
 
 #[test]
@@ -544,6 +691,7 @@ fn a_one_byte_code_left_out_under_an_embedded_encoding_is_never_its_ascii() {
                     "shown: {shown}, {dict}, {to_unicode}"
                 );
                 assert_eq!(page.suppressed_text_runs, suppressed);
+                assert_eq!(page.suppressed_text_codes as usize, suppressed);
                 assert_eq!(page.unreadable_fonts.len(), suppressed);
             }
         }

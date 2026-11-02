@@ -734,15 +734,22 @@ font's character codes cannot be resolved — a composite (Type0/CID) font with 
 as mojibake. That is the right call, but the discarded text is content the document had
 and the output does not. The count is in *runs* (a `Tj` operand, or one element of a `TJ`
 array), not characters: text that was never decoded has no knowable length. Treat any
-non-zero value as "incomplete"; compare magnitudes between documents, not against a total.
+non-zero value as "incomplete"; compare run magnitudes between documents, not against a total.
+A page's `suppressed_text_codes` counts the codes in its discarded runs, whatever their
+rendering mode, to weigh the text lost against its `painted_text_chars` and
+`invisible_text_chars`. A simple font's code is a byte; a composite font's is as long as its
+`/Encoding` makes it and counts only when its glyph advances; a string the `/Encoding` cannot
+split counts none.
 
 To say *which* font could not be read, use the page's `unreadable_fonts`
 (`Page::unreadable_fonts` in Rust, `unreadable_fonts` in `get_page_stats` / the
-`unpdf_page_stats` JSON, `PageStats.UnreadableFonts` in C#): one `{name, reason, runs}` entry
+`unpdf_page_stats` JSON, `PageStats.UnreadableFonts` in C#): one `{name, reason, runs, codes}` entry
 per font and reason, in the order each first lost a run on the page. `name` is the font's
 `/BaseFont` (its resource name when it has none); `reason` is `composite_unresolved` (a Type0/CID font whose codes map to no text), `binary_density` (a simple font whose decode was binary noise) or `unmapped_codes` (a font that draws glyphs for codes it gives no character, its text lost); and the
-`runs` of a page's entries sum to its `suppressed_text_runs`. Treat a `reason` you do not
-recognise as a generic "unreadable" — new values may be added.
+`runs` and `codes` of a page's entries sum to its `suppressed_text_runs` and
+`suppressed_text_codes`, so `unmapped_codes` entries, whose glyphs the page may show, can be
+left out. Treat a `reason` you do not recognise as a generic "unreadable" — new values may be
+added.
 
 ```python
 for font in get_page_stats("report.pdf", 3)["unreadable_fonts"]:

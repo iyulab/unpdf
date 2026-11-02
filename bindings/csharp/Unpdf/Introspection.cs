@@ -220,6 +220,18 @@ public sealed class PageStats
     [JsonPropertyName("unreadable_fonts")]
     public IReadOnlyList<UnreadableFont> UnreadableFonts { get; init; } = System.Array.Empty<UnreadableFont>();
 
+    /// <summary>
+    /// Codes in the runs counted by <see cref="SuppressedTextRuns"/>, whatever their rendering
+    /// mode, to weigh the text lost against <see cref="PaintedTextChars"/> and
+    /// <see cref="InvisibleTextChars"/>. A simple font's code is a byte; a composite font's is
+    /// as long as its <c>/Encoding</c> makes it and counts only when its glyph advances; a
+    /// string the <c>/Encoding</c> cannot split counts none. The
+    /// <see cref="UnreadableFont.Codes"/> sum to it, so <c>unmapped_codes</c> entries, whose
+    /// glyphs the page may show, can be left out.
+    /// </summary>
+    [JsonPropertyName("suppressed_text_codes")]
+    public uint SuppressedTextCodes { get; init; }
+
     /// <summary>Codes a composite font's ToUnicode and own data give no character although their glyph advances, in runs that give other text.</summary>
     [JsonPropertyName("undecoded_text_codes")]
     public uint UndecodedTextCodes { get; init; }
@@ -347,6 +359,12 @@ public sealed class UnreadableFont
     /// <summary>Text runs of this font discarded for this reason on the page.</summary>
     [JsonPropertyName("runs")]
     public long Runs { get; init; }
+
+    /// <summary>
+    /// Codes in those runs, as <see cref="PageStats.SuppressedTextCodes"/> counts them.
+    /// </summary>
+    [JsonPropertyName("codes")]
+    public uint Codes { get; init; }
 }
 
 /// <summary>
