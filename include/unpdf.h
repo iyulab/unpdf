@@ -301,7 +301,8 @@ char* unpdf_get_extraction_quality(const UnpdfDocument* doc);
  * {"page":N,"rotation":N,"text_op_count":N,"image_op_count":N,"form_op_count":N,
  *  "fill_op_count":N,"ocr_text_suppressed":bool,"suppressed_text_runs":N,
  *  "undecoded_text_codes":N,
- *  "undecodable_content_streams":N,"image_coverage":F,"rotated_text_runs":N,
+ *  "undecodable_content_streams":N,"image_coverage":F,"bilevel_image_coverage":F,
+ *  "rotated_text_runs":N,
  *  "invisible_text_chars":N,"painted_text_chars":N,"margin_text_chars":N,
  *  "omitted_page_number_chars":N,"link_annotations_incomplete":bool,
  *  "clipped_text_runs":N,"blank_text_runs":N,"ruled_grids":N,"ruled_tables":N,
@@ -327,6 +328,8 @@ char* unpdf_get_extraction_quality(const UnpdfDocument* doc);
  *
  * rotation is the page's /Rotate (0, 90, 180, 270 degrees clockwise).
  * image_coverage is the share of the page painted by images (0 to 1).
+ * bilevel_image_coverage is the part of it the bilevel images make up (0 to 1):
+ * image masks, images of one bit per component, and CCITT or JBIG2 coded images.
  * rotated_text_runs counts text not set horizontally left to right.
  * invisible_text_chars / painted_text_chars count characters other than
  * whitespace drawn in a rendering mode that paints nothing (3, or 7 with nothing

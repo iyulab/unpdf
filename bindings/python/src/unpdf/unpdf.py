@@ -447,7 +447,10 @@ def get_page_stats(
 
         How the page was read: ``rotation`` (the page's ``/Rotate``, degrees
         clockwise), ``image_coverage`` (share of the page painted by images, 0 to
-        1), ``rotated_text_runs`` (text not set horizontally left to right),
+        1), ``bilevel_image_coverage`` (the part of it that image masks, one-bit
+        images and CCITT or JBIG2 coded images make up, 0 to 1; a black-and-white
+        page scan is bilevel, a photograph is not),
+        ``rotated_text_runs`` (text not set horizontally left to right),
         ``invisible_text_chars`` / ``painted_text_chars`` (characters other than
         whitespace drawn in a rendering mode that paints nothing, extracted
         although nothing shows it and still counted when the OCR layer was

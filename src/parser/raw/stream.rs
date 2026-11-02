@@ -135,6 +135,16 @@ fn decode_up_to(stream: &PdfStream, floor: u64) -> Result<Decoded> {
     Ok(Decoded { data, codec: None })
 }
 
+/// The image codec the filter chain of `dict` ends in, by its full name; nothing is decoded.
+pub fn image_codec_of(dict: &PdfDict) -> Option<&'static str> {
+    let last = match dict_get(dict, b"Filter")? {
+        PdfObject::Name(name) => name.as_slice(),
+        PdfObject::Array(items) => items.last()?.as_name()?,
+        _ => return None,
+    };
+    image_codec(last)
+}
+
 /// The full name of an image codec filter, or `None` for a filter that yields bytes.
 fn image_codec(name: &[u8]) -> Option<&'static str> {
     match name {

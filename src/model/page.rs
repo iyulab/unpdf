@@ -112,6 +112,13 @@ pub struct Page {
     #[serde(default, skip_serializing_if = "is_zero_f32")]
     pub image_coverage: f32,
 
+    /// The part of `image_coverage` the bilevel images make up, 0 to 1: the union of the
+    /// paints of image masks, images of one bit per component, and CCITT or JBIG2 coded
+    /// images, read from their dictionaries without decoding. A black-and-white page scan is
+    /// bilevel; a photograph is not. Omitted from JSON when 0.
+    #[serde(default, skip_serializing_if = "is_zero_f32")]
+    pub bilevel_image_coverage: f32,
+
     /// Text runs whose baseline is not horizontal left to right — rotated, vertical or
     /// upside-down text. The reading order treats every run as horizontal, so text set
     /// this way may come out in the wrong order. Omitted from JSON when 0.
@@ -222,6 +229,7 @@ impl Page {
             fill_op_count: 0,
             unsupported_image_count: 0,
             image_coverage: 0.0,
+            bilevel_image_coverage: 0.0,
             rotated_text_runs: 0,
             invisible_text_chars: 0,
             painted_text_chars: 0,

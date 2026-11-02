@@ -1085,7 +1085,8 @@ unparser_shared::export_string_getter!(
     /// Returns `{"page":N,"rotation":N,"text_op_count":N,"image_op_count":N,"form_op_count":N,
     /// "fill_op_count":N,"ocr_text_suppressed":bool,"suppressed_text_runs":N,"unreadable_fonts":[...],
     /// "undecoded_text_codes":N,
-    /// "undecodable_content_streams":N,"image_coverage":F,"rotated_text_runs":N,
+    /// "undecodable_content_streams":N,"image_coverage":F,"bilevel_image_coverage":F,
+    /// "rotated_text_runs":N,
     /// "invisible_text_chars":N,"painted_text_chars":N,"margin_text_chars":N,
     /// "omitted_page_number_chars":N,"clipped_text_runs":N,"link_annotations_incomplete":bool,
     /// "blank_text_runs":N,"ruled_grids":N,"ruled_tables":N,"reading_regions":N,"column_count":N,
@@ -1126,6 +1127,10 @@ unparser_shared::export_string_getter!(
     ///   image paints' rectangles, clipped to what the page shows: its crop box and the
     ///   clipping paths). Tells a full-page scan (near 1)
     ///   from a logo (a few hundredths) when both report one image paint.
+    /// - `bilevel_image_coverage`: the part of `image_coverage` the bilevel images make up,
+    ///   0 to 1: image masks, images of one bit per component, and CCITT or JBIG2 coded
+    ///   images, read from their dictionaries without decoding. A black-and-white page scan is
+    ///   bilevel; a photograph is not.
     /// - `rotated_text_runs`: text runs not set horizontally left to right. The reading
     ///   order treats them as horizontal, so their order may be wrong.
     /// - `invisible_text_chars` / `painted_text_chars`: characters other than whitespace
@@ -1188,6 +1193,7 @@ unparser_shared::export_string_getter!(
             "undecoded_text_codes": page.undecoded_text_codes,
             "undecodable_content_streams": page.undecodable_content_streams,
             "image_coverage": page.image_coverage,
+            "bilevel_image_coverage": page.bilevel_image_coverage,
             "rotated_text_runs": page.rotated_text_runs,
             "invisible_text_chars": page.invisible_text_chars,
             "painted_text_chars": page.painted_text_chars,

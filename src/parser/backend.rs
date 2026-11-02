@@ -886,6 +886,20 @@ pub trait PdfBackend: Send + Sync {
         None
     }
 
+    /// Whether the image XObject `name` refers to in `scope` is bilevel: an image mask, one bit
+    /// per component, or CCITT or JBIG2 coded. Read from its dictionary, nothing decoded;
+    /// `false` when the name is not an image.
+    fn bilevel_image_xobject(&self, _scope: ResourceScope, _name: &[u8]) -> bool {
+        false
+    }
+
+    /// [`bilevel_image_xobject`] for the inline image whose `BI` operator carries `body`.
+    ///
+    /// [`bilevel_image_xobject`]: PdfBackend::bilevel_image_xobject
+    fn bilevel_inline_image(&self, _body: &[u8]) -> bool {
+        false
+    }
+
     /// The inline image whose `BI` operator carries `body` (its dictionary, `ID` and data),
     /// decoded as far as its filters go — what a rasterizer paints for `BI`. A named color
     /// space resolves in `scope`. `None` when the body is not one this reads.
@@ -1371,10 +1385,7 @@ impl PdfBackend for RawBackend {
     }
 
     fn xobject(&self, scope: ResourceScope, name: &[u8]) -> Option<PaintedXObject> {
-        let id = resource_chain(&self.doc, scope)
-            .into_iter()
-            .find_map(|res| named_xobject(&self.doc, res, name))?;
-        let stream = self.doc.resolve(self.doc.get_object(id)?).as_stream()?;
+        let (id, stream) = self.xobject_stream(scope, name)?;
         let subtype = raw_dict_get(&stream.dict, b"Subtype").and_then(|s| s.as_name());
         Some(match subtype {
             Some(b"Form") => PaintedXObject::Form(form_of(&self.doc, id, stream)),
@@ -1384,15 +1395,17 @@ impl PdfBackend for RawBackend {
     }
 
     fn image_xobject(&self, scope: ResourceScope, name: &[u8]) -> Option<RawXObject> {
-        let id = resource_chain(&self.doc, scope)
-            .into_iter()
-            .find_map(|res| named_xobject(&self.doc, res, name))?;
-        let stream = self.doc.resolve(self.doc.get_object(id)?).as_stream()?;
-        let subtype = raw_dict_get(&stream.dict, b"Subtype").and_then(|s| s.as_name());
-        if subtype != Some(b"Image".as_slice()) {
-            return None;
-        }
+        let stream = self.image_stream(scope, name)?;
         Some(self.read_image(stream, String::from_utf8_lossy(name).into_owned(), 0))
+    }
+
+    fn bilevel_image_xobject(&self, scope: ResourceScope, name: &[u8]) -> bool {
+        self.image_stream(scope, name)
+            .is_some_and(|stream| self.is_bilevel(&stream.dict))
+    }
+
+    fn bilevel_inline_image(&self, body: &[u8]) -> bool {
+        inline_image_parts(body).is_some_and(|(dict, _)| self.is_bilevel(&dict))
     }
 
     fn inline_image(&self, scope: ResourceScope, body: &[u8]) -> Option<RawXObject> {
@@ -1704,13 +1717,11 @@ const INLINE_IMAGE_KEYS: &[(&[u8], &[u8])] = &[
 /// the bytes after `ID` and the one whitespace byte that ends it, without the whitespace
 /// before `EI`. `None` when the dictionary does not parse or `ID` is missing.
 fn inline_image_parts(body: &[u8]) -> Option<(RawPdfDict, &[u8])> {
-    use super::raw::tokenizer::parse_object;
+    use super::raw::tokenizer::{parse_object, skip_whitespace};
     let mut dict = RawPdfDict::new();
     let mut pos = 0;
     loop {
-        while pos < body.len() && is_pdf_whitespace(body[pos]) {
-            pos += 1;
-        }
+        pos = skip_whitespace(body, pos);
         if body[pos..].starts_with(b"ID") {
             pos += 2;
             break;
@@ -1736,10 +1747,6 @@ fn inline_image_parts(body: &[u8]) -> Option<(RawPdfDict, &[u8])> {
         .or_else(|| data.strip_suffix(b" "))
         .unwrap_or(data);
     Some((dict, data))
-}
-
-fn is_pdf_whitespace(b: u8) -> bool {
-    matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0 | 12)
 }
 
 /// Read an axial (type 2) or radial (type 3) shading dictionary.
@@ -1816,6 +1823,37 @@ struct XObjectWalk {
 pub(crate) const MAX_FORM_DEPTH: usize = 32;
 
 impl RawBackend {
+    fn xobject_stream(
+        &self,
+        scope: ResourceScope,
+        name: &[u8],
+    ) -> Option<(ObjectId, &super::raw::tokenizer::PdfStream)> {
+        let id = resource_chain(&self.doc, scope)
+            .into_iter()
+            .find_map(|res| named_xobject(&self.doc, res, name))?;
+        Some((id, self.doc.resolve(self.doc.get_object(id)?).as_stream()?))
+    }
+
+    fn image_stream(
+        &self,
+        scope: ResourceScope,
+        name: &[u8],
+    ) -> Option<&super::raw::tokenizer::PdfStream> {
+        let (_, stream) = self.xobject_stream(scope, name)?;
+        let subtype =
+            raw_dict_get(&stream.dict, b"Subtype").and_then(|s| self.doc.resolve(s).as_name());
+        (subtype == Some(b"Image".as_slice())).then_some(stream)
+    }
+
+    fn is_bilevel(&self, dict: &RawPdfDict) -> bool {
+        let entry = |key: &[u8]| raw_dict_get(dict, key).map(|v| self.doc.resolve(v));
+        let codec = raw_stream::image_codec_of(dict);
+        matches!(entry(b"ImageMask"), Some(RawPdfObject::Bool(true)))
+            || matches!(codec, Some("CCITTFaxDecode" | "JBIG2Decode"))
+            || (codec != Some("JPXDecode")
+                && entry(b"BitsPerComponent").and_then(|v| v.as_i64()) == Some(1))
+    }
+
     /// Read an image XObject stream: its samples (the lossless filters applied), geometry,
     /// color space, and — `depth` bounding the chain — its soft mask.
     fn read_image(

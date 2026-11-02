@@ -10,7 +10,10 @@ use std::ffi::CStr;
 use std::os::raw::c_char;
 use std::ptr;
 
-use common::{bordered_table_pdf, image_only_pdf, page_pdf, suppressed_text_run_pdf, text_pdf};
+use common::{
+    bordered_table_pdf, image_only_pdf, page_pdf, page_pdf_with_xobjects, stream_object,
+    suppressed_text_run_pdf, text_pdf,
+};
 use unpdf::ffi::{
     unpdf_free_document, unpdf_free_string, unpdf_get_extraction_quality, unpdf_last_error,
     unpdf_page_stats, unpdf_parse_bytes, unpdf_tables,
@@ -74,6 +77,7 @@ fn page_stats_distinguishes_image_only_page() {
             (v["image_coverage"].as_f64().unwrap() - 1.0).abs() < 1e-3,
             "{json}"
         );
+        assert_eq!(v["bilevel_image_coverage"], 0.0, "{json}");
         assert_eq!(v["rotation"], 0);
         assert_eq!(v["reading_regions"], 0);
         assert_eq!(v["column_count"], 0);
@@ -151,6 +155,32 @@ fn page_stats_reports_incomplete_annotations_after_a_scan_bound() {
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(value["link_annotations_incomplete"], true, "{json}");
         unpdf_free_document(document);
+    }
+}
+
+#[test]
+fn page_stats_reports_bilevel_image_coverage() {
+    let stencil = stream_object(
+        "<</Type/XObject/Subtype/Image/Width 8/Height 8/ImageMask true/Length 1>>",
+        &[0x80],
+    );
+    let bytes = page_pdf_with_xobjects(
+        "/MediaBox[0 0 595 842]",
+        b"q 595 0 0 421 0 0 cm /Im Do Q",
+        vec![("Im", stencil)],
+    );
+    unsafe {
+        let doc = unpdf_parse_bytes(bytes.as_ptr(), bytes.len());
+        assert!(!doc.is_null());
+        let json = take_string(unpdf_page_stats(doc, 1));
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        for key in ["image_coverage", "bilevel_image_coverage"] {
+            assert!(
+                (value[key].as_f64().unwrap() - 0.5).abs() < 1e-3,
+                "{key} in {json}"
+            );
+        }
+        unpdf_free_document(doc);
     }
 }
 

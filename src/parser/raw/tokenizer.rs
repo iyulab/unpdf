@@ -118,7 +118,7 @@ fn is_delimiter(b: u8) -> bool {
 }
 
 /// Skip whitespace and comments.
-fn skip_whitespace(data: &[u8], mut pos: usize) -> usize {
+pub(crate) fn skip_whitespace(data: &[u8], mut pos: usize) -> usize {
     while pos < data.len() {
         if is_whitespace(data[pos]) {
             pos += 1;

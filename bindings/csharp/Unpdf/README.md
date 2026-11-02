@@ -269,7 +269,9 @@ character although their glyph advances, in runs that give other text.
 
 How well the page was read: `Rotation` (its `/Rotate`), `ImageCoverage` (share of the
 page painted by images, 0–1 — a full-page scan is near 1, a logo a few hundredths),
-`RotatedTextRuns`, `InvisibleTextChars` / `PaintedTextChars` (characters drawn in a
+`BilevelImageCoverage` (the part of it that image masks, one-bit images and CCITT or JBIG2
+coded images make up — a black-and-white scan, not a photograph), `RotatedTextRuns`,
+`InvisibleTextChars` / `PaintedTextChars` (characters drawn in a
 rendering mode that paints nothing, still counted when the OCR layer was dropped, and in
 one that paints them), `MarginTextChars` (painted characters in the top or bottom tenth
 of the page, where running heads and page numbers sit), `ClippedTextRuns` (text the

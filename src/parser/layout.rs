@@ -632,6 +632,9 @@ pub struct PageFacts {
     /// Share of the page box painted by images (0–1): the union of every image paint's
     /// rectangle, clipped to the page box.
     pub image_coverage: f32,
+    /// Share of the page box painted by bilevel images (0–1): the union of their paints'
+    /// rectangles, clipped as `image_coverage` is.
+    pub bilevel_image_coverage: f32,
     /// Text runs whose baseline is not horizontal left-to-right — rotated, vertical or
     /// upside-down text, which the reading order treats as horizontal.
     pub rotated_text_runs: u32,
@@ -1519,6 +1522,7 @@ impl<'a> LayoutAnalyzer<'a> {
         };
         // Where each image paint shows on the page, in page space.
         let mut image_rects: Vec<Bounds> = Vec::new();
+        let mut bilevel_rects: Vec<Bounds> = Vec::new();
         let mut rotated_text_runs = 0u32;
         let mut clipped_text_runs = 0u32;
         let mut blank_text_runs = 0u32;
@@ -1558,7 +1562,19 @@ impl<'a> LayoutAnalyzer<'a> {
                 // so a `Do` left here is never a form's.
                 "Do" | "BI" => {
                     self.image_op_count.set(self.image_op_count.get() + 1);
-                    image_rects.extend(clip.visible_part(&unit_square_on_page(&ctm)));
+                    if let Some(shown) = clip.visible_part(&unit_square_on_page(&ctm)) {
+                        image_rects.push(shown);
+                        let bilevel = match op.operands.first() {
+                            Some(PdfValue::Name(name)) => {
+                                self.backend.bilevel_image_xobject(op.scope(page_id), name)
+                            }
+                            Some(PdfValue::Str(body)) => self.backend.bilevel_inline_image(body),
+                            _ => false,
+                        };
+                        if bilevel {
+                            bilevel_rects.push(shown);
+                        }
+                    }
                     painted.paint();
                 }
                 "q" => painted.save(),
@@ -1982,13 +1998,16 @@ impl<'a> LayoutAnalyzer<'a> {
                 .iter()
                 .any(|r| r.area() / page_area >= PageTextLayerSignals::PAGE_COVERAGE);
         }
-        let image_coverage = if page_area > 0.0 {
-            (union_area(&clipped) / page_area).clamp(0.0, 1.0)
-        } else {
-            0.0
+        let coverage = |rects: &[Bounds]| {
+            if page_area > 0.0 {
+                (union_area(rects) / page_area).clamp(0.0, 1.0)
+            } else {
+                0.0
+            }
         };
         let mut facts = self.page_facts.get();
-        facts.image_coverage = image_coverage;
+        facts.image_coverage = coverage(&clipped);
+        facts.bilevel_image_coverage = coverage(&bilevel_rects).min(facts.image_coverage);
         facts.rotated_text_runs = rotated_text_runs;
         facts.invisible_text_chars = invisible_chars as u32;
         facts.painted_text_chars = (total_chars - invisible_chars) as u32;
