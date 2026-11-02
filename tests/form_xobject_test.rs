@@ -34,6 +34,18 @@ fn a_form_paint_is_counted_as_a_form_not_as_an_image() {
 }
 
 #[test]
+fn a_form_whose_subtype_is_an_indirect_object_is_still_a_form() {
+    let doc = parse_bytes(&common::form_with_indirect_subtype_pdf()).unwrap();
+
+    assert!(
+        doc.plain_text().contains(common::FORM_XOBJECT_TEXT),
+        "got: {:?}",
+        doc.plain_text()
+    );
+    assert_eq!(doc.pages[0].image_coverage, 0.0);
+}
+
+#[test]
 fn a_scan_wrapped_in_a_form_is_still_a_scan() {
     let doc = parse_bytes(&common::form_wrapped_scan_pdf()).unwrap();
     let page = &doc.pages[0];
