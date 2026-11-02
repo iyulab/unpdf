@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **.NET: `PageStats.LinkAnnotationsIncomplete` shows its documentation.** Its XML doc comment
+  lacked the opening `<summary>`, so the build warned CS1570 and left the property's description
+  out of the package's documentation file.
+
 ## 0.52.0 — 2026-11-02
 
 ### Added
