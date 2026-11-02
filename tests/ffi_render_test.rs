@@ -7,7 +7,7 @@ use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::ptr;
 
-use common::{image_only_pdf, text_pdf};
+use common::{image_only_pdf, page_pdf, text_pdf};
 use unpdf::error::ErrorKind;
 use unpdf::ffi::{
     unpdf_free_bytes, unpdf_free_document, unpdf_free_string, unpdf_last_error_kind,
@@ -44,7 +44,28 @@ fn a_page_renders_to_a_png_with_its_report() {
         assert_eq!(info["width"], 595);
         assert_eq!(info["height"], 842);
         assert_eq!(info["gaps"]["images"], 0);
+        assert_eq!(info["gaps"]["colors"], 0);
 
+        unpdf_free_document(doc);
+    }
+}
+
+#[test]
+fn a_color_that_does_not_convert_is_reported_in_the_gaps() {
+    let bytes = page_pdf(
+        "",
+        "/MediaBox[0 0 100 100]",
+        b"/Nope cs 1 scn 0 0 50 50 re f",
+    );
+    unsafe {
+        let doc = unpdf_parse_bytes(bytes.as_ptr(), bytes.len());
+        let mut len = 0usize;
+        let mut info: *mut c_char = ptr::null_mut();
+        let png = unpdf_render_page(doc, 1, ptr::null(), &mut len, &mut info);
+        assert!(!png.is_null());
+        unpdf_free_bytes(png, len);
+        let info: serde_json::Value = serde_json::from_str(&take_string(info)).unwrap();
+        assert_eq!(info["gaps"]["colors"], 1, "{info}");
         unpdf_free_document(doc);
     }
 }

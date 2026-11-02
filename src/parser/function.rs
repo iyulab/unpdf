@@ -1,8 +1,9 @@
-//! PDF functions of one input (ISO 32000-1 §7.10) — what a shading's colors are made of.
+//! PDF functions (ISO 32000-1 §7.10) — what a shading's colors and a tint transform are made of.
 //!
 //! Sampled (type 0), exponential (type 2), stitching (type 3) and PostScript calculator
-//! (type 4) functions are read. Only a calculator function takes more than one input; a
-//! sampled function of several inputs is not read.
+//! (type 4) functions are read. Only a sampled and a calculator function take more than one
+//! input; a sampled one takes at most [`MAX_SAMPLED_INPUTS`], and several only when it
+//! interpolates linearly (`/Order 1`).
 
 use super::postscript::Program;
 use super::raw::stream as raw_stream;
@@ -15,15 +16,20 @@ const MAX_DEPTH: usize = 8;
 /// The most samples a sampled function may hold; past it the function is not read.
 const MAX_SAMPLES: usize = 1 << 20;
 
-/// A function of one input.
+/// The most inputs a sampled function may take: an evaluation reads up to `2^inputs` samples.
+const MAX_SAMPLED_INPUTS: usize = 8;
+
 #[derive(Debug, Clone)]
 pub(crate) enum Function {
-    /// Type 0: a table of samples, interpolated linearly between neighbours.
+    /// Type 0: a table of samples, interpolated linearly between the neighbours of the input.
     Sampled {
-        domain: (f32, f32),
-        encode: (f32, f32),
-        /// Each sample's outputs, already mapped through `Decode`.
-        samples: Vec<Vec<f32>>,
+        domain: Vec<(f32, f32)>,
+        encode: Vec<(f32, f32)>,
+        size: Vec<usize>,
+        range: Vec<(f32, f32)>,
+        /// The table, the first input varying fastest, each sample's outputs already mapped
+        /// through `Decode`.
+        samples: Vec<f32>,
     },
     /// Type 2: `C0 + t^N × (C1 − C0)`.
     Exponential {
@@ -52,23 +58,56 @@ pub(crate) enum Function {
 }
 
 impl Function {
-    /// Read the function `obj` (a dictionary, a stream, or an array of them).
-    pub(crate) fn read(doc: &RawDocument, obj: &PdfObject) -> Option<Function> {
-        read(doc, obj, 0)
+    /// Read the function `obj` (a dictionary, a stream, or an array of them). `admit` is
+    /// offered the samples of each sampled function and the bytes of its stream before the stream
+    /// is read, as far as the table reaches; a function it refuses is not read.
+    pub(crate) fn read(
+        doc: &RawDocument,
+        obj: &PdfObject,
+        admit: &mut dyn FnMut(u64) -> bool,
+    ) -> Option<Function> {
+        read(doc, obj, 0, admit)
     }
 
     /// How many inputs the function takes.
     pub(crate) fn inputs(&self) -> usize {
         match self {
+            Function::Sampled { domain, .. } => domain.len(),
             Function::Calculator { domain, .. } => domain.len(),
             _ => 1,
         }
     }
 
-    /// The function's outputs at `inputs` (the first, for a function of one input); none when a
-    /// calculator program has no result there.
+    /// The samples one evaluation reads: every output of each sample around its inputs.
+    pub(crate) fn samples_read(&self) -> u64 {
+        match self {
+            Function::Sampled { size, range, .. } => (range.len() as u64) << size.len(),
+            Function::Stitching { functions, .. } => functions
+                .iter()
+                .map(Function::samples_read)
+                .max()
+                .unwrap_or(0),
+            Function::Each(functions) => functions.iter().map(Function::samples_read).sum(),
+            Function::Exponential { .. } | Function::Calculator { .. } => 0,
+        }
+    }
+
+    /// The function's outputs at `inputs` (the first, for a function of one input); none when
+    /// there are fewer inputs than it takes or a calculator program has no result there.
     pub(crate) fn eval_inputs(&self, inputs: &[f32]) -> Vec<f32> {
         match self {
+            Function::Sampled {
+                domain,
+                encode,
+                size,
+                range,
+                samples,
+            } => {
+                if inputs.len() < domain.len() {
+                    return Vec::new();
+                }
+                interpolate_samples(domain, encode, size, range, samples, inputs)
+            }
             Function::Calculator {
                 domain,
                 range,
@@ -99,20 +138,7 @@ impl Function {
     /// The function's outputs at `t`.
     pub(crate) fn eval(&self, t: f32) -> Vec<f32> {
         match self {
-            Function::Calculator { .. } => self.eval_inputs(&[t]),
-            Function::Sampled {
-                domain,
-                encode,
-                samples,
-            } => {
-                let t = clip(t, *domain);
-                let last = (samples.len() - 1) as f32;
-                let e = interpolate(t, *domain, *encode).clamp(0.0, last);
-                let (i, frac) = (e.floor() as usize, e.fract());
-                let a = &samples[i];
-                let b = samples.get(i + 1).unwrap_or(a);
-                a.iter().zip(b).map(|(&a, &b)| a + (b - a) * frac).collect()
-            }
+            Function::Sampled { .. } | Function::Calculator { .. } => self.eval_inputs(&[t]),
             Function::Exponential { domain, c0, c1, n } => {
                 let t = clip(t, *domain);
                 let k = t.powf(*n);
@@ -137,6 +163,60 @@ impl Function {
     }
 }
 
+struct Axis {
+    index: usize,
+    fraction: f32,
+    stride: usize,
+}
+
+/// A sampled function's outputs at `inputs`: the samples around them, each weighted by how near
+/// the input is to it along every axis, clipped to `range`.
+fn interpolate_samples(
+    domain: &[(f32, f32)],
+    encode: &[(f32, f32)],
+    size: &[usize],
+    range: &[(f32, f32)],
+    samples: &[f32],
+    inputs: &[f32],
+) -> Vec<f32> {
+    let outputs = range.len();
+    let mut stride = outputs;
+    let axes: Vec<Axis> = (0..domain.len())
+        .map(|i| {
+            let last = size[i] - 1;
+            let at = interpolate(clip(inputs[i], domain[i]), domain[i], encode[i])
+                .clamp(0.0, last as f32);
+            let axis = Axis {
+                index: at.floor() as usize,
+                fraction: at.fract(),
+                stride,
+            };
+            stride *= size[i];
+            axis
+        })
+        .collect();
+    let mut out = vec![0.0; outputs];
+    for corner in 0..1usize << axes.len() {
+        let mut weight = 1.0;
+        let mut offset = 0;
+        for (bit, axis) in axes.iter().enumerate() {
+            let upper = (corner >> bit) & 1 == 1;
+            weight *= if upper {
+                axis.fraction
+            } else {
+                1.0 - axis.fraction
+            };
+            offset += (axis.index + usize::from(upper)) * axis.stride;
+        }
+        if weight > 0.0 {
+            for (o, &v) in out.iter_mut().zip(&samples[offset..offset + outputs]) {
+                *o += weight * v;
+            }
+        }
+    }
+    out.iter().zip(range).map(|(&o, &r)| clip(o, r)).collect()
+}
+
 fn clip(t: f32, (lo, hi): (f32, f32)) -> f32 {
     t.clamp(lo.min(hi), lo.max(hi))
 }
@@ -149,14 +229,21 @@ fn interpolate(x: f32, from: (f32, f32), to: (f32, f32)) -> f32 {
     to.0 + (x - from.0) * (to.1 - to.0) / (from.1 - from.0)
 }
 
-fn read(doc: &RawDocument, obj: &PdfObject, depth: usize) -> Option<Function> {
+fn read(
+    doc: &RawDocument,
+    obj: &PdfObject,
+    depth: usize,
+    admit: &mut dyn FnMut(u64) -> bool,
+) -> Option<Function> {
     if depth > MAX_DEPTH {
         return None;
     }
     let obj = doc.resolve(obj);
     if let PdfObject::Array(items) = obj {
-        let functions: Option<Vec<Function>> =
-            items.iter().map(|f| read(doc, f, depth + 1)).collect();
+        let functions: Option<Vec<Function>> = items
+            .iter()
+            .map(|f| read(doc, f, depth + 1, admit))
+            .collect();
         return functions.filter(|f| !f.is_empty()).map(Function::Each);
     }
     let (dict, stream) = match obj {
@@ -180,44 +267,60 @@ fn read(doc: &RawDocument, obj: &PdfObject, depth: usize) -> Option<Function> {
             program,
         });
     }
-    let domain = *pairs(b"Domain")?.first()?;
+    let domains = pairs(b"Domain")?;
+    let domain = *domains.first()?;
     match dict_get(dict, b"FunctionType")
         .map(|v| doc.resolve(v))
         .and_then(|v| v.as_i64())?
     {
         0 => {
-            let size = *numbers(b"Size")?.first()? as usize;
+            let inputs = domains.len();
+            let size: Vec<usize> = numbers(b"Size")?.iter().map(|&n| n as usize).collect();
             let bits = dict_get(dict, b"BitsPerSample")
                 .and_then(|v| doc.resolve(v).as_i64())
                 .filter(|b| matches!(b, 1 | 2 | 4 | 8 | 12 | 16 | 24 | 32))?
                 as usize;
             let range = pairs(b"Range")?;
             let outputs = range.len();
-            if size == 0 || outputs == 0 || size.checked_mul(outputs)? > MAX_SAMPLES {
+            let order = dict_get(dict, b"Order").and_then(|v| doc.resolve(v).as_f32());
+            if inputs > MAX_SAMPLED_INPUTS
+                || size.len() != inputs
+                || size.contains(&0)
+                || outputs == 0
+                || inputs > 1 && order.is_some_and(|order| order != 1.0)
+            {
                 return None;
             }
+            let count = size
+                .iter()
+                .try_fold(outputs, |count, &n| count.checked_mul(n))
+                .filter(|&count| count <= MAX_SAMPLES)?;
             let encode = pairs(b"Encode")
-                .and_then(|e| e.first().copied())
-                .unwrap_or((0.0, (size - 1) as f32));
+                .filter(|e| e.len() >= inputs)
+                .map(|e| e[..inputs].to_vec())
+                .unwrap_or_else(|| size.iter().map(|&n| (0.0, (n - 1) as f32)).collect());
             let decode = pairs(b"Decode")
                 .filter(|d| d.len() >= outputs)
                 .unwrap_or_else(|| range.clone());
-            let data = raw_stream::decompress(stream?).ok()?;
-            let max = ((1u64 << bits) - 1) as f32;
-            let mut bit = 0usize;
-            let mut samples = Vec::with_capacity(size);
-            for _ in 0..size {
-                let mut sample = Vec::with_capacity(outputs);
-                for &(lo, hi) in decode.iter().take(outputs) {
-                    let raw = read_bits(&data, bit, bits)? as f32;
-                    bit += bits;
-                    sample.push(lo + raw * (hi - lo) / max);
-                }
-                samples.push(sample);
+            let stream = stream?;
+            if !admit((count as u64).saturating_add(stream.raw_data.len() as u64)) {
+                return None;
             }
+            let packed = (count as u64 * bits as u64).div_ceil(8);
+            let data = raw_stream::decompress_prefix(stream, packed).ok()?;
+            let max = ((1u64 << bits) - 1) as f32;
+            let samples = (0..count)
+                .map(|i| {
+                    let (lo, hi) = decode[i % outputs];
+                    let raw = read_bits(&data, i * bits, bits)? as f32;
+                    Some(lo + raw * (hi - lo) / max)
+                })
+                .collect::<Option<Vec<f32>>>()?;
             Some(Function::Sampled {
-                domain,
+                domain: domains,
                 encode,
+                size,
+                range,
                 samples,
             })
         }
@@ -232,7 +335,7 @@ fn read(doc: &RawDocument, obj: &PdfObject, depth: usize) -> Option<Function> {
                 .map(|v| doc.resolve(v))
                 .and_then(|v| v.as_array())?
                 .iter()
-                .map(|f| read(doc, f, depth + 1))
+                .map(|f| read(doc, f, depth + 1, admit))
                 .collect();
             let functions = functions?;
             let bounds = numbers(b"Bounds").unwrap_or_default();
@@ -319,16 +422,85 @@ mod tests {
         assert!(close(&f.eval(0.75), &[0.5, 0.5]));
     }
 
+    fn sampled(
+        domain: &[(f32, f32)],
+        encode: &[(f32, f32)],
+        size: &[usize],
+        samples: &[f32],
+    ) -> Function {
+        Function::Sampled {
+            domain: domain.to_vec(),
+            encode: encode.to_vec(),
+            size: size.to_vec(),
+            range: vec![(f32::MIN, f32::MAX); samples.len() / size.iter().product::<usize>()],
+            samples: samples.to_vec(),
+        }
+    }
+
     #[test]
     fn a_sampled_function_interpolates_between_samples() {
-        let f = Function::Sampled {
-            domain: (0.0, 1.0),
-            encode: (0.0, 2.0),
-            samples: vec![vec![0.0], vec![1.0], vec![0.0]],
-        };
+        let f = sampled(&[(0.0, 1.0)], &[(0.0, 2.0)], &[3], &[0.0, 1.0, 0.0]);
+        assert_eq!(f.inputs(), 1);
         assert!(close(&f.eval(0.25), &[0.5]));
         assert!(close(&f.eval(0.5), &[1.0]));
         assert!(close(&f.eval(1.0), &[0.0]));
+        let narrow = sampled(&[(0.0, 1.0)], &[(0.0, 1.0)], &[3], &[0.0, 5.0, 10.0]);
+        assert!(close(&narrow.eval(9.0), &[5.0]));
+    }
+
+    #[test]
+    fn a_sampled_function_of_several_inputs_interpolates_across_all_of_them() {
+        let f = sampled(
+            &[(0.0, 1.0), (0.0, 1.0)],
+            &[(0.0, 2.0), (0.0, 1.0)],
+            &[3, 2],
+            &[0.0, 1.0, 2.0, 10.0, 11.0, 12.0],
+        );
+        assert_eq!(f.inputs(), 2);
+        assert!(close(&f.eval_inputs(&[1.0, 0.0]), &[2.0]));
+        assert!(close(&f.eval_inputs(&[0.0, 1.0]), &[10.0]));
+        assert!(close(&f.eval_inputs(&[0.5, 0.25]), &[3.5]));
+        assert!(close(&f.eval_inputs(&[9.0, -9.0]), &[2.0]));
+        assert!(f.eval_inputs(&[0.5]).is_empty());
+        assert!(f.eval(0.5).is_empty());
+    }
+
+    #[test]
+    fn a_sampled_function_gives_every_output_of_its_samples() {
+        let f = sampled(&[(0.0, 1.0)], &[(0.0, 1.0)], &[2], &[0.0, 4.0, 2.0, 8.0]);
+        assert!(close(&f.eval(0.5), &[1.0, 6.0]));
+    }
+
+    #[cfg(feature = "raster")]
+    #[test]
+    fn an_evaluation_reads_every_output_of_the_samples_around_its_inputs() {
+        let one = sampled(&[(0.0, 1.0)], &[(0.0, 1.0)], &[2], &[0.0, 1.0]);
+        let three = sampled(&[(0.0, 1.0); 3], &[(0.0, 1.0); 3], &[2; 3], &[0.0; 8]);
+        let two_with_three_outputs =
+            sampled(&[(0.0, 1.0); 2], &[(0.0, 1.0); 2], &[2; 2], &[0.0; 12]);
+        let exponential = Function::Exponential {
+            domain: (0.0, 1.0),
+            c0: vec![0.0],
+            c1: vec![1.0],
+            n: 1.0,
+        };
+        let four_outputs = sampled(&[(0.0, 1.0)], &[(0.0, 1.0)], &[1], &[0.0; 4]);
+        let stitched = Function::Stitching {
+            domain: (0.0, 1.0),
+            functions: vec![one.clone(), four_outputs.clone(), exponential.clone()],
+            bounds: vec![0.3, 0.6],
+            encode: vec![(0.0, 1.0); 3],
+        };
+        let each = Function::Each(vec![one.clone(), four_outputs]);
+        let functions = [
+            one,
+            three,
+            two_with_three_outputs,
+            exponential,
+            stitched,
+            each,
+        ];
+        assert_eq!(functions.map(|f| f.samples_read()), [2, 8, 12, 0, 8, 10]);
     }
 
     #[test]

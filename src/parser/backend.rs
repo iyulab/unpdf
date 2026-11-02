@@ -222,8 +222,11 @@ pub enum ImageColorSpace {
     Rgb,
     /// Four components: `DeviceCMYK`, or `ICCBased` with `/N 4`.
     Cmyk,
+    /// Three components of `Lab`: L* in `0..=100`, a* and b* within `range`
+    /// (`[amin, amax, bmin, bmax]`), against the space's `white` point.
+    Lab { white: [f32; 3], range: [f32; 4] },
     /// One component, an index into `lookup`: `hival + 1` entries of `base.components()`
-    /// bytes each.
+    /// bytes each. The bytes of an entry span their component's default range.
     Indexed {
         base: Box<ImageColorSpace>,
         hival: u8,
@@ -239,9 +242,48 @@ impl ImageColorSpace {
     pub fn components(&self) -> usize {
         match self {
             ImageColorSpace::Gray | ImageColorSpace::Indexed { .. } => 1,
-            ImageColorSpace::Rgb => 3,
+            ImageColorSpace::Rgb | ImageColorSpace::Lab { .. } => 3,
             ImageColorSpace::Cmyk => 4,
             ImageColorSpace::Tint(space) => space.components(),
+        }
+    }
+
+    /// The `[Dmin Dmax]` pair component `i`'s raw sample maps through unless `/Decode` says
+    /// otherwise (ISO 32000-1 Table 90), not counting `Indexed`.
+    pub(crate) fn default_decode(&self, i: usize) -> (f32, f32) {
+        match (self, i) {
+            (ImageColorSpace::Lab { .. }, 0) => (0.0, 100.0),
+            (ImageColorSpace::Lab { range, .. }, 1) => (range[0], range[1]),
+            (ImageColorSpace::Lab { range, .. }, 2) => (range[2], range[3]),
+            _ => (0.0, 1.0),
+        }
+    }
+
+    /// The components the palette entry `bytes` stands for: each byte spans its component's
+    /// default range.
+    pub(crate) fn palette_entry(&self, bytes: &[u8]) -> Vec<f32> {
+        bytes
+            .iter()
+            .enumerate()
+            .map(|(i, &b)| {
+                let (lo, hi) = self.default_decode(i);
+                lo + f32::from(b) / 255.0 * (hi - lo)
+            })
+            .collect()
+    }
+
+    /// The samples converting one pixel in this space reads beyond the pixel itself.
+    #[cfg(feature = "raster")]
+    pub(crate) fn pixel_work(&self) -> u64 {
+        self.tint_space().map_or(0, TintSpace::samples_read)
+    }
+
+    #[cfg(feature = "raster")]
+    fn tint_space(&self) -> Option<&TintSpace> {
+        match self {
+            ImageColorSpace::Tint(space) => Some(space),
+            ImageColorSpace::Indexed { base, .. } => base.tint_space(),
+            _ => None,
         }
     }
 }
@@ -277,6 +319,12 @@ impl TintSpace {
         &self.alternate
     }
 
+    /// The samples converting one color through the tint transform reads.
+    #[cfg(feature = "raster")]
+    pub(crate) fn samples_read(&self) -> u64 {
+        self.transform.samples_read()
+    }
+
     /// The color `tints` (one per colorant) stand for, as components of the alternate space
     /// (`None` when the transform gives fewer than the alternate space takes).
     pub(crate) fn alternate_color(&self, tints: &[f32]) -> Option<(&ImageColorSpace, Vec<f32>)> {
@@ -307,7 +355,8 @@ pub struct RawXObject {
     /// The color space's name (`ICCBased` resolved to its device equivalent).
     pub color_space: Option<String>,
     /// The color space as converting samples needs it; `None` when it is not one this crate
-    /// converts (`Lab`, `Separation`, `DeviceN`, ...).
+    /// converts (a `Separation` or `DeviceN` whose transform or alternate space it does not
+    /// read, ...).
     pub color: Option<ImageColorSpace>,
     /// `/Decode`: how each component's raw sample maps onto its range.
     pub decode: Option<Vec<f32>>,
@@ -886,11 +935,35 @@ pub trait PdfBackend: Send + Sync {
         None
     }
 
+    /// [`image_xobject`](Self::image_xobject), offering `admit` what reading its color spaces
+    /// takes, as [`named_color_space_with`](Self::named_color_space_with) does. Defaults to
+    /// `image_xobject`, offering nothing.
+    fn image_xobject_with(
+        &self,
+        scope: ResourceScope,
+        name: &[u8],
+        _admit: &mut dyn FnMut(u64) -> bool,
+    ) -> Option<RawXObject> {
+        self.image_xobject(scope, name)
+    }
+
     /// The inline image whose `BI` operator carries `body` (its dictionary, `ID` and data),
     /// decoded as far as its filters go — what a rasterizer paints for `BI`. A named color
     /// space resolves in `scope`. `None` when the body is not one this reads.
     fn inline_image(&self, _scope: ResourceScope, _body: &[u8]) -> Option<RawXObject> {
         None
+    }
+
+    /// [`inline_image`](Self::inline_image), offering `admit` what reading its color space
+    /// takes, as [`named_color_space_with`](Self::named_color_space_with) does. Defaults to
+    /// `inline_image`, offering nothing.
+    fn inline_image_with(
+        &self,
+        scope: ResourceScope,
+        body: &[u8],
+        _admit: &mut dyn FnMut(u64) -> bool,
+    ) -> Option<RawXObject> {
+        self.inline_image(scope, body)
     }
 
     /// The `/Shading` resource `name` refers to in `scope` — what `sh` paints. `None` when
@@ -899,12 +972,36 @@ pub trait PdfBackend: Send + Sync {
         None
     }
 
+    /// [`shading`](Self::shading), offering `admit` what reading its color space and function
+    /// takes, as [`named_color_space_with`](Self::named_color_space_with) does, and then the
+    /// samples evaluating the function reads. Defaults to `shading`, offering nothing.
+    fn shading_with(
+        &self,
+        scope: ResourceScope,
+        name: &[u8],
+        _admit: &mut dyn FnMut(u64) -> bool,
+    ) -> Option<Shading> {
+        self.shading(scope, name)
+    }
+
     /// The shading pattern (`/PatternType 2`) the `/Pattern` resource `name` refers to in
     /// `scope`, with its `/Matrix` (pattern space → the default space of the page, or of the
     /// form whose resources hold it). `None` for a tiling pattern, or a shading this does not
     /// read.
     fn shading_pattern(&self, _scope: ResourceScope, _name: &[u8]) -> Option<(Shading, [f32; 6])> {
         None
+    }
+
+    /// [`shading_pattern`](Self::shading_pattern), offering `admit` what reading its shading
+    /// takes, as [`shading_with`](Self::shading_with) does. Defaults to `shading_pattern`,
+    /// offering nothing.
+    fn shading_pattern_with(
+        &self,
+        scope: ResourceScope,
+        name: &[u8],
+        _admit: &mut dyn FnMut(u64) -> bool,
+    ) -> Option<(Shading, [f32; 6])> {
+        self.shading_pattern(scope, name)
     }
 
     /// The tiling pattern the `/Pattern` resource `name` refers to in `scope`. `None` for a
@@ -922,6 +1019,18 @@ pub trait PdfBackend: Send + Sync {
         _name: &[u8],
     ) -> Option<Option<ImageColorSpace>> {
         None
+    }
+
+    /// [`named_pattern_space`](Self::named_pattern_space), offering `admit` what reading the
+    /// base takes, as [`named_color_space_with`](Self::named_color_space_with) does. Defaults
+    /// to `named_pattern_space`, offering nothing.
+    fn named_pattern_space_with(
+        &self,
+        scope: ResourceScope,
+        name: &[u8],
+        _admit: &mut dyn FnMut(u64) -> bool,
+    ) -> Option<Option<ImageColorSpace>> {
+        self.named_pattern_space(scope, name)
     }
 
     /// The `/ExtGState` resource `name` refers to in `scope`.
@@ -950,6 +1059,19 @@ pub trait PdfBackend: Send + Sync {
     /// in it needs (`cs`/`CS` with a named space).
     fn named_color_space(&self, _scope: ResourceScope, _name: &[u8]) -> Option<ImageColorSpace> {
         None
+    }
+
+    /// [`named_color_space`](Self::named_color_space), offering `admit` what reading each
+    /// sampled function the space holds takes, before reading it: the function's samples and
+    /// the bytes of its stream. A space holding one `admit` refuses is not read. Defaults to
+    /// `named_color_space`, offering nothing.
+    fn named_color_space_with(
+        &self,
+        scope: ResourceScope,
+        name: &[u8],
+        _admit: &mut dyn FnMut(u64) -> bool,
+    ) -> Option<ImageColorSpace> {
+        self.named_color_space(scope, name)
     }
 
     /// Extract AcroForm fields from the document.
@@ -1384,6 +1506,15 @@ impl PdfBackend for RawBackend {
     }
 
     fn image_xobject(&self, scope: ResourceScope, name: &[u8]) -> Option<RawXObject> {
+        self.image_xobject_with(scope, name, &mut |_| true)
+    }
+
+    fn image_xobject_with(
+        &self,
+        scope: ResourceScope,
+        name: &[u8],
+        admit: &mut dyn FnMut(u64) -> bool,
+    ) -> Option<RawXObject> {
         let id = resource_chain(&self.doc, scope)
             .into_iter()
             .find_map(|res| named_xobject(&self.doc, res, name))?;
@@ -1392,38 +1523,65 @@ impl PdfBackend for RawBackend {
         if subtype != Some(b"Image".as_slice()) {
             return None;
         }
-        Some(self.read_image(stream, String::from_utf8_lossy(name).into_owned(), 0))
+        Some(self.read_image(stream, String::from_utf8_lossy(name).into_owned(), 0, admit))
     }
 
     fn inline_image(&self, scope: ResourceScope, body: &[u8]) -> Option<RawXObject> {
+        self.inline_image_with(scope, body, &mut |_| true)
+    }
+
+    fn inline_image_with(
+        &self,
+        scope: ResourceScope,
+        body: &[u8],
+        admit: &mut dyn FnMut(u64) -> bool,
+    ) -> Option<RawXObject> {
         let (dict, data) = inline_image_parts(body)?;
         let stream = super::raw::tokenizer::PdfStream {
             dict,
             raw_data: data.to_vec(),
         };
         // An inline image has no soft mask (§8.9.7): read it as one already nested.
-        let mut image = self.read_image(&stream, "inline".to_string(), 1);
+        let mut image = self.read_image(&stream, "inline".to_string(), 1, admit);
         // A space by name other than the device ones is a `/ColorSpace` resource.
         if image.color.is_none() {
             if let Some(name) = raw_dict_get(&stream.dict, b"ColorSpace").and_then(|v| v.as_name())
             {
-                image.color = self.named_color_space(scope, name);
+                image.color = self.named_color_space_with(scope, name, admit);
             }
         }
         Some(image)
     }
 
     fn shading(&self, scope: ResourceScope, name: &[u8]) -> Option<Shading> {
+        self.shading_with(scope, name, &mut |_| true)
+    }
+
+    fn shading_with(
+        &self,
+        scope: ResourceScope,
+        name: &[u8],
+        admit: &mut dyn FnMut(u64) -> bool,
+    ) -> Option<Shading> {
         let obj = resource_chain(&self.doc, scope)
             .into_iter()
             .find_map(|res| {
                 let sub = res.category(&self.doc, b"Shading")?;
                 raw_dict_get(sub.dict, name).cloned()
             })?;
-        read_shading(&self.doc, &obj)
+        read_shading(&self.doc, &obj, admit)
     }
 
     fn shading_pattern(&self, scope: ResourceScope, name: &[u8]) -> Option<(Shading, [f32; 6])> {
+        self.shading_pattern_with(scope, name, &mut |_| true)
+    }
+
+    fn shading_pattern_with(
+        &self,
+        scope: ResourceScope,
+        name: &[u8],
+        admit: &mut dyn FnMut(u64) -> bool,
+    ) -> Option<(Shading, [f32; 6])> {
         let obj = resource_chain(&self.doc, scope)
             .into_iter()
             .find_map(|res| {
@@ -1440,7 +1598,7 @@ impl PdfBackend for RawBackend {
         if pattern_type != Some(2) {
             return None;
         }
-        let shading = read_shading(&self.doc, raw_dict_get(dict, b"Shading")?)?;
+        let shading = read_shading(&self.doc, raw_dict_get(dict, b"Shading")?, admit)?;
         let matrix = raw_dict_get(dict, b"Matrix")
             .and_then(|m| matrix_from(&self.doc, m))
             .unwrap_or(IDENTITY_MATRIX);
@@ -1488,6 +1646,15 @@ impl PdfBackend for RawBackend {
         scope: ResourceScope,
         name: &[u8],
     ) -> Option<Option<ImageColorSpace>> {
+        self.named_pattern_space_with(scope, name, &mut |_| true)
+    }
+
+    fn named_pattern_space_with(
+        &self,
+        scope: ResourceScope,
+        name: &[u8],
+        admit: &mut dyn FnMut(u64) -> bool,
+    ) -> Option<Option<ImageColorSpace>> {
         let space = resource_chain(&self.doc, scope)
             .into_iter()
             .find_map(|res| {
@@ -1505,7 +1672,7 @@ impl PdfBackend for RawBackend {
             {
                 Some(
                     arr.get(1)
-                        .and_then(|base| resolve_image_color_space(doc, base, 1)),
+                        .and_then(|base| resolve_image_color_space(doc, base, 1, admit)),
                 )
             }
             _ => None,
@@ -1672,11 +1839,20 @@ impl PdfBackend for RawBackend {
     }
 
     fn named_color_space(&self, scope: ResourceScope, name: &[u8]) -> Option<ImageColorSpace> {
+        self.named_color_space_with(scope, name, &mut |_| true)
+    }
+
+    fn named_color_space_with(
+        &self,
+        scope: ResourceScope,
+        name: &[u8],
+        admit: &mut dyn FnMut(u64) -> bool,
+    ) -> Option<ImageColorSpace> {
         resource_chain(&self.doc, scope)
             .into_iter()
             .find_map(|res| {
                 let sub = res.category(&self.doc, b"ColorSpace")?;
-                resolve_image_color_space(&self.doc, raw_dict_get(sub.dict, name)?, 0)
+                resolve_image_color_space(&self.doc, raw_dict_get(sub.dict, name)?, 0, admit)
             })
     }
 
@@ -1742,8 +1918,13 @@ fn is_pdf_whitespace(b: u8) -> bool {
     matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0 | 12)
 }
 
-/// Read an axial (type 2) or radial (type 3) shading dictionary.
-fn read_shading(doc: &RawDocument, obj: &RawPdfObject) -> Option<Shading> {
+/// Read an axial (type 2) or radial (type 3) shading dictionary, offering `admit` what reading
+/// its color space and function takes and then the samples evaluating the function reads.
+fn read_shading(
+    doc: &RawDocument,
+    obj: &RawPdfObject,
+    admit: &mut dyn FnMut(u64) -> bool,
+) -> Option<Shading> {
     let dict = match doc.resolve(obj) {
         RawPdfObject::Dict(dict) => dict,
         RawPdfObject::Stream(stream) => &stream.dict,
@@ -1762,8 +1943,8 @@ fn read_shading(doc: &RawDocument, obj: &RawPdfObject) -> Option<Shading> {
         },
         _ => return None,
     };
-    let color = resolve_image_color_space(doc, raw_dict_get(dict, b"ColorSpace")?, 0)?;
-    let function = super::function::Function::read(doc, raw_dict_get(dict, b"Function")?)?;
+    let color = resolve_image_color_space(doc, raw_dict_get(dict, b"ColorSpace")?, 0, admit)?;
+    let function = super::function::Function::read(doc, raw_dict_get(dict, b"Function")?, admit)?;
     let (t0, t1) = match raw_dict_get(dict, b"Domain").and_then(|d| numbers_from(doc, d)) {
         Some(d) if d.len() >= 2 => (d[0], d[1]),
         _ => (0.0, 1.0),
@@ -1781,6 +1962,10 @@ fn read_shading(doc: &RawDocument, obj: &RawPdfObject) -> Option<Shading> {
         _ => (false, false),
     };
     let components = color.components();
+    let evaluations = SHADING_SAMPLES as u64 * function.samples_read();
+    if evaluations > 0 && !admit(evaluations) {
+        return None;
+    }
     let samples: Vec<Vec<f32>> = (0..SHADING_SAMPLES)
         .map(|i| {
             let t = t0 + (t1 - t0) * i as f32 / (SHADING_SAMPLES - 1) as f32;
@@ -1817,12 +2002,14 @@ pub(crate) const MAX_FORM_DEPTH: usize = 32;
 
 impl RawBackend {
     /// Read an image XObject stream: its samples (the lossless filters applied), geometry,
-    /// color space, and — `depth` bounding the chain — its soft mask.
+    /// color space, and — `depth` bounding the chain — its soft mask. `admit` is offered what
+    /// the color spaces take to read, as for [`PdfBackend::named_color_space`].
     fn read_image(
         &self,
         stream: &super::raw::tokenizer::PdfStream,
         name: String,
         depth: usize,
+        admit: &mut dyn FnMut(u64) -> bool,
     ) -> RawXObject {
         let dict = &stream.dict;
         // The lossless filters are applied whatever the chain (`[/ASCII85Decode
@@ -1873,7 +2060,7 @@ impl RawBackend {
             .then(|| raw_dict_get(dict, b"SMask"))
             .flatten()
             .and_then(|v| self.doc.resolve(v).as_stream())
-            .map(|mask| Box::new(self.read_image(mask, format!("{name}_smask"), depth + 1)));
+            .map(|mask| Box::new(self.read_image(mask, format!("{name}_smask"), depth + 1, admit)));
         RawXObject {
             name,
             subtype: "Image".to_string(),
@@ -1887,7 +2074,8 @@ impl RawBackend {
                 int(b"BitsPerComponent").map(|b| b as u8)
             },
             color_space: color_space_entry.and_then(|cs| resolve_color_space_name(&self.doc, cs)),
-            color: color_space_entry.and_then(|cs| resolve_image_color_space(&self.doc, cs, 0)),
+            color: color_space_entry
+                .and_then(|cs| resolve_image_color_space(&self.doc, cs, 0, admit)),
             decode: raw_dict_get(dict, b"Decode").and_then(|d| numbers_from(&self.doc, d)),
             image_mask,
             smask,
@@ -1986,7 +2174,7 @@ impl RawBackend {
                 continue;
             }
 
-            out.push(self.read_image(stream, label, 0));
+            out.push(self.read_image(stream, label, 0, &mut |_| true));
         }
     }
 }
@@ -2290,11 +2478,13 @@ fn named_xobject(doc: &RawDocument, resources: ResourceDict<'_>, name: &[u8]) ->
 /// resolves `/N` (1/3/4 components) to the equivalent `Device*` name up front.
 /// Resolve an image's `/ColorSpace` to the structure converting its samples needs.
 ///
-/// `depth` bounds the recursion an `Indexed` base or an `ICCBased` `/Alternate` takes.
+/// `depth` bounds the recursion an `Indexed` base or an `ICCBased` `/Alternate` takes; `admit`
+/// is offered the samples of each sampled function before it is read.
 fn resolve_image_color_space(
     doc: &RawDocument,
     cs: &RawPdfObject,
     depth: usize,
+    admit: &mut dyn FnMut(u64) -> bool,
 ) -> Option<ImageColorSpace> {
     if depth > 4 {
         return None;
@@ -2320,33 +2510,50 @@ fn resolve_image_color_space(
             match family {
                 b"CalGray" => Some(ImageColorSpace::Gray),
                 b"CalRGB" => Some(ImageColorSpace::Rgb),
+                b"Lab" => {
+                    let dict = raw_resolve_dict(doc, arr.get(1)?)?;
+                    let white = <[f32; 3]>::try_from(
+                        numbers_from(doc, raw_dict_get(dict, b"WhitePoint")?)?.as_slice(),
+                    )
+                    .ok()
+                    .filter(|white| white.iter().all(|&w| w > 0.0))?;
+                    let range = raw_dict_get(dict, b"Range")
+                        .and_then(|r| numbers_from(doc, r))
+                        .and_then(|r| <[f32; 4]>::try_from(r.as_slice()).ok())
+                        .unwrap_or([-100.0, 100.0, -100.0, 100.0]);
+                    Some(ImageColorSpace::Lab { white, range })
+                }
                 b"ICCBased" => {
                     let profile = doc.resolve(arr.get(1)?).as_stream()?;
                     raw_dict_get(&profile.dict, b"N")
                         .and_then(|n| doc.resolve(n).as_i64())
                         .and_then(by_components)
                         .or_else(|| {
-                            raw_dict_get(&profile.dict, b"Alternate")
-                                .and_then(|alt| resolve_image_color_space(doc, alt, depth + 1))
+                            raw_dict_get(&profile.dict, b"Alternate").and_then(|alt| {
+                                resolve_image_color_space(doc, alt, depth + 1, admit)
+                            })
                         })
                 }
-                b"Separation" => {
-                    tint_space(doc, 1, arr.get(2)?, arr.get(3)?, depth).map(ImageColorSpace::Tint)
-                }
+                b"Separation" => tint_space(doc, 1, arr.get(2)?, arr.get(3)?, depth, admit)
+                    .map(ImageColorSpace::Tint),
                 b"DeviceN" => {
                     let colorants = doc.resolve(arr.get(1)?).as_array()?.len();
-                    tint_space(doc, colorants, arr.get(2)?, arr.get(3)?, depth)
+                    tint_space(doc, colorants, arr.get(2)?, arr.get(3)?, depth, admit)
                         .map(ImageColorSpace::Tint)
                 }
                 b"Indexed" | b"I" => {
-                    let base = resolve_image_color_space(doc, arr.get(1)?, depth + 1)?;
+                    let base = resolve_image_color_space(doc, arr.get(1)?, depth + 1, admit)?;
                     if matches!(base, ImageColorSpace::Indexed { .. }) {
                         return None; // ISO 32000-1 §8.6.6.3: the base cannot be Indexed
                     }
                     let hival = doc.resolve(arr.get(2)?).as_i64()?.clamp(0, 255) as u8;
+                    let entries = (usize::from(hival) + 1).saturating_mul(base.components());
+                    let palette = |bytes: &[u8]| bytes[..bytes.len().min(entries)].to_vec();
                     let lookup = match doc.resolve(arr.get(3)?) {
-                        RawPdfObject::Str(bytes) => bytes.clone(),
-                        RawPdfObject::Stream(stream) => raw_stream::decompress(stream).ok()?,
+                        RawPdfObject::Str(bytes) => palette(bytes),
+                        RawPdfObject::Stream(stream) => {
+                            palette(&raw_stream::decompress(stream).ok()?)
+                        }
                         _ => return None,
                     };
                     Some(ImageColorSpace::Indexed {
@@ -2370,16 +2577,16 @@ fn tint_space(
     alternate: &RawPdfObject,
     transform: &RawPdfObject,
     depth: usize,
+    admit: &mut dyn FnMut(u64) -> bool,
 ) -> Option<TintSpace> {
-    let alternate = resolve_image_color_space(doc, alternate, depth + 1)?;
+    let alternate = resolve_image_color_space(doc, alternate, depth + 1, admit)?;
     if matches!(
         alternate,
         ImageColorSpace::Indexed { .. } | ImageColorSpace::Tint(_)
     ) {
         return None; // ISO 32000-1 §8.6.6.4: the alternate is neither
     }
-    let transform = super::function::Function::read(doc, transform)?;
-    // A function of several inputs the transform does not read (a sampled one) is no transform.
+    let transform = super::function::Function::read(doc, transform, admit)?;
     if components == 0 || transform.inputs() != components {
         return None;
     }

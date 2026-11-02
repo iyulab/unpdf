@@ -114,8 +114,9 @@ def _image_only_pdf() -> bytes:
     ])
 
 
-def _lab_image_pdf() -> bytes:
-    """One page drawn as a 1x1 image in a color space unpdf does not convert (Lab)."""
+def _unconverted_color_image_pdf() -> bytes:
+    """One page drawn as a 1x1 image in a color space unpdf does not convert (a DeviceN
+    whose transform it does not read)."""
     content = b"q 595 0 0 842 0 0 cm /Im0 Do Q\n"
     return _assemble([
         b"<</Type/Catalog/Pages 2 0 R>>",
@@ -125,7 +126,7 @@ def _lab_image_pdf() -> bytes:
         _stream_object(b"<</Length %d>>" % len(content), content),
         _stream_object(
             b"<</Type/XObject/Subtype/Image/Width 1/Height 1"
-            b"/ColorSpace[/Lab<</WhitePoint[0.9505 1 1.089]>>]"
+            b"/ColorSpace[/DeviceN[/A/B/C]/DeviceRGB<</FunctionType 9>>]"
             b"/BitsPerComponent 8/Length 3>>",
             b"\x80\x80\x80",
         ),
@@ -246,11 +247,11 @@ class TestParseOptions:
         assert info["resource_count"] == 1
 
     def test_raw_undecoded_images_never_surfaced(self):
-        # Samples unpdf cannot convert (a Lab image) are a buffer most
-        # GetResourceData callers cannot use, and must never appear regardless of
-        # `min_image_dimension`.
+        # Samples unpdf cannot convert (a DeviceN image whose transform it does not
+        # read) are a buffer most GetResourceData callers cannot use, and must never
+        # appear regardless of `min_image_dimension`.
         info = unpdf.get_info(
-            _lab_image_pdf(),
+            _unconverted_color_image_pdf(),
             options={"extract_resources": True, "min_image_dimension": 0},
         )
         assert info["resource_count"] == 0

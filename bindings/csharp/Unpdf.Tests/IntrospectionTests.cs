@@ -308,10 +308,11 @@ internal static class PdfFixtures
     }
 
     /// <summary>
-    /// One page drawn as a 1×1 image in a color space unpdf does not convert (Lab) — samples
-    /// that cannot be turned into a usable image format.
+    /// One page drawn as a 1×1 image in a color space unpdf does not convert (a <c>DeviceN</c>
+    /// whose transform it does not read) — samples that cannot be turned into a usable image
+    /// format.
     /// </summary>
-    public static byte[] LabImagePdf()
+    public static byte[] UnconvertedColorImagePdf()
     {
         var content = "q 595 0 0 842 0 0 cm /Im0 Do Q\n";
         return Assemble(new[]
@@ -323,7 +324,8 @@ internal static class PdfFixtures
             StreamObject($"<</Length {content.Length}>>", content),
             StreamObject(
                 "<</Type/XObject/Subtype/Image/Width 1/Height 1" +
-                "/ColorSpace[/Lab<</WhitePoint[0.9505 1 1.089]>>]/BitsPerComponent 8/Length 3>>",
+                "/ColorSpace[/DeviceN[/A/B/C]/DeviceRGB<</FunctionType 9>>]" +
+                "/BitsPerComponent 8/Length 3>>",
                 "\u0080\u0080\u0080"),
         });
     }

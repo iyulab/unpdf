@@ -9,7 +9,7 @@ mod common;
 
 use std::ffi::{CStr, CString};
 
-use common::lab_image_pdf;
+use common::unconverted_color_image_pdf;
 use unpdf::ffi::{
     unpdf_free_document, unpdf_last_error, unpdf_last_error_kind, unpdf_parse_bytes,
     unpdf_parse_bytes_with_options, unpdf_parse_file_with_options, unpdf_resource_count,
@@ -110,12 +110,10 @@ fn extract_resources_opt_in_populates_the_resource_inventory() {
 
 #[test]
 fn raw_undecoded_image_formats_are_never_surfaced_even_with_extract_resources() {
-    // `common::lab_image_pdf` holds samples in a color space unpdf does not convert — a
-    // pixel buffer most consumers (GetResourceData callers included) cannot render.
     // `parse()`'s resource collection must apply the same raw/bin exclusion
     // `parse_single_page`'s does, or this silently reappears whenever the two collection
     // paths drift (they had drifted once: this case returned resource_count 1).
-    let bytes = lab_image_pdf();
+    let bytes = unconverted_color_image_pdf();
     let options = cstr(r#"{"extract_resources":true,"min_image_dimension":0}"#);
     unsafe {
         let doc = unpdf_parse_bytes_with_options(bytes.as_ptr(), bytes.len(), options.as_ptr());

@@ -4,9 +4,14 @@
 
 mod common;
 
+use std::collections::BTreeMap;
 use std::ops::ControlFlow;
 
 use common::{assemble, stream_object};
+use unpdf::parser::backend::{
+    BackendFontInfo, ContentOp, DecodedText, ImageColorSpace, PageBox, PageId, PdfBackend,
+    PdfMetadataRaw, RawBackend, RawOutlineItem, RawXObject, ResourceScope, Shading,
+};
 use unpdf::parser::raster::{PageRegion, RasterOptions, RasteredPage};
 use unpdf::parser::PdfParser;
 use unpdf::{Error, Result};
@@ -137,6 +142,8 @@ fn painting_kinds() -> Vec<(&'static str, Vec<u8>, Vec<u64>)> {
     inline.extend_from_slice(b"\nEI Q");
     let shading = "/Shading<</Sh<</ShadingType 2/ColorSpace/DeviceRGB/Coords[0 0 100 0]\
         /Function<</FunctionType 2/Domain[0 1]/C0[1 0 0]/C1[0 0 1]/N 1>>/BBox[10 10 30 40]>>>>";
+    let sampled_shading = "<</ShadingType 2/ColorSpace[/DeviceN[/A/B]/DeviceGray 5 0 R]\
+        /Coords[0 0 100 0]/Function 6 0 R/BBox[10 10 30 40]>>";
     let pattern = stream_object(
         "<</Type/Pattern/PatternType 1/PaintType 1/TilingType 1/BBox[0 0 10 10]/XStep 10\
           /YStep 10/Resources<<>>/Length 23>>",
@@ -230,6 +237,232 @@ fn painting_kinds() -> Vec<(&'static str, Vec<u8>, Vec<u64>)> {
                 vec![image("")],
             ),
             vec![PAGE, OP, OP, OP, 20 * 10 + rect_edges(20, 10) + 6 + 6, OP],
+        ),
+        (
+            "image in a space with a sampled transform of two inputs",
+            square_page(
+                "/XObject<</Im 5 0 R>>",
+                b"q 20 0 0 10 30 40 cm /Im Do Q",
+                vec![
+                    stream_object(
+                        "<</Type/XObject/Subtype/Image/Width 2/Height 3\
+                          /ColorSpace[/DeviceN[/A/B]/DeviceGray 6 0 R]/BitsPerComponent 8\
+                          /Length 12>>",
+                        &[0x80; 12],
+                    ),
+                    stream_object(
+                        "<</FunctionType 0/Domain[0 1 0 1]/Range[0 1]/Size[2 2]/BitsPerSample 8\
+                          /Length 4>>",
+                        &[0; 4],
+                    ),
+                ],
+            ),
+            vec![
+                PAGE,
+                OP,
+                OP,
+                OP,
+                4 + 4,
+                20 * 10 + rect_edges(20, 10) + 6 + 12 + 6 * 4,
+                OP,
+            ],
+        ),
+        (
+            "image in a space whose sampled transform is read and then refused",
+            square_page(
+                "/XObject<</Im 5 0 R>>",
+                b"q 20 0 0 10 30 40 cm /Im Do Q",
+                vec![
+                    stream_object(
+                        "<</Type/XObject/Subtype/Image/Width 2/Height 3\
+                          /ColorSpace[/DeviceN[/A/B/C]/DeviceGray 6 0 R]/BitsPerComponent 8\
+                          /Length 18>>",
+                        &[0x80; 18],
+                    ),
+                    stream_object(
+                        "<</FunctionType 0/Domain[0 1 0 1]/Range[0 1]/Size[2 2]/BitsPerSample 8\
+                          /Length 4>>",
+                        &[0; 4],
+                    ),
+                ],
+            ),
+            vec![
+                PAGE,
+                OP,
+                OP,
+                OP,
+                4 + 4,
+                20 * 10 + rect_edges(20, 10) + 6 + 18,
+                OP,
+            ],
+        ),
+        (
+            "one-pixel image of one colorant converting each of its 256 values",
+            square_page(
+                "/XObject<</Im 5 0 R>>",
+                b"q 20 0 0 10 30 40 cm /Im Do Q",
+                vec![
+                    stream_object(
+                        "<</Type/XObject/Subtype/Image/Width 1/Height 1\
+                          /ColorSpace[/Separation/X/DeviceGray 6 0 R]/BitsPerComponent 8\
+                          /Length 1>>",
+                        &[0x80],
+                    ),
+                    stream_object(
+                        "<</FunctionType 0/Domain[0 1]/Range[0 1]/Size[2]/BitsPerSample 8\
+                          /Length 2>>",
+                        &[0; 2],
+                    ),
+                ],
+            ),
+            vec![
+                PAGE,
+                OP,
+                OP,
+                OP,
+                2 + 2,
+                20 * 10 + rect_edges(20, 10) + 1 + 1 + 256 * 2,
+                OP,
+            ],
+        ),
+        (
+            "indexed image over a space with a sampled transform of two inputs",
+            square_page(
+                "/XObject<</Im 5 0 R>>",
+                b"q 20 0 0 10 30 40 cm /Im Do Q",
+                vec![
+                    stream_object(
+                        "<</Type/XObject/Subtype/Image/Width 2/Height 3\
+                          /ColorSpace[/Indexed[/DeviceN[/A/B]/DeviceGray 6 0 R]1<00FF8000>]\
+                          /BitsPerComponent 8/Length 6>>",
+                        &[0, 1, 1, 0, 0, 1],
+                    ),
+                    stream_object(
+                        "<</FunctionType 0/Domain[0 1 0 1]/Range[0 1]/Size[2 2]/BitsPerSample 8\
+                          /Length 4>>",
+                        &[0; 4],
+                    ),
+                ],
+            ),
+            vec![
+                PAGE,
+                OP,
+                OP,
+                OP,
+                4 + 4,
+                20 * 10 + rect_edges(20, 10) + 6 + 6 + 6 * 4,
+                OP,
+            ],
+        ),
+        (
+            "color spaces read once for their tables, each color for the samples it reads",
+            square_page(
+                "/ColorSpace<</S0[/DeviceN[/A/B]/DeviceGray 5 0 R]/S1[/Indexed[/Separation/X\
+                 /DeviceGray 6 0 R]1<00FF>]/S2/DeviceRGB\
+                 /S3[/Pattern[/Separation/X/DeviceGray 6 0 R]]/S4[/Lab<</WhitePoint[1 1 1]>>]>>",
+                b"/S0 cs 0 0 scn /S0 cs 1 1 scn /S1 cs /S2 cs /S3 cs /S4 cs",
+                vec![
+                    stream_object(
+                        "<</FunctionType 0/Domain[0 1 0 1]/Range[0 1]/Size[2 2]/BitsPerSample 8\
+                          /Length 4>>",
+                        &[0; 4],
+                    ),
+                    stream_object(
+                        "<</FunctionType 0/Domain[0 1]/Range[0 1]/Size[2]/BitsPerSample 8\
+                          /Length 2>>",
+                        &[0; 2],
+                    ),
+                ],
+            ),
+            vec![
+                PAGE,
+                OP,
+                4 + 4,
+                4,
+                OP,
+                4,
+                OP,
+                4,
+                OP,
+                4,
+                OP,
+                2 + 2,
+                2,
+                OP,
+                OP,
+                2 + 2,
+                2,
+                OP,
+            ],
+        ),
+        (
+            "sampled tables charged before they are read, whether the space then reads or not",
+            square_page(
+                "/ColorSpace<</S0[/DeviceN[/A/B/C]/DeviceGray 5 0 R]\
+                 /S1[/DeviceN[/A/B/C]/DeviceGray 5 0 R]/S2[/DeviceN[/A/B]/DeviceGray 6 0 R]>>",
+                b"/S0 cs /S1 cs /S2 cs",
+                vec![
+                    stream_object(
+                        "<</FunctionType 0/Domain[0 1 0 1]/Range[0 1]/Size[2 2]/BitsPerSample 8\
+                          /Length 4>>",
+                        &[0; 4],
+                    ),
+                    stream_object(
+                        "<</FunctionType 0/Domain[0 1 0 1]/Range[0 1]/Size[2 2]/BitsPerSample 8\
+                          /Length 1>>",
+                        &[0],
+                    ),
+                ],
+            ),
+            vec![PAGE, OP, 4 + 4, OP, 4 + 4, OP, 4 + 1],
+        ),
+        (
+            "shading in a space with a sampled transform, through a sampled function",
+            square_page(
+                &format!("/Shading<</Sh{sampled_shading}>>"),
+                b"/Sh sh",
+                sampled_shading_objects(),
+            ),
+            vec![PAGE, OP, 4 + 4, 4 + 4, 128 * 4, 128 * 4, filled],
+        ),
+        (
+            "shading pattern in a space with a sampled transform, through a sampled function",
+            square_page(
+                &format!("/Pattern<</P0<</PatternType 2/Shading{sampled_shading}>>>>"),
+                b"/Pattern cs /P0 scn 10 10 20 30 re f",
+                sampled_shading_objects(),
+            ),
+            vec![PAGE, OP, OP, 4 + 4, 4 + 4, 128 * 4, 128 * 4, OP, OP, filled],
+        ),
+        (
+            "image with a soft mask in a space with a sampled transform of two inputs",
+            square_page(
+                "/XObject<</Im 5 0 R>>",
+                b"q 20 0 0 10 30 40 cm /Im Do Q",
+                vec![
+                    image("/SMask 6 0 R"),
+                    stream_object(
+                        "<</Type/XObject/Subtype/Image/Width 2/Height 3\
+                          /ColorSpace[/DeviceN[/A/B]/DeviceGray 7 0 R]/BitsPerComponent 8\
+                          /Length 12>>",
+                        &[0x80; 12],
+                    ),
+                    stream_object(
+                        "<</FunctionType 0/Domain[0 1 0 1]/Range[0 1]/Size[2 2]/BitsPerSample 8\
+                          /Length 4>>",
+                        &[0; 4],
+                    ),
+                ],
+            ),
+            vec![
+                PAGE,
+                OP,
+                OP,
+                OP,
+                4 + 4,
+                20 * 10 + rect_edges(20, 10) + (6 + 6) + (6 + 12 + 6 * 4),
+                OP,
+            ],
         ),
         (
             "image with a soft mask",
@@ -364,6 +597,21 @@ fn painting_kinds() -> Vec<(&'static str, Vec<u8>, Vec<u64>)> {
                 vec![PAGE, OP, OP, OP, filled],
             ]
             .concat(),
+        ),
+    ]
+}
+
+/// A two-input sampled transform into gray (object 5) and a sampled function from one input to
+/// two tints (object 6): four samples and four bytes each.
+fn sampled_shading_objects() -> Vec<Vec<u8>> {
+    vec![
+        stream_object(
+            "<</FunctionType 0/Domain[0 1 0 1]/Range[0 1]/Size[2 2]/BitsPerSample 8/Length 4>>",
+            &[0, 64, 128, 255],
+        ),
+        stream_object(
+            "<</FunctionType 0/Domain[0 1]/Range[0 1 0 1]/Size[2]/BitsPerSample 8/Length 4>>",
+            &[0, 0, 255, 255],
         ),
     ]
 }
@@ -579,4 +827,113 @@ fn one_missing_run_fits_a_budget_for_one_visibility_scan() {
         outcomes.iter().all(|(_, complete)| *complete),
         "{outcomes:?}"
     );
+}
+
+#[test]
+fn an_indexed_palette_is_kept_only_as_far_as_its_entries_reach() {
+    let two_rgb_entries_then_4_kib = [[255, 0, 0, 0, 0, 255].as_slice(), &[7; 4096]].concat();
+    let aliases: String = (0..64).map(|i| format!("/I{i} 5 0 R")).collect();
+    let pdf = square_page(
+        &format!("/ColorSpace<<{aliases}>>"),
+        b"",
+        vec![
+            b"[/Indexed/DeviceRGB 1 6 0 R]".to_vec(),
+            stream_object(
+                &format!("<</Length {}>>", two_rgb_entries_then_4_kib.len()),
+                &two_rgb_entries_then_4_kib,
+            ),
+        ],
+    );
+    let backend = RawBackend::load_bytes(&pdf).unwrap();
+    let scope = ResourceScope::page(backend.pages()[&1]);
+    for i in 0..64 {
+        let Some(ImageColorSpace::Indexed { lookup, .. }) =
+            backend.named_color_space(scope, format!("I{i}").as_bytes())
+        else {
+            panic!("I{i} is not read as Indexed");
+        };
+        assert_eq!(lookup, [255, 0, 0, 0, 0, 255], "I{i}");
+    }
+}
+
+/// A backend written before the lookups that offer a budget: it implements the ones that do not.
+struct Unbudgeted(RawBackend);
+
+impl PdfBackend for Unbudgeted {
+    fn pages(&self) -> BTreeMap<u32, PageId> {
+        self.0.pages()
+    }
+    fn page_fonts(&self, scope: ResourceScope) -> Result<Vec<BackendFontInfo>> {
+        self.0.page_fonts(scope)
+    }
+    fn page_content(&self, page: PageId) -> Result<Vec<u8>> {
+        self.0.page_content(page)
+    }
+    fn decode_content(&self, data: &[u8]) -> Result<Vec<ContentOp>> {
+        self.0.decode_content(data)
+    }
+    fn decode_text(&self, scope: ResourceScope, font_name: &[u8], bytes: &[u8]) -> DecodedText {
+        self.0.decode_text(scope, font_name, bytes)
+    }
+    fn metadata(&self) -> PdfMetadataRaw {
+        self.0.metadata()
+    }
+    fn page_box(&self, page: PageId) -> PageBox {
+        self.0.page_box(page)
+    }
+    fn outline(&self) -> Result<Vec<RawOutlineItem>> {
+        self.0.outline()
+    }
+    fn page_xobjects(&self, page: PageId) -> Result<Vec<RawXObject>> {
+        self.0.page_xobjects(page)
+    }
+    fn image_xobject(&self, scope: ResourceScope, name: &[u8]) -> Option<RawXObject> {
+        self.0.image_xobject(scope, name)
+    }
+    fn inline_image(&self, scope: ResourceScope, body: &[u8]) -> Option<RawXObject> {
+        self.0.inline_image(scope, body)
+    }
+    fn shading(&self, scope: ResourceScope, name: &[u8]) -> Option<Shading> {
+        self.0.shading(scope, name)
+    }
+    fn shading_pattern(&self, scope: ResourceScope, name: &[u8]) -> Option<(Shading, [f32; 6])> {
+        self.0.shading_pattern(scope, name)
+    }
+    fn named_pattern_space(
+        &self,
+        scope: ResourceScope,
+        name: &[u8],
+    ) -> Option<Option<ImageColorSpace>> {
+        self.0.named_pattern_space(scope, name)
+    }
+    fn named_color_space(&self, scope: ResourceScope, name: &[u8]) -> Option<ImageColorSpace> {
+        self.0.named_color_space(scope, name)
+    }
+}
+
+#[test]
+fn a_backend_without_the_budgeted_lookups_answers_them_with_its_own_charging_nothing() {
+    let pdf = square_page(
+        "/ColorSpace<</S0[/DeviceN[/A/B]/DeviceGray 5 0 R]/P0[/Pattern/DeviceRGB]>>\
+         /Shading<</Sh<</ShadingType 2/ColorSpace/DeviceGray/Coords[0 0 100 0]\
+         /Function 6 0 R>>>>",
+        b"",
+        sampled_shading_objects(),
+    );
+    let backend = Unbudgeted(RawBackend::load_bytes(&pdf).unwrap());
+    let scope = ResourceScope::page(backend.pages()[&1]);
+    let mut refuse = |_| false;
+    let space = backend.named_color_space_with(scope, b"S0", &mut refuse);
+    assert_eq!(space.map(|space| space.components()), Some(2));
+    assert_eq!(
+        backend.named_pattern_space_with(scope, b"P0", &mut refuse),
+        Some(Some(ImageColorSpace::Rgb))
+    );
+    assert!(backend.shading_with(scope, b"Sh", &mut refuse).is_some());
+    assert!(backend
+        .shading_pattern_with(scope, b"Sh", &mut refuse)
+        .is_none());
+    assert!(backend
+        .image_xobject_with(scope, b"Im", &mut refuse)
+        .is_none());
 }

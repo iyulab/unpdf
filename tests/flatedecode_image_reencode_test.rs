@@ -246,14 +246,38 @@ fn flatedecode_indexed_image_is_looked_up_in_its_palette() {
 }
 
 #[test]
+fn flatedecode_lab_image_is_converted_to_srgb() {
+    let samples = [191u8, 64, 204, 255, 128, 128, 0, 128, 128, 128, 128, 128];
+    let compressed = deflate(&samples);
+    let image_obj = stream_object(
+        &format!(
+            "<</Type/XObject/Subtype/Image/Width 2/Height 2\
+              /ColorSpace[/Lab<</WhitePoint[0.9642 1 0.8249]>>]\
+              /BitsPerComponent 8/Filter/FlateDecode/Length {}>>",
+            compressed.len()
+        ),
+        &compressed,
+    );
+
+    let (color_type, pixels) = only_png(&one_page_with_image(image_obj, None));
+    assert_eq!(color_type, png::ColorType::Rgb);
+    let expected: [[u8; 3]; 4] = [[106, 207, 59], [255, 255, 254], [1, 0, 0], [120, 119, 119]];
+    for (pixel, want) in pixels.chunks(3).zip(expected) {
+        assert!(
+            pixel.iter().zip(want).all(|(&a, b)| a.abs_diff(b) <= 1),
+            "{pixel:?} {want:?}"
+        );
+    }
+}
+
+#[test]
 fn flatedecode_unsupported_colorspace_is_dropped_and_counted() {
-    // Lab is not converted -- 3 bytes/pixel, 2x2 = 12 bytes.
-    let pixels = vec![0u8; 12];
+    let pixels = vec![0u8; 2 * 2 * 3];
     let compressed = deflate(&pixels);
     let image_obj = stream_object(
         &format!(
             "<</Type/XObject/Subtype/Image/Width 2/Height 2\
-              /ColorSpace[/Lab<</WhitePoint[0.9505 1 1.089]>>]\
+              /ColorSpace[/DeviceN[/A/B/C]/DeviceRGB<</FunctionType 9>>]\
               /BitsPerComponent 8/Filter/FlateDecode/Length {}>>",
             compressed.len()
         ),

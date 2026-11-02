@@ -68,11 +68,17 @@ public sealed class RenderGaps
     [JsonPropertyName("undecodable_content_streams")]
     public uint UndecodableContentStreams { get; init; }
 
+    /// <summary>Fills, strokes, text runs and stencil masks painted in a color the renderer does
+    /// not convert (a color space it does not read, or a color its space gives no value for),
+    /// each in the shade of its ink.</summary>
+    [JsonPropertyName("colors")]
+    public uint Colors { get; init; }
+
     /// <summary>Whether anything the page asked for was left unpainted.</summary>
     [JsonIgnore]
     public bool IsEmpty =>
         TextRuns == 0 && Images == 0 && InlineImages == 0 && Shadings == 0
-        && SoftMasks == 0 && UndecodableContentStreams == 0;
+        && SoftMasks == 0 && UndecodableContentStreams == 0 && Colors == 0;
 }
 
 /// <summary>A rendered page: a PNG, its size in pixels, and what it could not show.</summary>

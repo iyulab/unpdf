@@ -42,9 +42,14 @@ impl PdfParser {
     /// operator applied, in forms, tiling pattern cells, soft masks and Type 3 glyphs too, and for
     /// each byte of a text string; the pixels of the page a fill, stroke, glyph, shading or image
     /// covers and the edges walked for it; the dashes a dashed stroke lays; the bytes an image's
-    /// filters gave and the samples its codec makes; and the whole page for a clip, a transparency
-    /// group's layer and a soft mask. When `budget` returns `Break`, painting stops before that
-    /// step and this returns [`Error::RasterStopped`].
+    /// filters gave and the samples its codec makes; the samples and stream bytes of each sampled
+    /// function a color space, an image or a shading reads, before it reads them, the samples
+    /// evaluating a shading's function reads, and those a tint transform reads to convert each
+    /// color, each color of a shading and each pixel of an image, or each value a sample can take
+    /// in an image of one colorant and at most 8 bits; and the whole page for a clip, a
+    /// transparency group's layer and a soft mask.
+    /// When `budget` returns `Break`, painting stops before that step and this returns
+    /// [`Error::RasterStopped`].
     #[cfg(feature = "raster")]
     pub fn render_page_with(
         &self,
