@@ -100,3 +100,45 @@ fn ligature_names_in_differences_read_as_their_letters() {
         "each ligature reads as the letters it joins, got {text:?}"
     );
 }
+
+fn differences_past_a_byte_pdf() -> Vec<u8> {
+    let content = b"BT /F1 12 Tf 72 700 Td (ab) Tj ET\n";
+    common::assemble(vec![
+        b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+        b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Resources<</Font<</F1 5 0 R>>>>\
+          /Contents 4 0 R>>"
+            .to_vec(),
+        common::stream_object(&format!("<</Length {}>>", content.len()), content),
+        b"<</Type/Font/Subtype/Type1/BaseFont/Helvetica\
+          /Encoding<</Type/Encoding/Differences[4294967295/a]>>>>"
+            .to_vec(),
+    ])
+}
+
+#[test]
+fn a_differences_code_past_a_byte_renames_nothing() {
+    let doc = PdfParser::from_bytes(&differences_past_a_byte_pdf())
+        .and_then(|p| p.parse())
+        .expect("synthetic PDF should parse");
+    let text = to_text(&doc, &RenderOptions::default()).expect("text renders");
+    assert!(text.contains("ab"), "got {text:?}");
+}
+
+#[cfg(feature = "standard-fonts")]
+#[test]
+fn a_differences_code_past_a_byte_paints_the_page() {
+    use unpdf::parser::raster::{PageRegion, RasterOptions};
+    let page = PdfParser::from_bytes(&differences_past_a_byte_pdf())
+        .and_then(|p| {
+            p.render_page(
+                1,
+                &RasterOptions {
+                    dpi: 18.0,
+                    region: PageRegion::Crop,
+                },
+            )
+        })
+        .expect("the page renders");
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+}

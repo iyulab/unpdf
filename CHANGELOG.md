@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A `/Differences` code outside a byte no longer overflows or lands on another code.** The
+  array gives a code, then names for the codes after it (ISO 32000-1 §9.6.6.1), and a simple
+  font's codes are 0 to 255. Each code was cut to 32 bits, so `4294967361` named code 65, and
+  counting the names after a code near 2³², `-1` among them, overflowed: a panic in a build with
+  overflow checks, names wrapped onto codes 0, 1, … in one without. A code outside 0 to 255 now
+  names nothing until the next one. Text extraction, Type 3 glyphs and the rasterizer's glyph
+  names all read the array this way.
+
 ## 0.52.0 — 2026-11-02
 
 ### Added

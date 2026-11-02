@@ -3741,19 +3741,19 @@ impl RawFontResolver {
             None => return result,
         };
 
-        let mut current_code: u32 = 0;
+        let mut code = Some(0u8);
         for item in arr {
             let item = doc.resolve(item);
             match item {
                 RawPdfObject::Integer(n) => {
-                    current_code = *n as u32;
+                    code = u8::try_from(*n).ok();
                 }
                 RawPdfObject::Name(name) => {
-                    if current_code <= 255 {
+                    if let Some(code) = code {
                         let glyph_name = String::from_utf8_lossy(name).to_string();
-                        result.push((current_code as u8, glyph_name));
+                        result.push((code, glyph_name));
                     }
-                    current_code += 1;
+                    code = code.and_then(|c| c.checked_add(1));
                 }
                 _ => {}
             }
@@ -4109,5 +4109,47 @@ mod raw_backend_tests {
             images.iter().map(|i| i.name.as_str()).collect::<Vec<_>>(),
             ["Im0"]
         );
+    }
+
+    fn differences(array: &str) -> Vec<(u8, String)> {
+        use crate::parser::raw::tokenizer::parse_object;
+        let raw = backend();
+        let (dict, _) = parse_object(format!("<</Differences {array}>>").as_bytes(), 0).unwrap();
+        raw.font_resolver
+            .parse_differences(&raw.doc, dict.as_dict().unwrap())
+    }
+
+    fn names(pairs: &[(u8, &str)]) -> Vec<(u8, String)> {
+        pairs
+            .iter()
+            .map(|&(code, name)| (code, name.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn differences_names_take_consecutive_codes_up_to_255() {
+        assert_eq!(
+            differences("[65 /A /B 97 /a]"),
+            names(&[(65, "A"), (66, "B"), (97, "a")])
+        );
+        assert_eq!(
+            differences("[254 /y /z /extra]"),
+            names(&[(254, "y"), (255, "z")])
+        );
+    }
+
+    #[test]
+    fn a_differences_code_past_a_byte_names_nothing() {
+        assert_eq!(differences("[4294967295 /a /b]"), names(&[]));
+    }
+
+    #[test]
+    fn a_differences_code_past_a_byte_is_not_truncated_into_one() {
+        assert_eq!(differences("[4294967361 /A]"), names(&[]));
+    }
+
+    #[test]
+    fn names_after_a_negative_differences_code_wait_for_the_next_code() {
+        assert_eq!(differences("[-1 /a 65 /B]"), names(&[(65, "B")]));
     }
 }
