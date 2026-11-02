@@ -134,9 +134,18 @@ fn skip_whitespace(data: &[u8], mut pos: usize) -> usize {
     pos
 }
 
+/// Arrays, dictionaries and indirect objects nested deeper than this are not read; each level is
+/// a frame on the stack.
+pub(crate) const MAX_NESTING_DEPTH: usize = 64;
+
 /// Parse a PDF object starting at position `pos`.
 /// Returns the parsed object and the position after it.
 pub fn parse_object(data: &[u8], pos: usize) -> Result<(PdfObject, usize)> {
+    parse_nested(data, pos, 0)
+}
+
+/// [`parse_object`] inside `depth` arrays, dictionaries and indirect objects.
+fn parse_nested(data: &[u8], pos: usize, depth: usize) -> Result<(PdfObject, usize)> {
     let pos = skip_whitespace(data, pos);
     if pos >= data.len() {
         return Err(Error::PdfParse("Unexpected end of data".into()));
@@ -145,8 +154,8 @@ pub fn parse_object(data: &[u8], pos: usize) -> Result<(PdfObject, usize)> {
     match data[pos] {
         b'/' => parse_name(data, pos),
         b'(' => parse_literal_string(data, pos),
-        b'<' => parse_hex_or_dict(data, pos),
-        b'[' => parse_array(data, pos),
+        b'<' => parse_hex_or_dict(data, pos, depth),
+        b'[' => parse_array(data, pos, depth),
         b't' => {
             // true
             if data.len() >= pos + 4 && &data[pos..pos + 4] == b"true" {
@@ -186,7 +195,9 @@ pub fn parse_object(data: &[u8], pos: usize) -> Result<(PdfObject, usize)> {
                 Err(Error::PdfParse(format!("Invalid token at offset {pos}")))
             }
         }
-        b if b.is_ascii_digit() || b == b'+' || b == b'-' || b == b'.' => parse_number(data, pos),
+        b if b.is_ascii_digit() || b == b'+' || b == b'-' || b == b'.' => {
+            parse_number(data, pos, depth)
+        }
         _ => Err(Error::PdfParse(format!(
             "Unexpected byte '{}' at offset {pos}",
             data[pos] as char
@@ -195,7 +206,7 @@ pub fn parse_object(data: &[u8], pos: usize) -> Result<(PdfObject, usize)> {
 }
 
 /// Parse a number (integer or real), with look-ahead for references and indirect objects.
-fn parse_number(data: &[u8], pos: usize) -> Result<(PdfObject, usize)> {
+fn parse_number(data: &[u8], pos: usize, depth: usize) -> Result<(PdfObject, usize)> {
     let start = pos;
     let mut p = pos;
     let mut has_dot = false;
@@ -266,7 +277,8 @@ fn parse_number(data: &[u8], pos: usize) -> Result<(PdfObject, usize)> {
                             || is_delimiter(data[after_obj])
                         {
                             // Parse the inner object
-                            let (inner, inner_end) = parse_object(data, after_obj)?;
+                            let (inner, inner_end) =
+                                parse_nested(data, after_obj, deeper(depth, start)?)?;
                             // Skip to endobj
                             let e = skip_whitespace(data, inner_end);
                             if e + 6 <= data.len() && &data[e..e + 6] == b"endobj" {
@@ -426,10 +438,10 @@ pub(crate) fn octal_escape(data: &[u8], start: usize) -> (u8, usize) {
     (value as u8, start + digits)
 }
 
-fn parse_hex_or_dict(data: &[u8], pos: usize) -> Result<(PdfObject, usize)> {
+fn parse_hex_or_dict(data: &[u8], pos: usize, depth: usize) -> Result<(PdfObject, usize)> {
     debug_assert_eq!(data[pos], b'<');
     if pos + 1 < data.len() && data[pos + 1] == b'<' {
-        parse_dict(data, pos)
+        parse_dict(data, pos, depth)
     } else {
         parse_hex_string(data, pos)
     }
@@ -483,7 +495,8 @@ fn parse_hex_string(data: &[u8], pos: usize) -> Result<(PdfObject, usize)> {
 }
 
 /// Parse a dictionary <<...>>, potentially followed by a stream.
-fn parse_dict(data: &[u8], pos: usize) -> Result<(PdfObject, usize)> {
+fn parse_dict(data: &[u8], pos: usize, depth: usize) -> Result<(PdfObject, usize)> {
+    let depth = deeper(depth, pos)?;
     // Skip '<<'
     let mut p = pos + 2;
     let mut dict = PdfDict::new();
@@ -512,7 +525,7 @@ fn parse_dict(data: &[u8], pos: usize) -> Result<(PdfObject, usize)> {
             _ => unreachable!(),
         };
         // Value
-        let (val, val_end) = parse_object(data, key_end)?;
+        let (val, val_end) = parse_nested(data, key_end, depth)?;
         dict.insert(key, val);
         p = val_end;
     }
@@ -582,8 +595,9 @@ fn find_endstream(data: &[u8], start: usize) -> Result<(Vec<u8>, usize)> {
 }
 
 /// Parse an array [...].
-fn parse_array(data: &[u8], pos: usize) -> Result<(PdfObject, usize)> {
+fn parse_array(data: &[u8], pos: usize, depth: usize) -> Result<(PdfObject, usize)> {
     debug_assert_eq!(data[pos], b'[');
+    let depth = deeper(depth, pos)?;
     let mut p = pos + 1;
     let mut elements = Vec::new();
 
@@ -598,12 +612,21 @@ fn parse_array(data: &[u8], pos: usize) -> Result<(PdfObject, usize)> {
             p += 1;
             break;
         }
-        let (obj, obj_end) = parse_object(data, p)?;
+        let (obj, obj_end) = parse_nested(data, p, depth)?;
         elements.push(obj);
         p = obj_end;
     }
 
     Ok((PdfObject::Array(elements), p))
+}
+
+/// `depth` one level deeper, into the array, dictionary or indirect object at `pos`.
+fn deeper(depth: usize, pos: usize) -> Result<usize> {
+    if depth < MAX_NESTING_DEPTH {
+        Ok(depth + 1)
+    } else {
+        Err(Error::PdfParse(format!("Nesting too deep at offset {pos}")))
+    }
 }
 
 /// Convert a hex digit character to its numeric value.
@@ -771,6 +794,16 @@ mod tests {
         let arr = obj.as_array().unwrap();
         assert_eq!(arr.len(), 2);
         assert_eq!(arr[0].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_parse_nesting_bound() {
+        for (open, close) in [("[", "]"), ("<</A ", ">>"), ("1 0 obj ", " endobj")] {
+            let nested =
+                |depth: usize| format!("{}null{}", open.repeat(depth), close.repeat(depth));
+            assert!(parse_object(nested(MAX_NESTING_DEPTH).as_bytes(), 0).is_ok());
+            assert!(parse_object(nested(MAX_NESTING_DEPTH + 1).as_bytes(), 0).is_err());
+        }
     }
 
     #[test]
