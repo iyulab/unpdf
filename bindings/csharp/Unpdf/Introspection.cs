@@ -275,6 +275,8 @@ public sealed class PageStats
     /// </summary>
     [JsonPropertyName("omitted_page_number_chars")]
     public uint OmittedPageNumberChars { get; init; }
+
+    /// <summary>
     /// A link resource bound was reached or supported URI/text association was unresolved.
     /// Text and proven links remain; incomplete annotation reading or indexing clears links.
     /// </summary>

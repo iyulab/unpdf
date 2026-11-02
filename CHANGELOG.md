@@ -41,6 +41,9 @@
   its metrics, a composite font was read as a simple one -- although ISO 32000-1 §7.3.10 allows
   any object to be indirect and PDFium and pdf.js follow the reference. One document-level
   accessor now reads them all, the XObject `/Subtype` included.
+- **.NET: `PageStats.LinkAnnotationsIncomplete` shows its documentation.** Its XML doc comment
+  lacked the opening `<summary>`, so the build warned CS1570 and left the property's description
+  out of the package's documentation file.
 
 ## 0.52.2 — 2026-11-03
 
