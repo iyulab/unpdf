@@ -1376,7 +1376,8 @@ impl PdfBackend for RawBackend {
             .into_iter()
             .find_map(|res| named_xobject(&self.doc, res, name))?;
         let stream = self.doc.resolve(self.doc.get_object(id)?).as_stream()?;
-        let subtype = raw_dict_get(&stream.dict, b"Subtype").and_then(|s| s.as_name());
+        let subtype =
+            raw_dict_get(&stream.dict, b"Subtype").and_then(|s| self.doc.resolve(s).as_name());
         Some(match subtype {
             Some(b"Form") => PaintedXObject::Form(form_of(&self.doc, id, stream)),
             Some(b"Image") => PaintedXObject::Image,
@@ -1389,7 +1390,8 @@ impl PdfBackend for RawBackend {
             .into_iter()
             .find_map(|res| named_xobject(&self.doc, res, name))?;
         let stream = self.doc.resolve(self.doc.get_object(id)?).as_stream()?;
-        let subtype = raw_dict_get(&stream.dict, b"Subtype").and_then(|s| s.as_name());
+        let subtype =
+            raw_dict_get(&stream.dict, b"Subtype").and_then(|s| self.doc.resolve(s).as_name());
         if subtype != Some(b"Image".as_slice()) {
             return None;
         }
@@ -1972,7 +1974,7 @@ impl RawBackend {
             let label = format!("{prefix}{}", String::from_utf8_lossy(name));
 
             let subtype = raw_dict_get(dict, b"Subtype")
-                .and_then(|s| s.as_name())
+                .and_then(|s| self.doc.resolve(s).as_name())
                 .map(|n| String::from_utf8_lossy(n).to_string())
                 .unwrap_or_default();
 
@@ -4187,5 +4189,47 @@ mod raw_backend_tests {
     #[test]
     fn names_after_a_negative_differences_code_wait_for_the_next_code() {
         assert_eq!(differences("[-1 /a 65 /B]"), names(&[(65, "B")]));
+    }
+
+    #[test]
+    fn an_xobject_subtype_may_be_an_indirect_object() {
+        use crate::parser::test_pdf::{pdf, stream};
+        let bytes = pdf(
+            vec![
+                b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+                b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+                b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]\
+                  /Resources<</XObject<</Fm 4 0 R>>>>>>"
+                    .to_vec(),
+                stream(
+                    "<</Type/XObject/Subtype 6 0 R/BBox[0 0 595 842]\
+                      /Resources<</XObject<</Im 5 0 R>>>>/Length 6>>",
+                    b"/Im Do",
+                ),
+                stream(
+                    "<</Type/XObject/Subtype 7 0 R/Width 1/Height 1/ColorSpace/DeviceGray\
+                      /BitsPerComponent 8/Length 1>>",
+                    &[0x80],
+                ),
+                b"/Form".to_vec(),
+                b"/Image".to_vec(),
+            ],
+            1,
+        );
+        let raw = RawBackend::load_bytes(&bytes).unwrap();
+        let page = raw.pages()[&1];
+
+        assert!(matches!(
+            raw.xobject(ResourceScope::page(page), b"Fm"),
+            Some(PaintedXObject::Form(_))
+        ));
+        assert!(raw
+            .image_xobject(ResourceScope::form(page, (4, 0)), b"Im")
+            .is_some());
+        let images = raw.page_xobjects(page).unwrap();
+        assert_eq!(
+            images.iter().map(|i| i.name.as_str()).collect::<Vec<_>>(),
+            ["Fm_Im"]
+        );
     }
 }

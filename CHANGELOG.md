@@ -29,6 +29,12 @@
   overflow checks, names wrapped onto codes 0, 1, … in one without. A code outside 0 to 255 now
   names nothing until the next one. Text extraction, Type 3 glyphs and the rasterizer's glyph
   names all read the array this way.
+- **An XObject whose `/Subtype` is an indirect object is read as its kind.** A Form XObject
+  whose `/Subtype` is an indirect reference, as ISO 32000-1 §7.3.10 allows any value to be, was
+  not interpreted: its text was lost, it counted as an image in `image_coverage`, `render_page`
+  did not paint it and the images inside it were not extracted. An image XObject written that
+  way was neither extracted nor painted. The `/Subtype` is resolved wherever an XObject's kind
+  is decided.
 
 ## 0.52.2 — 2026-11-03
 

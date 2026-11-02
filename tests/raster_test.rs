@@ -965,6 +965,34 @@ fn a_form_that_is_not_a_group_paints_with_the_alpha_its_content_sets() {
     assert!(near(got, RED), "{got:?}");
 }
 
+#[test]
+fn a_form_whose_subtype_is_an_indirect_object_is_painted() {
+    let content = b"1 0 0 rg 100 100 200 200 re f";
+    let page = render(
+        &assemble(vec![
+            b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+            b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+            format!(
+                "<</Type/Page/Parent 2 0 R{A4}/Resources<</XObject<</Fm 5 0 R>>>>\
+                 /Contents 4 0 R>>"
+            )
+            .into_bytes(),
+            stream_object("<</Length 6>>", b"/Fm Do"),
+            stream_object(
+                &format!(
+                    "<</Type/XObject/Subtype 6 0 R/BBox[0 0 595 842]/Length {}>>",
+                    content.len()
+                ),
+                content,
+            ),
+            b"/Form".to_vec(),
+        ]),
+        &PT,
+    );
+    let got = px(&page, 200, 842 - 200);
+    assert!(near(got, RED), "{got:?}");
+}
+
 /// A 16 x 8 JBIG2 page (an immediate generic region, MMR-coded), white on the left half and
 /// black on the right, as MuPDF renders it.
 const JBIG2_HALVES: &[u8] = include_bytes!("fixtures/halves_white_black_16x8.jb2");

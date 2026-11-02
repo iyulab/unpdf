@@ -727,9 +727,21 @@ pub const FORM_XOBJECT_TEXT: &str = "Hello from form xobject";
 /// One page whose content only paints a Form XObject (`q /Fm1 Do Q`); the text lives in the
 /// form, under the form's own `/Resources`. The page has no `/Font` of its own.
 pub fn form_xobject_text_pdf() -> Vec<u8> {
+    assemble(form_xobject_text_objects("/Form"))
+}
+
+/// [`form_xobject_text_pdf`] with the form's `/Subtype` an indirect object, as any dictionary
+/// value may be (ISO 32000-1 §7.3.10).
+pub fn form_with_indirect_subtype_pdf() -> Vec<u8> {
+    let mut objects = form_xobject_text_objects(" 7 0 R");
+    objects.push(b"/Form".to_vec());
+    assemble(objects)
+}
+
+fn form_xobject_text_objects(subtype: &str) -> Vec<Vec<u8>> {
     let page = b"q /Fm1 Do Q\n";
     let form = format!("BT /F1 24 Tf 72 700 Td ({FORM_XOBJECT_TEXT}) Tj ET\n");
-    let objects: Vec<Vec<u8>> = vec![
+    vec![
         b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
         b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
         b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]\
@@ -739,14 +751,13 @@ pub fn form_xobject_text_pdf() -> Vec<u8> {
         HELVETICA.to_vec(),
         stream_object(
             &format!(
-                "<</Type/XObject/Subtype/Form/BBox[0 0 612 792]\
+                "<</Type/XObject/Subtype{subtype}/BBox[0 0 612 792]\
                   /Resources<</Font<</F1 5 0 R>>>>/Length {}>>",
                 form.len()
             ),
             form.as_bytes(),
         ),
-    ];
-    assemble(objects)
+    ]
 }
 
 /// One page as a scanner often writes it: the page paints a Form XObject, and the form
