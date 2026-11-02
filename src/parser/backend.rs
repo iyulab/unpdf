@@ -23,7 +23,7 @@ use super::glyph_metrics::{
     VerticalFont, WEntry,
 };
 use super::link::LinkAnnotations;
-use super::sanitize::sanitize_extracted_text;
+use super::sanitize::{is_non_text_control, sanitize_extracted_text};
 use super::text_string::{decode_text_string, decode_text_string_lossy};
 
 /// Page identifier: (object number, generation number).
@@ -707,6 +707,32 @@ impl DecodedText {
     }
 }
 
+/// Whitespace, or a default-ignorable code point (Unicode's `Default_Ignorable_Code_Point`,
+/// such as a zero-width space or a soft hyphen): text a glyph shows nothing for.
+fn draws_nothing(c: char) -> bool {
+    c.is_whitespace()
+        || matches!(
+            c,
+            '\u{AD}'
+                | '\u{34F}'
+                | '\u{61C}'
+                | '\u{115F}'..='\u{1160}'
+                | '\u{17B4}'..='\u{17B5}'
+                | '\u{180B}'..='\u{180F}'
+                | '\u{200B}'..='\u{200F}'
+                | '\u{202A}'..='\u{202E}'
+                | '\u{2060}'..='\u{206F}'
+                | '\u{3164}'
+                | '\u{FE00}'..='\u{FE0F}'
+                | '\u{FEFF}'
+                | '\u{FFA0}'
+                | '\u{FFF0}'..='\u{FFF8}'
+                | '\u{1BCA0}'..='\u{1BCA3}'
+                | '\u{1D173}'..='\u{1D17A}'
+                | '\u{E0000}'..='\u{E0FFF}'
+        )
+}
+
 /// One glyph's contribution to the text position, as the font declares it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GlyphAdvance {
@@ -803,6 +829,19 @@ pub trait PdfBackend: Send + Sync {
             glyphs: self.glyph_advances(scope, font_name, bytes),
             clusters: None,
         }
+    }
+
+    /// Whether the single code `code` in the font `font_name` names in `scope` is blank: it has
+    /// a character, whatever its advance, and only whitespace, control and default-ignorable
+    /// ones. With it, the bytes of text decoding the code gave, control characters included:
+    /// `(blank, decoded)`. The default judges [`decode_text`](Self::decode_text), which drops
+    /// control characters and does not report a code without a character that does not advance.
+    fn blank_code(&self, scope: ResourceScope, font_name: &[u8], code: &[u8]) -> (bool, usize) {
+        let decoded = self.decode_text(scope, font_name, code);
+        let blank = decoded.suppressed.is_none()
+            && decoded.undecoded_codes == 0
+            && decoded.text.chars().all(draws_nothing);
+        (blank, decoded.text.len())
     }
 
     /// The advance of each code in `bytes`, as the font `font_name` names in `scope`
@@ -1227,6 +1266,19 @@ impl PdfBackend for RawBackend {
                     .with_font_metrics(&self.doc, &font, |m| m.advances_with_ranges(bytes))
             });
         super::decoded_run::finish(decoded, mapping, measured, bytes.len())
+    }
+
+    fn blank_code(&self, scope: ResourceScope, font_name: &[u8], code: &[u8]) -> (bool, usize) {
+        let decoded = self
+            .font_resolver
+            .decode_text(&self.doc, scope, font_name, code);
+        let read = decoded.suppressed.is_none() && !decoded.text.is_empty();
+        let blank = read
+            && decoded
+                .text
+                .chars()
+                .all(|c| is_non_text_control(c) || draws_nothing(c));
+        (blank, decoded.text.len())
     }
 
     fn is_vertical_font(&self, scope: ResourceScope, font_name: &[u8]) -> bool {

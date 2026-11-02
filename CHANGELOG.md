@@ -26,6 +26,7 @@
   `unpdf_page_size`, `unpdf_page_pixels`; Python: `Document.page_size`, `PageSize.pixels`;
   .NET: `UnpdfDocument.GetPageSize`, `PageSize.Pixels`.
 
+
 ### Changed
 
 - **Breaking: a JPEG without an Adobe marker is decoded as its `/ColorTransform` says** (ISO 32000-1
@@ -37,6 +38,7 @@
   R, G and B, is counted in `RasterGaps::images`; it was painted as the decoder read it.
   `CodecParms::Dct` carries the value: Rust code that matches `CodecParms` exhaustively needs the
   new arm.
+
 
 ### Fixed
 
@@ -50,6 +52,20 @@
   without its mask, as if opaque, and counted nowhere.
 - **A three-component JPEG whose Adobe marker says it is stored untransformed is painted.** It
   was read as CMYK, failed and left the image white.
+- **A rendered page counts the text it drops, and keeps pattern-filled text legible.**
+  `RasterGaps::text_runs` now counts a run that shows a code whose glyph has no outline when the
+  code's text does not decode or is more than whitespace and default-ignorable characters (such
+  as a zero-width space or a soft hyphen), a Type 3 glyph procedure nested past four deep, and
+  text shown before any `Tf`, each only where it would show, as for a glyph that cannot be drawn.
+  `PdfBackend::blank_code` judges such a code, and `render_page_with` charges the text it
+  decodes to, control characters included, once per font and code.
+  `undecodable_content_streams` counts a Form XObject nested past 32 deep, which is left
+  unpainted. Text filled with a pattern that is not painted (a mesh or function shading, a tiling
+  pattern nested too deep, or one whose cell was not painted in full) used to vanish; it is
+  painted in black, in Type 3 fonts too, and the pattern is counted in `shadings`. A stencil mask
+  filled with a pattern was painted in the color set before it; it now takes the pattern as a
+  path does, and one that is not painted is counted, painted in black in a Type 3 glyph and not
+  at all elsewhere.
 
 ## 0.52.3 — 2026-11-03
 

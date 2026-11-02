@@ -97,8 +97,11 @@ impl PageSize {
 pub struct RasterGaps {
     /// Text runs whose paint or text clipping could not be fully applied: the font's program
     /// is not embedded and no standard face stands in for it, or is one this does not read, or a code
-    /// selects no glyph in it (in a Type 3 font: no glyph procedure). Glyphs wholly outside
-    /// the raster or its clip are excluded when their declared bounds are known.
+    /// selects no glyph in it (in a Type 3 font: no glyph procedure) or one with no outline
+    /// whose text does not decode or has a character that is neither whitespace nor
+    /// default-ignorable, or a Type 3 glyph procedure is nested more than four deep, or the
+    /// text is shown before any `Tf`. Glyphs wholly outside the raster or its clip are excluded
+    /// when their declared bounds are known.
     pub text_runs: u32,
     /// Images not painted: a codec this does not decode, a color
     /// space it does not convert, or data that did not decode, the soft mask's included.
@@ -108,13 +111,16 @@ pub struct RasterGaps {
     pub inline_images: u32,
     /// Shadings (`sh`) and pattern colors not painted: mesh shadings (types 4–7), function
     /// shadings (type 1), a PostScript calculator function, and a tiling pattern nested more
-    /// than three deep. Axial and radial shadings and tiling patterns are painted.
+    /// than three deep. Axial and radial shadings and tiling patterns are painted. Text in
+    /// such a pattern, or in a tiling pattern whose cell was not painted in full, is painted in
+    /// black and counted here, not in `text_runs`.
     pub shadings: u32,
     /// Soft masks (`/SMask`) not applied as set: the mask group did not decode or is nested
     /// past three deep (what follows is painted unmasked), or its `/TR` transfer function,
     /// which this does not apply, was set (the mask is applied without it).
     pub soft_masks: u32,
-    /// Content streams of the page that could not be decoded; whatever they held is missing.
+    /// Content streams of the page that could not be decoded, and Form XObjects nested more
+    /// than 32 deep; whatever they held is missing.
     pub undecodable_content_streams: u32,
 }
 
@@ -462,6 +468,9 @@ struct Painter<'a> {
     fonts: HashMap<FontResource, Option<LoadedFont>>,
     /// Type 3 fonts looked up so far, by the same key; `None` for a font of any other type.
     type3: HashMap<FontResource, Option<Rc<Type3Font>>>,
+    /// By the same key, whether a code whose glyph has no outline is
+    /// [blank](PdfBackend::blank_code).
+    blank_codes: HashMap<FontResource, HashMap<u32, bool>>,
     /// How many Type 3 glyph procedures are running, one inside another.
     glyph_depth: usize,
     /// How many tiling pattern cells are being painted, one inside another: this painter's.
@@ -493,7 +502,8 @@ enum PatternPaint {
     /// A shading pattern: its shading, and pattern space → device pixels.
     Shading(Shading, Transform),
     /// A tiling pattern: one cell, rendered, and its pixels → device pixels. The cell repeats.
-    Tile(Pixmap, Transform),
+    /// `false` when the cell left something unpainted.
+    Tile(Pixmap, Transform, bool),
 }
 
 /// The paint for one drawing operation. It owns what it paints with, so drawing with it does
@@ -506,11 +516,21 @@ enum PaintSource {
 }
 
 impl PaintSource {
+    /// `false` for a tiling pattern whose cell left something unpainted.
+    fn complete(&self) -> bool {
+        match self {
+            PaintSource::Ready(_) => true,
+            PaintSource::Tile(tile, ..) => {
+                matches!(**tile, PatternPaint::Tile(.., true))
+            }
+        }
+    }
+
     fn paint(&self) -> Paint<'_> {
         match self {
             PaintSource::Ready(paint) => paint.clone(),
             PaintSource::Tile(tile, transform, alpha, blend_mode) => {
-                let PatternPaint::Tile(pixmap, _) = &**tile else {
+                let PatternPaint::Tile(pixmap, ..) = &**tile else {
                     unreachable!("a tile source holds a tile");
                 };
                 Paint {
@@ -553,6 +573,7 @@ impl<'a> Painter<'a> {
             text_matrix: TextMatrix::default(),
             fonts: HashMap::new(),
             type3: HashMap::new(),
+            blank_codes: HashMap::new(),
             glyph_depth: 0,
             pattern_depth: 0,
             tiles: HashMap::new(),
@@ -907,6 +928,7 @@ impl Painter<'_> {
             }
             form_xobject::BEGIN_GROUP => self.begin_group(),
             form_xobject::END_GROUP => self.end_group(),
+            form_xobject::FORM_TOO_DEEP => self.gaps.undecodable_content_streams += 1,
             // Type 3 glyph metrics: `d1` marks the glyph uncolored.
             "d1" if self.glyph_depth > 0 => self.uncolored = true,
             "sh" => {
@@ -949,6 +971,7 @@ impl Painter<'_> {
     /// text matrix as text extraction does.
     fn show(&mut self, items: &[PdfValue]) {
         let Some(key) = self.state.text.font.clone() else {
+            self.show_without_font(items);
             return;
         };
         let text = self.state.text.params.clone();
@@ -978,16 +1001,12 @@ impl Painter<'_> {
         let mut missing = false;
         let mut substituted = false;
         let mut unpainted_color = false;
+        let mut blank_codes = self.blank_codes.remove(&key).unwrap_or_default();
         // Taken out of the cache while its glyphs are painted, put back after.
         let mut loaded = self.fonts.remove(&key).flatten();
 
         'run: for item in items {
-            let codes = if let PdfValue::Str(bytes) = item {
-                bytes.len() as u64
-            } else {
-                1
-            };
-            if !self.admit(codes) {
+            if !self.admit_shown(item) {
                 break 'run;
             }
             let bytes = match item {
@@ -1071,6 +1090,14 @@ impl Painter<'_> {
                                 .pre_concat(glyph_space);
                             unpainted_color |=
                                 !self.paint_glyph(&outline, transform, text.render_mode);
+                        } else if !missing {
+                            let blank = *blank_codes.entry(code).or_insert_with(|| {
+                                let (blank, decoded) =
+                                    self.backend.blank_code(scope, &key.1, chunk);
+                                self.admit(decoded as u64) && blank
+                            });
+                            missing = !blank
+                                && self.missing_glyph_visible(bounds, &text, &measured, true);
                         }
                     }
                     Some(_) => {}
@@ -1084,6 +1111,7 @@ impl Painter<'_> {
                 self.text_matrix.advance(text.glyph_advance(&measured));
             }
         }
+        self.blank_codes.insert(key.clone(), blank_codes);
         self.fonts.insert(key, loaded);
         if missing {
             self.gaps.text_runs += 1;
@@ -1094,6 +1122,32 @@ impl Painter<'_> {
         }
         if substituted {
             self.substituted_text_runs += 1;
+        }
+    }
+
+    /// [`Self::admit`] one item of a text-showing operator: a string's codes, or one.
+    fn admit_shown(&mut self, item: &PdfValue) -> bool {
+        let codes = match item {
+            PdfValue::Str(bytes) => bytes.len() as u64,
+            _ => 1,
+        };
+        self.admit(codes)
+    }
+
+    /// Text shown before any `Tf` has no font to paint with: one run lost, if anything of it
+    /// would show.
+    fn show_without_font(&mut self, items: &[PdfValue]) {
+        for item in items {
+            if !self.admit_shown(item) {
+                return;
+            }
+            if matches!(item, PdfValue::Str(bytes) if !bytes.is_empty()) {
+                let mode = self.state.text.params.render_mode;
+                if mode != 3 && self.visible_bounds(None, (4..=7).contains(&mode)) {
+                    self.gaps.text_runs += 1;
+                }
+                return;
+            }
         }
     }
 
@@ -1185,12 +1239,7 @@ impl Painter<'_> {
         let invisible = matches!(text.render_mode, 3 | 7);
         let mut missing = false;
         for item in items {
-            let codes = if let PdfValue::Str(bytes) = item {
-                bytes.len() as u64
-            } else {
-                1
-            };
-            if !self.admit(codes) {
+            if !self.admit_shown(item) {
                 return;
             }
             let bytes = match item {
@@ -1218,7 +1267,12 @@ impl Painter<'_> {
                         });
                 if !invisible {
                     match font.glyphs.get(&code) {
-                        Some(ops) => self.run_glyph(ops, font.matrix, text, &measured),
+                        Some(ops) => {
+                            if !self.run_glyph(ops, font.matrix, text, &measured) {
+                                missing = missing
+                                    || self.missing_glyph_visible(bounds, text, &measured, false);
+                            }
+                        }
                         None => {
                             missing = missing
                                 || code != 32
@@ -1235,18 +1289,19 @@ impl Painter<'_> {
     }
 
     /// Run one Type 3 glyph procedure with glyph space placed at the current text position.
-    /// What the procedure does to the graphics, text and path state stays inside it.
+    /// What the procedure does to the graphics, text and path state stays inside it. `false`
+    /// when it did not run, being nested too deep.
     fn run_glyph(
         &mut self,
         ops: &[ContentOp],
         matrix: [f32; 6],
         text: &TextParams,
         measured: &GlyphAdvance,
-    ) {
+    ) -> bool {
         // A glyph that shows text in a Type 3 font that shows text ... ends here.
         const MAX_GLYPH_DEPTH: usize = 4;
         if self.glyph_depth >= MAX_GLYPH_DEPTH {
-            return;
+            return false;
         }
         let [ma, mb, mc, md, me, mf] = matrix;
         let glyph_space = self
@@ -1273,6 +1328,7 @@ impl Painter<'_> {
         self.text_matrix = saved_text;
         self.current_form = saved_form;
         self.uncolored = saved_uncolored;
+        true
     }
 
     /// A transparency group begins (ISO 32000-1 §11.6.6). A group painted with an alpha below
@@ -1352,7 +1408,7 @@ impl Painter<'_> {
     }
 
     /// Paint one glyph outline in text render mode `mode` (fill, stroke, or both). `false` when
-    /// part of it was not painted: its color is a pattern this does not paint.
+    /// part of it was painted in black: its color is a pattern this does not paint.
     fn paint_glyph(&mut self, outline: &Path, transform: Transform, mode: i64) -> bool {
         if (4..=7).contains(&mode) && self.admit(outline.points().len() as u64) {
             if let Some(device) = outline.clone().transform(transform) {
@@ -1365,27 +1421,23 @@ impl Painter<'_> {
         let stroke = matches!(mode, 1 | 2 | 5 | 6);
         let mut painted = true;
         if fill {
-            match self.current_paint(false, transform) {
-                Some(source) => {
-                    if self.admit_path(outline, transform) {
-                        self.pixmap.fill_path(
-                            outline,
-                            &source.paint(),
-                            FillRule::Winding,
-                            transform,
-                            active_clip(&self.state),
-                        );
-                    }
-                }
-                None => painted = false,
+            let (source, exact) = self.glyph_paint(false, transform);
+            painted &= exact;
+            if self.admit_path(outline, transform) {
+                self.pixmap.fill_path(
+                    outline,
+                    &source.paint(),
+                    FillRule::Winding,
+                    transform,
+                    active_clip(&self.state),
+                );
             }
         }
         if stroke {
             // The line width is in user space; the glyph path is in glyph space. Stroke in
             // device space with the width the CTM gives it.
-            let Some(source) = self.current_paint(true, Transform::identity()) else {
-                return false;
-            };
+            let (source, exact) = self.glyph_paint(true, Transform::identity());
+            painted &= exact;
             let paint = source.paint();
             if let Some(device) = outline.clone().transform(transform) {
                 let width = self.state.line_width * transform_scale(&self.state.ctm);
@@ -1405,6 +1457,24 @@ impl Painter<'_> {
             }
         }
         painted
+    }
+
+    /// [`Self::current_paint`] for a glyph; where the color is a pattern this does not paint,
+    /// or a tiling pattern whose cell left something unpainted, black, and `false`, so the text
+    /// stays legible.
+    fn glyph_paint(&self, stroke: bool, path_transform: Transform) -> (PaintSource, bool) {
+        match self.current_paint(stroke, path_transform) {
+            Some(source) if source.complete() => (source, true),
+            _ => (self.solid_source(Rgb::BLACK, stroke), false),
+        }
+    }
+
+    /// A solid `color` with the alpha and blend mode of the fill (`stroke` false) or stroke.
+    fn solid_source(&self, color: Rgb, stroke: bool) -> PaintSource {
+        let s = &self.state;
+        let mut paint = solid(color, if stroke { s.stroke_alpha } else { s.fill_alpha });
+        paint.blend_mode = s.blend;
+        PaintSource::Ready(paint)
     }
 
     fn space_named(&self, op: &ContentOp, name: &[u8]) -> PaintSpace {
@@ -1453,31 +1523,46 @@ impl Painter<'_> {
         let path = builder.finish();
         if let Some(path) = &path {
             if let Some(rule) = fill {
-                match self.current_paint(false, self.state.ctm) {
-                    Some(source) => {
-                        if self.admit_path(path, self.state.ctm) {
-                            self.pixmap.fill_path(
-                                path,
-                                &source.paint(),
-                                rule,
-                                self.state.ctm,
-                                active_clip(&self.state),
-                            );
-                        }
+                if let Some(source) = self.path_paint(false, self.state.ctm) {
+                    if self.admit_path(path, self.state.ctm) {
+                        self.pixmap.fill_path(
+                            path,
+                            &source.paint(),
+                            rule,
+                            self.state.ctm,
+                            active_clip(&self.state),
+                        );
                     }
-                    None => self.gaps.shadings += 1,
                 }
             }
             if stroke {
-                match self.current_paint(true, self.state.ctm) {
-                    Some(source) => self.stroke(path, &source.paint()),
-                    None => self.gaps.shadings += 1,
+                if let Some(source) = self.path_paint(true, self.state.ctm) {
+                    self.stroke(path, &source.paint());
                 }
             }
         }
         if let Some(rule) = self.pending_clip.take() {
             self.clip(path.as_ref(), rule);
         }
+    }
+
+    /// The paint for filling (`stroke` false) or stroking what is drawn with `transform`: the
+    /// current path or a stencil mask. In a Type 3 glyph it is [`Self::glyph_paint`]'s;
+    /// elsewhere a pattern this does not paint leaves it unpainted. Either fallback is counted
+    /// in `shadings`.
+    fn path_paint(&mut self, stroke: bool, transform: Transform) -> Option<PaintSource> {
+        if self.glyph_depth > 0 {
+            let (source, exact) = self.glyph_paint(stroke, transform);
+            if !exact {
+                self.gaps.shadings += 1;
+            }
+            return Some(source);
+        }
+        let source = self.current_paint(stroke, transform);
+        if source.is_none() {
+            self.gaps.shadings += 1;
+        }
+        source
     }
 
     /// What the pattern `scn`/`SCN` names (its last operand) paints with, placed by its matrix
@@ -1508,15 +1593,13 @@ impl Painter<'_> {
         if let Some(tile) = self.tiles.get(&key) {
             return tile.clone();
         }
-        let tile = self
-            .render_tile(&pattern, to_device, color)
-            .map(|(pixmap, to_device)| Rc::new(PatternPaint::Tile(pixmap, to_device)));
+        let tile = self.render_tile(&pattern, to_device, color).map(Rc::new);
         self.tiles.insert(key, tile.clone());
         tile
     }
 
     /// Paint one cell of a tiling pattern into a pixmap of its own, at the resolution the
-    /// device shows it with, and say how its pixels land on the device.
+    /// device shows it with, as a [`PatternPaint::Tile`].
     ///
     /// The cell is `x_step` by `y_step` from the `/BBox`'s lower left corner, clipped to the
     /// `/BBox`, as pdf.js paints it: what a cell paints past its step is cut off rather than
@@ -1527,7 +1610,7 @@ impl Painter<'_> {
         pattern: &TilingPattern,
         to_device: Transform,
         color: Rgb,
-    ) -> Option<(Pixmap, Transform)> {
+    ) -> Option<PatternPaint> {
         const MAX_PATTERN_DEPTH: usize = 3;
         const MAX_TILE_SIDE: f32 = 3000.0;
         if self.pattern_depth >= MAX_PATTERN_DEPTH {
@@ -1594,7 +1677,11 @@ impl Painter<'_> {
         }
         self.gaps.absorb(&tile.gaps);
         self.substituted_text_runs += tile.substituted_text_runs;
-        Some((tile.pixmap, tile_to_device))
+        Some(PatternPaint::Tile(
+            tile.pixmap,
+            tile_to_device,
+            tile.gaps.is_empty(),
+        ))
     }
 
     /// The paint for filling (`stroke` false) or stroking with the current color, drawn with
@@ -1616,9 +1703,7 @@ impl Painter<'_> {
         };
         let blend = s.blend;
         if !pattern {
-            let mut paint = solid(color, alpha);
-            paint.blend_mode = blend;
-            return Some(PaintSource::Ready(paint));
+            return Some(self.solid_source(color, stroke));
         }
         let pattern_paint = pattern_paint.as_ref()?;
         let to_path = path_transform.invert()?;
@@ -1629,7 +1714,7 @@ impl Painter<'_> {
                     PaintSource::Ready(paint)
                 })
             }
-            PatternPaint::Tile(_, to_device) => Some(PaintSource::Tile(
+            PatternPaint::Tile(_, to_device, _) => Some(PaintSource::Tile(
                 pattern_paint.clone(),
                 to_path.pre_concat(*to_device),
                 alpha,
@@ -1866,6 +1951,10 @@ impl Painter<'_> {
         // Image space: the unit square, its first row at the top (y = 1).
         let to_unit = Transform::from_row(1.0 / w, 0.0, 0.0, -1.0 / h, 0.0, 1.0);
         let transform = self.state.ctm.pre_concat(to_unit);
+        if image.image_mask && self.state.fill_pattern {
+            self.draw_stencil_in_pattern(&pixmap, transform);
+            return;
+        }
         let paint = PixmapPaint {
             opacity: self.state.fill_alpha,
             blend_mode: self.state.blend,
@@ -1877,6 +1966,53 @@ impl Painter<'_> {
             pixmap.as_ref(),
             &paint,
             transform,
+            active_clip(&self.state),
+        );
+    }
+
+    /// Paint the fill's pattern, as [`Self::path_paint`] gives it, where `stencil`, drawn with
+    /// `transform`, marks: the stencil's coverage on a layer over the pixels it reaches takes
+    /// the pattern's colors there.
+    fn draw_stencil_in_pattern(&mut self, stencil: &Pixmap, transform: Transform) {
+        let (w, h) = (self.pixmap.width() as f32, self.pixmap.height() as f32);
+        let (x0, y0, x1, y1) =
+            Rect::from_xywh(0.0, 0.0, stencil.width() as f32, stencil.height() as f32)
+                .and_then(|r| r.transform(transform))
+                .map_or((0.0, 0.0, 0.0, 0.0), |r| {
+                    (
+                        r.left().floor().clamp(0.0, w),
+                        r.top().floor().clamp(0.0, h),
+                        r.right().ceil().clamp(0.0, w),
+                        r.bottom().ceil().clamp(0.0, h),
+                    )
+                });
+        let place = Transform::from_translate(x0, y0);
+        let Some(source) = self.path_paint(false, place) else {
+            return;
+        };
+        let Some(mut layer) = Pixmap::new((x1 - x0) as u32, (y1 - y0) as u32) else {
+            return;
+        };
+        let coverage = PixmapPaint {
+            quality: FilterQuality::Bilinear,
+            ..PixmapPaint::default()
+        };
+        let to_layer = Transform::from_translate(-x0, -y0).pre_concat(transform);
+        layer.draw_pixmap(0, 0, stencil.as_ref(), &coverage, to_layer, None);
+        let mut paint = source.paint();
+        paint.blend_mode = BlendMode::SourceIn;
+        let area = Rect::from_xywh(0.0, 0.0, x1 - x0, y1 - y0).expect("the layer is a rect");
+        layer.fill_rect(area, &paint, Transform::identity(), None);
+        let onto_page = PixmapPaint {
+            blend_mode: self.state.blend,
+            ..PixmapPaint::default()
+        };
+        self.pixmap.draw_pixmap(
+            x0 as i32,
+            y0 as i32,
+            layer.as_ref(),
+            &onto_page,
+            Transform::identity(),
             active_clip(&self.state),
         );
     }

@@ -67,7 +67,9 @@ public sealed class RenderGaps
 {
     /// <summary>
     /// Text runs not painted, or painted in part: the font is not embedded and no standard
-    /// face stands in for it, or a code selects no glyph in it.
+    /// face stands in for it, a code selects no glyph in it or one with no outline whose text
+    /// does not decode or is more than whitespace and default-ignorable characters, a Type 3
+    /// glyph is nested more than four deep, or the text is shown before any font is set.
     /// </summary>
     [JsonPropertyName("text_runs")]
     public uint TextRuns { get; init; }
@@ -83,7 +85,8 @@ public sealed class RenderGaps
 
     /// <summary>Shadings and pattern colors not painted: mesh and function-based shadings, and a
     /// tiling pattern nested more than three deep. Axial and radial shadings and tiling patterns
-    /// are painted.</summary>
+    /// are painted. Text in such a pattern, or in a tiling pattern whose cell was not painted in
+    /// full, is painted in black and counted here.</summary>
     [JsonPropertyName("shadings")]
     public uint Shadings { get; init; }
 
@@ -93,7 +96,8 @@ public sealed class RenderGaps
     [JsonPropertyName("soft_masks")]
     public uint SoftMasks { get; init; }
 
-    /// <summary>Content streams of the page that could not be decoded.</summary>
+    /// <summary>Content streams of the page that could not be decoded, and Form XObjects nested
+    /// more than 32 deep, which are not painted.</summary>
     [JsonPropertyName("undecodable_content_streams")]
     public uint UndecodableContentStreams { get; init; }
 

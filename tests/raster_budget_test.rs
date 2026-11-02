@@ -6,7 +6,7 @@ mod common;
 
 use std::ops::ControlFlow;
 
-use common::{assemble, stream_object};
+use common::{assemble, stream_object, to_unicode};
 use unpdf::parser::raster::{PageRegion, RasterOptions, RasteredPage};
 use unpdf::parser::PdfParser;
 use unpdf::{Error, Result};
@@ -579,4 +579,66 @@ fn one_missing_run_fits_a_budget_for_one_visibility_scan() {
         outcomes.iter().all(|(_, complete)| *complete),
         "{outcomes:?}"
     );
+}
+
+#[test]
+fn the_text_a_glyph_without_an_outline_decodes_to_is_charged_once_per_code() {
+    const SHOWS: u64 = 1_000;
+    let content = format!(
+        "BT /F1 10 Tf 10 10 Td {}ET",
+        "( ) Tj ".repeat(SHOWS as usize)
+    );
+    let spaces = " ".repeat(100_000);
+    let controls = format!("{} ", "\u{1}".repeat(100_000));
+    for text in [spaces, controls] {
+        let decoded = text.len() as u64;
+        let pdf = square_page(
+            "/Font<</F1 5 0 R>>",
+            content.as_bytes(),
+            vec![
+                b"<</Type/Font/Subtype/TrueType/BaseFont/UnpdfSquare/FirstChar 32/LastChar 32\
+                  /Widths[250]/Encoding/WinAnsiEncoding/FontDescriptor 6 0 R/ToUnicode 8 0 R>>"
+                    .to_vec(),
+                b"<</Type/FontDescriptor/FontName/UnpdfSquare/Flags 32/FontBBox[0 0 1000 800]\
+                  /FontFile2 7 0 R>>"
+                    .to_vec(),
+                stream(include_bytes!("fixtures/square.ttf")),
+                to_unicode(1, &[(0x20, &text)]),
+            ],
+        );
+        let charged: u64 = charges(&pdf, &PT).iter().sum();
+        assert_eq!(charged, PAGE + OP * (4 + 2 * SHOWS) + decoded, "{decoded}");
+        let mut spent = 0;
+        let painted = paint(&pdf, &PT, &mut |work| {
+            spent += work;
+            if spent > PAGE + decoded / 2 {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        });
+        assert!(
+            matches!(painted, Err(Error::RasterStopped)),
+            "{decoded}: {painted:?}"
+        );
+    }
+}
+
+#[test]
+fn text_shown_before_any_font_charges_each_item_it_reads() {
+    const EMPTY: u64 = 100_000;
+    let content = format!("BT [{}(A)] TJ ET", "() 0 ".repeat(EMPTY as usize / 2));
+    let pdf = square_page("", content.as_bytes(), vec![]);
+    let charged: u64 = charges(&pdf, &PT).iter().sum();
+    assert_eq!(charged, PAGE + OP * 3 + EMPTY + 1);
+    let mut spent = 0;
+    let painted = paint(&pdf, &PT, &mut |work| {
+        spent += work;
+        if spent > PAGE + 100 {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
+    });
+    assert!(matches!(painted, Err(Error::RasterStopped)), "{painted:?}");
 }

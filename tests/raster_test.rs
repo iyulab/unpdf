@@ -3,8 +3,8 @@
 
 mod common;
 
-use common::{assemble, page_pdf, page_pdf_with_xobjects, stream_object};
-use unpdf::parser::raster::{PageRegion, RasterOptions, RasteredPage};
+use common::{assemble, page_pdf, page_pdf_with_xobjects, stream_object, to_unicode};
+use unpdf::parser::raster::{PageRegion, RasterGaps, RasterOptions, RasteredPage};
 use unpdf::parser::PdfParser;
 
 const A4: &str = "/MediaBox[0 0 595 842]";
@@ -2767,4 +2767,487 @@ fn invisible_type3_glyphs_advance_without_painting_or_reporting_gaps() {
         assert_eq!(px(&page, 220, 842 - 120), [0, 0, 0], "{content}");
         assert_eq!(px(&page, 310, 842 - 110), RED, "{content}");
     }
+}
+
+/// `SQUARE_TTF` as a simple font whose codes 32 and 33 select the glyph that has no outline;
+/// `/ToUnicode` gives `texts` for them (none: the encoding's own space).
+fn blank_glyph_page(texts: &[(u32, &str)], content: &str) -> RasteredPage {
+    let widths = format!("250{} 1000", " 0".repeat(32));
+    let mut extra = vec![
+        b"<</Type/FontDescriptor/FontName/UnpdfSquare/Flags 32/FontBBox[0 0 1000 800]\
+           /ItalicAngle 0/Ascent 800/Descent -200/CapHeight 800/StemV 80/FontFile2 7 0 R>>"
+            .to_vec(),
+        font_file("", SQUARE_TTF),
+    ];
+    let to_unicode_entry = if texts.is_empty() {
+        ""
+    } else {
+        extra.push(to_unicode(1, texts));
+        "/ToUnicode 8 0 R"
+    };
+    let font = format!(
+        "<</Type/Font/Subtype/TrueType/BaseFont/UnpdfSquare/FirstChar 32/LastChar 65\
+          /Widths[{widths}]/Encoding<</BaseEncoding/WinAnsiEncoding/Differences[33/space]>>\
+          /FontDescriptor 6 0 R{to_unicode_entry}>>"
+    );
+    render(&font_page(&font, extra, content.as_bytes()), &PT)
+}
+
+#[test]
+fn a_glyph_without_an_outline_is_reported_unless_its_text_is_blank() {
+    for (texts, prefix, mode, position, expected) in [
+        (&[][..], "", 0, "100 100", 0),
+        (&[(32, " ")], "", 0, "100 100", 0),
+        (&[(32, " \u{a0}")], "", 0, "100 100", 0),
+        (&[(32, "\u{200b}")], "", 0, "100 100", 0),
+        (&[(32, "\u{ad}")], "", 0, "100 100", 0),
+        (&[(32, "\u{200d}\u{fe0f}\u{e0001}")], "", 0, "100 100", 0),
+        (&[(32, "\u{1}")], "", 0, "100 100", 0),
+        (&[(32, "X")], "", 0, "100 100", 1),
+        (&[(32, "X ")], "", 0, "100 100", 1),
+        (&[(32, "X")], "", 3, "100 100", 0),
+        (&[(32, "X")], "", 7, "100 100", 1),
+        (&[(32, "X")], "W n", 0, "100 100", 0),
+        (&[(32, "X")], "", 0, "700 100", 0),
+        (&[(32, "X")], "", 0, "580 100", 1),
+    ] {
+        let content = format!("{prefix} BT /F1 50 Tf {mode} Tr {position} Td ( ) Tj ET");
+        let page = blank_glyph_page(texts, &content);
+        assert_eq!(page.gaps.text_runs, expected, "{texts:?}: {content}");
+    }
+    for (texts, shown, expected) in [
+        (&[(32, "X")][..], "[( ) 13000 ( )] TJ", 1),
+        (&[(32, " "), (33, "X")], "( !) Tj", 1),
+    ] {
+        let content = format!("BT /F1 50 Tf 100 100 Td {shown} ET");
+        let page = blank_glyph_page(texts, &content);
+        assert_eq!(page.gaps.text_runs, expected, "{texts:?}: {content}");
+    }
+    let page = blank_glyph_page(
+        &[(32, "X")],
+        "BT /F1 50 Tf 100 100 Td [( A) -1000 ( )] TJ ET",
+    );
+    assert_eq!(page.gaps.text_runs, 1, "a run is counted once");
+    assert!(inked(&page, 120, 150, 842 - 140, 842 - 100), "A is painted");
+}
+
+/// The `.notdef` of `SQUARE_TTF`, which has no outline and no character in its `cmap`, under
+/// `Identity-H`.
+const UNREAD_NOTDEF: &str = "<0000>";
+/// Its space, which has no outline and the character its `cmap` gives.
+const SPACE: &str = "<0001>";
+
+/// `SQUARE_TTF` as an `Identity-H` font whose glyphs are `dw` wide, with `/ToUnicode` giving
+/// `texts` to its codes (none: no `/ToUnicode`).
+fn identity_square_page(dw: u32, texts: &[(u32, &str)], content: &str) -> RasteredPage {
+    let mut extra = vec![
+        format!(
+            "<</Type/Font/Subtype/CIDFontType2/BaseFont/UnpdfSquare\
+              /CIDSystemInfo<</Registry(Adobe)/Ordering(Identity)/Supplement 0>>\
+              /FontDescriptor 7 0 R/DW {dw}/CIDToGIDMap/Identity>>"
+        )
+        .into_bytes(),
+        b"<</Type/FontDescriptor/FontName/UnpdfSquare/Flags 4/FontBBox[0 0 1000 800]\
+           /ItalicAngle 0/Ascent 800/Descent -200/CapHeight 800/StemV 80/FontFile2 8 0 R>>"
+            .to_vec(),
+        font_file("", SQUARE_TTF),
+    ];
+    let to_unicode_entry = if texts.is_empty() {
+        ""
+    } else {
+        extra.push(to_unicode(2, texts));
+        "/ToUnicode 9 0 R"
+    };
+    let font = format!(
+        "<</Type/Font/Subtype/Type0/BaseFont/UnpdfSquare/Encoding/Identity-H\
+          /DescendantFonts[6 0 R]{to_unicode_entry}>>"
+    );
+    render(&font_page(&font, extra, content.as_bytes()), &PT)
+}
+
+#[test]
+fn a_glyph_without_an_outline_whose_code_does_not_decode_is_reported() {
+    let space_only = [(1, " ")];
+    for (dw, texts, shown, mode, expected) in [
+        (1000, &[][..], SPACE, 0, 0),
+        (1000, &[], UNREAD_NOTDEF, 0, 1),
+        (1000, &[], UNREAD_NOTDEF, 3, 0),
+        (1000, &space_only, UNREAD_NOTDEF, 0, 1),
+        (0, &[], UNREAD_NOTDEF, 0, 1),
+        (0, &space_only, UNREAD_NOTDEF, 0, 1),
+        (0, &space_only, SPACE, 0, 0),
+    ] {
+        let content = format!("BT /F1 50 Tf {mode} Tr 100 100 Td {shown} Tj ET");
+        let page = identity_square_page(dw, texts, &content);
+        assert_eq!(
+            page.gaps.text_runs, expected,
+            "/DW {dw}, {texts:?}: {content}"
+        );
+    }
+}
+
+#[test]
+fn text_shown_before_any_font_is_reported() {
+    for (content, expected) in [
+        ("BT 100 100 Td (Hi) Tj ET", 1),
+        ("BT 100 100 Td [(Hi) -250 (there)] TJ ET", 1),
+        ("BT 100 100 Td (Hi) ' ET", 1),
+        ("BT 100 100 Td 0 0 (Hi) \" ET", 1),
+        ("BT 100 100 Td (Hi) Tj (Hi) Tj ET", 2),
+        ("0 0 10 10 re W n BT 100 100 Td (Hi) Tj ET", 1),
+        ("BT 3 Tr 100 100 Td (Hi) Tj ET", 0),
+        ("W n BT 100 100 Td (Hi) Tj ET", 0),
+        ("BT 100 100 Td () Tj [-250] TJ ET", 0),
+        ("BT 100 100 Td (A) Tj /F1 50 Tf (A) Tj ET", 1),
+        ("q BT /F1 50 Tf ET Q BT 100 100 Td (A) Tj ET", 1),
+        ("BT /F1 50 Tf 100 100 Td (A) Tj ET", 0),
+    ] {
+        let pdf = unpaintable_text(MissingText::Glyph, "", content.as_bytes());
+        let page = render(&pdf, &PT);
+        assert_eq!(page.gaps.text_runs, expected, "{content}");
+    }
+}
+
+#[test]
+fn text_shown_before_any_font_in_a_clipping_mode_is_judged_by_the_clip_alone() {
+    for (mode, expected) in [(0, 0), (4, 1), (7, 1)] {
+        let content = format!("/Mk gs BT {mode} Tr 100 100 Td (B) Tj ET");
+        let mut objects = unpaintable_objects(MissingText::Glyph, "", content.as_bytes());
+        objects[2] = format!(
+            "<</Type/Page/Parent 2 0 R{A4}/Resources\
+            <</ExtGState<</Mk<</SMask<</S/Alpha/G 10 0 R>>>>>>>>/Contents 4 0 R>>"
+        )
+        .into_bytes();
+        objects.push(stream_object(
+            "<</Type/XObject/Subtype/Form/BBox[0 0 595 842]\
+            /Group<</S/Transparency>>/Length 0>>",
+            b"",
+        ));
+        let page = render(&assemble(objects), &PT);
+        assert_eq!(page.gaps.text_runs, expected, "{content}");
+    }
+}
+
+/// A page with `resources` painting `content`, then `extra` as objects from 5.
+fn page_with_objects(resources: &str, content: &[u8], extra: Vec<Vec<u8>>) -> Vec<u8> {
+    let mut objects = vec![
+        b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+        format!("<</Type/Page/Parent 2 0 R{A4}/Resources<<{resources}>>/Contents 4 0 R>>")
+            .into_bytes(),
+        stream_object(&format!("<</Length {}>>", content.len()), content),
+    ];
+    objects.extend(extra);
+    assemble(objects)
+}
+
+/// A page showing `content` with `/T0`, a Type 3 font whose glyph `A` paints a square and
+/// shows `A` in `/T1`, and so on through `fonts` fonts.
+fn type3_chain_pdf(fonts: usize, content: &[u8]) -> Vec<u8> {
+    let names: String = (0..fonts).map(|i| format!("/T{i} {} 0 R", 5 + i)).collect();
+    let font = |i: usize| {
+        format!(
+            "<</Type/Font/Subtype/Type3/FontBBox[0 0 1000 1000]\
+              /FontMatrix[0.001 0 0 0.001 0 0]/CharProcs<</A {} 0 R>>\
+              /Encoding<</Type/Encoding/Differences[65/A]>>\
+              /FirstChar 65/LastChar 65/Widths[1000]/Resources<<>>>>",
+            5 + fonts + i
+        )
+        .into_bytes()
+    };
+    let glyph = |i: usize| {
+        let next = if i + 1 < fonts {
+            format!("BT /T{} 500 Tf (A) Tj ET", i + 1)
+        } else {
+            String::new()
+        };
+        let ops = format!("1000 0 d0 0 0 500 500 re f {next}");
+        stream_object(&format!("<</Length {}>>", ops.len()), ops.as_bytes())
+    };
+    let objects = (0..fonts).map(font).chain((0..fonts).map(glyph)).collect();
+    page_with_objects(&format!("/Font<<{names}>>"), content, objects)
+}
+
+#[test]
+fn a_type3_glyph_past_the_nesting_limit_is_reported() {
+    for (fonts, prefix, mode, expected) in [
+        (4, "", 0, 0),
+        (5, "", 0, 1),
+        (5, "W n", 0, 0),
+        (5, "", 3, 0),
+    ] {
+        let content = format!("{prefix} BT /T0 50 Tf {mode} Tr 100 100 Td (A) Tj ET");
+        let page = render(&type3_chain_pdf(fonts, content.as_bytes()), &PT);
+        assert_eq!(page.gaps.text_runs, expected, "{fonts} fonts: {content}");
+    }
+}
+
+/// `depth` transparency-group forms, objects `first` on: each paints the next as `/F`, the
+/// last paints the page red (and, `cyclic`, itself).
+fn form_chain(first: usize, depth: usize, cyclic: bool) -> Vec<Vec<u8>> {
+    (0..depth)
+        .map(|i| {
+            let last = i + 1 == depth;
+            let next = if last { first + i } else { first + i + 1 };
+            let body = match (last, cyclic) {
+                (false, _) => "/F Do",
+                (true, false) => "1 0 0 rg 0 0 595 842 re f",
+                (true, true) => "1 0 0 rg 0 0 595 842 re f /F Do",
+            };
+            stream_object(
+                &format!(
+                    "<</Type/XObject/Subtype/Form/BBox[0 0 595 842]/Group<</S/Transparency>>\
+                      /Resources<</XObject<</F {next} 0 R>>>>/Length {}>>",
+                    body.len()
+                ),
+                body.as_bytes(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn forms_nested_past_the_limit_are_reported_not_painted() {
+    for (depth, cyclic, expected) in [(32, false, 0), (33, false, 1), (3, true, 0)] {
+        let pdf = page_with_objects(
+            "/XObject<</F 5 0 R>>",
+            b"/F Do",
+            form_chain(5, depth, cyclic),
+        );
+        let page = render(&pdf, &PT);
+        assert_eq!(
+            page.gaps.undecodable_content_streams, expected,
+            "{depth} deep, cyclic {cyclic}"
+        );
+        assert_eq!(near(px(&page, 300, 400), RED), expected == 0, "{depth}");
+    }
+}
+
+#[test]
+fn forms_nested_past_the_limit_in_a_pattern_cell_or_soft_mask_are_reported() {
+    let cell = b"/F Do";
+    let pattern = stream_object(
+        &format!(
+            "<</Type/Pattern/PatternType 1/PaintType 1/TilingType 1/BBox[0 0 595 842]\
+              /XStep 595/YStep 842/Resources<</XObject<</F 6 0 R>>>>/Length {}>>",
+            cell.len()
+        ),
+        cell,
+    );
+    let mut with_pattern = vec![pattern];
+    with_pattern.extend(form_chain(6, 33, false));
+    let tiled = page_with_objects(
+        "/Pattern<</P0 5 0 R>>",
+        b"/Pattern cs /P0 scn 0 0 595 842 re f",
+        with_pattern,
+    );
+    let masked = page_with_objects(
+        "/ExtGState<</Mk<</SMask<</S/Alpha/G 5 0 R>>>>>>",
+        b"/Mk gs 0 0 1 rg 0 0 595 842 re f",
+        form_chain(5, 33, false),
+    );
+    for (kind, pdf) in [("pattern cell", tiled), ("soft mask", masked)] {
+        let page = render(&pdf, &PT);
+        assert_eq!(page.gaps.undecodable_content_streams, 1, "{kind}");
+    }
+}
+
+#[test]
+fn a_form_cut_by_the_nesting_limit_leaves_its_form_s_pattern_space_alone() {
+    let mut forms = form_chain(5, 33, false);
+    let body = b"1 0 0 1 200 0 cm /F Do /Pattern cs /P0 scn 0 0 595 842 re f";
+    forms[31] = stream_object(
+        &format!(
+            "<</Type/XObject/Subtype/Form/BBox[0 0 595 842]\
+              /Resources<</XObject<</F 37 0 R>>>>/Length {}>>",
+            body.len()
+        ),
+        body,
+    );
+    let pdf = page_with_objects(
+        &format!(
+            "/XObject<</F 5 0 R>>/Pattern<</P0<</PatternType 2/Shading<</ShadingType 2\
+              /ColorSpace/DeviceRGB/Coords[0 0 595 0]/Function {RED_TO_BLUE}\
+              /Extend[true true]>>>>>>"
+        ),
+        b"/F Do",
+        forms,
+    );
+    let page = render(&pdf, &PT);
+    assert_eq!(page.gaps.undecodable_content_streams, 1);
+    assert!(
+        near(px(&page, 300, 400), [127, 0, 128]),
+        "{:?}",
+        px(&page, 300, 400)
+    );
+}
+
+const FILLED_GLYPH: &[u8] = b"1000 0 0 -200 1000 800 d1 0 0 1000 800 re f";
+const STROKED_GLYPH: &[u8] = b"1000 0 0 -200 1000 800 d1 80 w 0 0 1000 800 re S";
+
+/// A page whose `/P0` is a mesh shading pattern, `/P1` a tiling pattern whose cell fills
+/// itself with `/P1`, `/P2` one whose cell paints only forms nested past the limit, and whose
+/// `/A` is half-transparent in its fill only, showing `content` with `/F1`, the square font,
+/// and `/F2`, a Type 3 font whose `A` is `glyph`.
+fn pattern_text_page(content: &str, glyph: &[u8]) -> RasteredPage {
+    let mut objects = unpaintable_objects(MissingText::Glyph, "", content.as_bytes());
+    objects[2] = format!(
+        "<</Type/Page/Parent 2 0 R{A4}/Resources<</Font<</F1 5 0 R/F2 8 0 R>>\
+          /ExtGState<</A<</ca 0.5/CA 1>>>>\
+          /Pattern<</P0<</PatternType 2/Shading<</ShadingType 4/ColorSpace/DeviceRGB>>>>\
+          /P1 10 0 R/P2 11 0 R>>>>/Contents 4 0 R>>"
+    )
+    .into_bytes();
+    objects[8] = stream_object(&format!("<</Length {}>>", glyph.len()), glyph);
+    let tiling = |resources: &str, cell: &[u8]| {
+        stream_object(
+            &format!(
+                "<</Type/Pattern/PatternType 1/PaintType 1/TilingType 1/BBox[0 0 10 10]\
+                  /XStep 10/YStep 10/Resources<<{resources}>>/Length {}>>",
+                cell.len()
+            ),
+            cell,
+        )
+    };
+    objects.push(tiling(
+        "/Pattern<</P1 10 0 R>>",
+        b"/Pattern cs /P1 scn 0 0 10 10 re f",
+    ));
+    objects.push(tiling("/XObject<</F 12 0 R>>", b"/F Do"));
+    objects.extend(form_chain(12, 33, false));
+    render(&assemble(objects), &PT)
+}
+
+#[test]
+fn text_in_a_pattern_this_does_not_paint_stays_legible_in_black() {
+    for font in ["F1", "F2"] {
+        let page = pattern_text_page(
+            &format!(
+                "1 0 0 rg /Pattern cs /P0 scn BT /{font} 50 Tf 100 100 Td (A) Tj ET 300 300 20 20 re f"
+            ),
+            FILLED_GLYPH,
+        );
+        assert_eq!(px(&page, 120, 842 - 120), [0, 0, 0], "{font}");
+        assert_eq!(page.gaps.text_runs, 0, "{font}");
+        assert_eq!(page.gaps.shadings, 2, "{font}: {:?}", page.gaps);
+        assert_eq!(px(&page, 310, 842 - 310), WHITE, "{font}: pattern stays");
+    }
+    for (font, mode, glyph, edge) in [
+        ("F1", "1 Tr", FILLED_GLYPH, 105),
+        ("F2", "", STROKED_GLYPH, 100),
+    ] {
+        let page = pattern_text_page(
+            &format!(
+                "1 0 0 RG /Pattern CS /P0 SCN 4 w BT /{font} 50 Tf {mode} 100 100 Td (A) Tj ET \
+                 300 300 20 20 re S"
+            ),
+            glyph,
+        );
+        assert_eq!(px(&page, edge, 842 - 120), [0, 0, 0], "{font}: stroked");
+        assert_eq!(px(&page, 120, 842 - 120), WHITE, "{font}: not filled");
+        assert_eq!(page.gaps.shadings, 2, "{font}: {:?}", page.gaps);
+    }
+}
+
+#[test]
+fn text_in_a_tiling_pattern_whose_cell_is_not_painted_in_full_stays_legible_in_black() {
+    let nested = RasterGaps {
+        shadings: 2,
+        ..RasterGaps::default()
+    };
+    let cut_forms = RasterGaps {
+        shadings: 1,
+        undecodable_content_streams: 1,
+        ..RasterGaps::default()
+    };
+    for (pattern, gaps) in [("P1", nested), ("P2", cut_forms)] {
+        for font in ["F1", "F2"] {
+            let page = pattern_text_page(
+                &format!("1 g /Pattern cs /{pattern} scn BT /{font} 50 Tf 100 100 Td (A) Tj ET"),
+                FILLED_GLYPH,
+            );
+            assert_eq!(px(&page, 120, 842 - 120), [0, 0, 0], "{pattern} {font}");
+            assert_eq!(page.gaps, gaps, "{pattern} {font}");
+        }
+    }
+}
+
+#[test]
+fn black_text_for_a_pattern_keeps_the_alpha_of_its_fill_or_stroke() {
+    let filled = pattern_text_page(
+        "/A gs /Pattern cs /P0 scn BT /F1 50 Tf 100 100 Td (A) Tj ET",
+        FILLED_GLYPH,
+    );
+    assert!(near(px(&filled, 120, 842 - 120), [128; 3]), "half black");
+    let stroked = pattern_text_page(
+        "/A gs /Pattern CS /P0 SCN 4 w BT /F1 50 Tf 1 Tr 100 100 Td (A) Tj ET",
+        FILLED_GLYPH,
+    );
+    assert_eq!(px(&stroked, 105, 842 - 120), [0, 0, 0], "solid black");
+}
+
+#[test]
+fn a_type3_glyph_in_its_own_color_ignores_a_pattern_it_does_not_use() {
+    let page = pattern_text_page(
+        "/Pattern cs /P0 scn BT /F2 50 Tf 100 100 Td (A) Tj ET",
+        b"1000 0 d0 0 1 0 rg 0 0 500 1000 re f",
+    );
+    assert!(
+        near(px(&page, 110, 842 - 120), [0, 255, 0]),
+        "{:?}",
+        px(&page, 110, 842 - 120)
+    );
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+}
+
+/// `prefix`, then an 8 x 1 inline stencil mask whose left half marks, drawn with `cm`.
+fn inline_stencil(prefix: &str, cm: &str) -> Vec<u8> {
+    let mut content = format!("{prefix} q {cm} cm BI /W 8 /H 1 /IM true ID ").into_bytes();
+    content.push(0b0000_1111);
+    content.extend_from_slice(b" EI Q");
+    content
+}
+
+#[test]
+fn a_stencil_mask_in_a_pattern_this_does_not_paint_is_reported() {
+    let glyph = inline_stencil("1000 0 0 -200 1000 800 d1", "2000 0 0 800 0 0");
+    let page = pattern_text_page(
+        "1 g /Pattern cs /P0 scn BT /F2 50 Tf 100 100 Td (A) Tj ET",
+        &glyph,
+    );
+    assert!(near(px(&page, 125, 842 - 120), [0, 0, 0]), "glyph in black");
+    assert!(near(px(&page, 175, 842 - 120), WHITE), "unmarked");
+    assert_eq!(page.gaps.text_runs, 0);
+    assert_eq!(page.gaps.shadings, 1, "{:?}", page.gaps);
+    let content = inline_stencil("0 0 1 rg /Pattern cs /P0 scn", "100 0 0 50 300 300");
+    let page = pattern_text_page(std::str::from_utf8(&content).unwrap(), FILLED_GLYPH);
+    assert_eq!(
+        px(&page, 325, 842 - 325),
+        WHITE,
+        "outside a glyph: unpainted"
+    );
+    assert_eq!(page.gaps.shadings, 1, "{:?}", page.gaps);
+}
+
+#[test]
+fn a_stencil_mask_paints_a_shading_pattern_where_it_marks() {
+    let resources = format!(
+        "/Resources<</Pattern<</P0<</PatternType 2/Shading<</ShadingType 2/ColorSpace/DeviceRGB\
+          /Coords[100 0 300 0]/Function {RED_TO_BLUE}/Extend[true true]>>>>>>>>"
+    );
+    let content = inline_stencil("1 g /Pattern cs /P0 scn", "400 0 0 100 100 100");
+    let page = render(&page_pdf(&resources, A4, &content), &PT);
+    for (x, color) in [
+        (150, [191, 0, 64]),
+        (200, [128, 0, 128]),
+        (250, [64, 0, 191]),
+        (450, WHITE),
+    ] {
+        assert!(
+            near(px(&page, x, 842 - 150), color),
+            "{x}: {:?}",
+            px(&page, x, 692)
+        );
+    }
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
 }
