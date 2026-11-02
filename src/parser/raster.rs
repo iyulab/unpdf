@@ -101,7 +101,7 @@ pub struct RasterGaps {
     /// the raster or its clip are excluded when their declared bounds are known.
     pub text_runs: u32,
     /// Images not painted: a codec this does not decode, a color
-    /// space it does not convert, or data that did not decode.
+    /// space it does not convert, or data that did not decode, the soft mask's included.
     pub images: u32,
     /// Inline images (`BI … EI`) not painted: a dictionary that does not read. One that reads
     /// but is in a codec or color space this does not decode is counted in `images`.
@@ -1882,7 +1882,8 @@ impl Painter<'_> {
     }
 
     /// An image as a premultiplied pixmap: its samples, its soft mask as alpha, or — a
-    /// stencil mask — the fill color where the stencil marks.
+    /// stencil mask — the fill color where the stencil marks. `None` when it or its soft mask
+    /// does not decode.
     fn image_pixmap(&self, image: &RawXObject) -> Option<Pixmap> {
         let (w, h) = (image.width?, image.height?);
         if w == 0 || h == 0 || !png_encode::decodable(w, h, 4) {
@@ -1928,7 +1929,8 @@ impl Painter<'_> {
         // The image's soft mask gives each pixel's opacity. It covers the same unit square at
         // a resolution of its own (ISO 32000-1 §11.6.5.3), so each pixel takes the mask sample
         // its centre falls on.
-        if let Some((mw, mh, alpha)) = image.smask.as_deref().and_then(mask_alpha) {
+        if let Some(smask) = image.smask.as_deref() {
+            let (mw, mh, alpha) = mask_alpha(smask)?;
             let pixels = rgba.as_chunks_mut::<4>().0;
             for y in 0..h as usize {
                 let row = (2 * y + 1) * mh as usize / (2 * h as usize) * mw as usize;
@@ -2015,25 +2017,22 @@ fn downsample(pixmap: Pixmap, target: (f32, f32)) -> Pixmap {
 fn decode_samples(image: &RawXObject, w: u32, h: u32) -> Option<(PngColorType, Vec<u8>)> {
     match image.filter.as_deref() {
         Some("DCTDecode") => {
-            // A gray JPEG in a one-component space (gray, or a tint) holds that space's
-            // samples, `/Decode` included -- not brightnesses.
-            if let Some(color) = image
-                .color
-                .as_ref()
-                .filter(|c| c.components() == 1 && !matches!(c, ImageColorSpace::Indexed { .. }))
-            {
-                if let Some(samples) = decode_jpeg_luma(&image.data, w, h) {
-                    return png_encode::image_pixels(
-                        w,
-                        h,
-                        8,
-                        color,
-                        image.decode.as_deref(),
-                        &samples,
-                    );
+            let color = image.color.as_ref()?;
+            let decode = image.decode.as_deref();
+            let transform = match image.codec_parms {
+                Some(CodecParms::Dct { color_transform }) => Some(color_transform),
+                _ => None,
+            };
+            return match color {
+                ImageColorSpace::Rgb | ImageColorSpace::Cmyk => {
+                    decode_jpeg(&image.data, w, h, color.components(), transform, decode)
                 }
-            }
-            return decode_jpeg(&image.data, w, h, image.decode.as_deref());
+                _ => {
+                    let components = color.components();
+                    let samples = decode_jpeg_samples(&image.data, w, h, components, transform)?;
+                    png_encode::image_pixels(w, h, 8, color, decode, &samples)
+                }
+            };
         }
         Some("JPXDecode") => return decode_jpx(image, w, h),
         _ => {}
@@ -2076,7 +2075,8 @@ fn plain_samples(image: &RawXObject, w: u32, h: u32) -> Option<std::borrow::Cow<
     }
 }
 
-/// Decode a JPEG to gray or RGB pixels of the size the image dictionary declares.
+/// Decode a JPEG of `components` components to RGB pixels of the size the image dictionary
+/// declares, three of them turned back from YCbCr as [`jpeg_decoding`] says.
 ///
 /// A four-component JPEG (`DeviceCMYK`) is read as the ink amounts it holds, `/Decode` applied
 /// (`[1 0 1 0 1 0 1 0]` is how a PDF says Photoshop's inverted CMYK is to be read), and
@@ -2087,6 +2087,8 @@ fn decode_jpeg(
     data: &[u8],
     w: u32,
     h: u32,
+    components: usize,
+    color_transform: Option<bool>,
     decode: Option<&[f32]>,
 ) -> Option<(PngColorType, Vec<u8>)> {
     use zune_jpeg::zune_core::bytestream::ZCursor;
@@ -2107,10 +2109,18 @@ fn decode_jpeg(
     let mut decoder =
         zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(data), options(ColorSpace::RGB));
     decoder.decode_headers().ok()?;
-    let input = decoder.input_colorspace()?;
-    let four = matches!(input, ColorSpace::CMYK | ColorSpace::YCCK);
-    if four {
-        decoder = zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(data), options(input));
+    if usize::from(decoder.info()?.components) != components {
+        return None;
+    }
+    let (out, transformed) = jpeg_decoding(
+        data,
+        decoder.input_colorspace()?,
+        components,
+        color_transform,
+    )?;
+    let four = components == 4;
+    if out != ColorSpace::RGB {
+        decoder = zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(data), options(out));
     }
     let pixels = decoder.decode().ok()?;
     let info = decoder.info()?;
@@ -2132,7 +2142,7 @@ fn decode_jpeg(
     let pairs = [pair(0), pair(1), pair(2), pair(3)];
     let mut rgb = Vec::with_capacity(count * 3);
     for px in pixels.as_chunks::<4>().0 {
-        let ink: [f32; 4] = if input == ColorSpace::YCCK {
+        let ink: [f32; 4] = if transformed {
             let (y, cb, cr) = (
                 f32::from(px[0]),
                 f32::from(px[1]) - 128.0,
@@ -2187,29 +2197,127 @@ fn color_key_hits(image: &RawXObject, w: u32, h: u32) -> Option<Vec<bool>> {
     Some(hits)
 }
 
-/// The samples of a one-component JPEG, `None` for any other.
-fn decode_jpeg_luma(data: &[u8], w: u32, h: u32) -> Option<Vec<u8>> {
+/// The samples of a JPEG of `components` components as the DCT filter gives them: three turned
+/// back from YCbCr as [`jpeg_decoding`] says, one or four as they are stored. `None` for a
+/// JPEG of another number of components, or of four its encoder turned into YCCK.
+fn decode_jpeg_samples(
+    data: &[u8],
+    w: u32,
+    h: u32,
+    components: usize,
+    color_transform: Option<bool>,
+) -> Option<Vec<u8>> {
     use zune_jpeg::zune_core::bytestream::ZCursor;
     use zune_jpeg::zune_core::colorspace::ColorSpace;
     use zune_jpeg::zune_core::options::DecoderOptions;
 
-    if !png_encode::decodable(w, h, 1) {
+    if !matches!(components, 1 | 3 | 4) || !png_encode::decodable(w, h, components as u32) {
         return None;
     }
-    let options = DecoderOptions::default()
-        .jpeg_set_out_colorspace(ColorSpace::Luma)
-        .set_max_width(w as usize)
-        .set_max_height(h as usize);
-    let mut decoder = zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(data), options);
+    let options = |out: ColorSpace| {
+        DecoderOptions::default()
+            .jpeg_set_out_colorspace(out)
+            .set_max_width(w as usize)
+            .set_max_height(h as usize)
+    };
+    let mut decoder =
+        zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(data), options(ColorSpace::RGB));
     decoder.decode_headers().ok()?;
-    if decoder.input_colorspace()? != ColorSpace::Luma {
+    if usize::from(decoder.info()?.components) != components {
         return None;
+    }
+    let (out, transformed) = jpeg_decoding(
+        data,
+        decoder.input_colorspace()?,
+        components,
+        color_transform,
+    )?;
+    if components == 4 && transformed {
+        return None;
+    }
+    if out != ColorSpace::RGB {
+        decoder = zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(data), options(out));
     }
     let samples = decoder.decode().ok()?;
     let info = decoder.info()?;
     ((u32::from(info.width), u32::from(info.height)) == (w, h)
-        && samples.len() == w as usize * h as usize)
+        && samples.len() == w as usize * h as usize * components)
         .then_some(samples)
+}
+
+/// How to decode `data`, a JPEG of `components` components its decoder reads as `input`: what
+/// into, for its samples to come out as stored and three turned back from YCbCr, and whether
+/// its encoder turned RGB into YCbCr or CMYK into YCCK (ISO 32000-1 Table 13) -- as its last
+/// Adobe marker says, else as `/ColorTransform` says, else for three components only. `None`
+/// when its markers cannot be followed to its first scan, when an Adobe marker follows that
+/// scan, or when the decoder reads the components otherwise than those markers say, as when
+/// it reads three named R, G and B as RGB though a marker calls them YCbCr, or misses a marker.
+fn jpeg_decoding(
+    data: &[u8],
+    input: zune_jpeg::zune_core::colorspace::ColorSpace,
+    components: usize,
+    color_transform: Option<bool>,
+) -> Option<(zune_jpeg::zune_core::colorspace::ColorSpace, bool)> {
+    use zune_jpeg::zune_core::colorspace::ColorSpace;
+    let marker = adobe_transform(data)?;
+    let read_as_marked = match (components, marker) {
+        (3, Some(0)) => matches!(input, ColorSpace::CMYK | ColorSpace::RGB),
+        (3, Some(_)) => input == ColorSpace::YCbCr,
+        (3, None) => matches!(input, ColorSpace::YCbCr | ColorSpace::RGB),
+        (4, Some(2)) => input == ColorSpace::YCCK,
+        (4, _) => input == ColorSpace::CMYK,
+        _ => true,
+    };
+    if !read_as_marked {
+        return None;
+    }
+    let transformed =
+        components >= 3 && marker.map_or(color_transform.unwrap_or(components == 3), |t| t != 0);
+    let out = match components {
+        1 => ColorSpace::Luma,
+        3 if !transformed && input == ColorSpace::YCbCr => ColorSpace::YCbCr,
+        3 => ColorSpace::RGB,
+        _ => input,
+    };
+    Some((out, transformed))
+}
+
+/// The transform the last Adobe marker before a JPEG's first scan names, the one its decoder
+/// reads: `Some(None)` without one. `None` when the markers cannot be followed to the scan, or
+/// an Adobe marker comes after it, which the decoder would read too.
+fn adobe_transform(data: &[u8]) -> Option<Option<u8>> {
+    let mut transform = None;
+    let mut scanned = false;
+    let mut at = 2;
+    loop {
+        if scanned {
+            let Some(skip) = data
+                .get(at..)?
+                .windows(2)
+                .position(|pair| pair[0] == 0xFF && !matches!(pair[1], 0x00 | 0xD0..=0xD7 | 0xFF))
+            else {
+                return Some(transform);
+            };
+            at += skip;
+        }
+        match *data.get(at..)? {
+            [0xFF, 0xFF, ..] => at += 1,
+            [0xFF, 0xD9, ..] => return Some(transform),
+            [0xFF, marker, high, low, ..] => {
+                let end = at + 2 + usize::from(u16::from_be_bytes([high, low]));
+                let segment = data.get(at + 4..end)?;
+                if marker == 0xEE && segment.len() >= 12 && segment.starts_with(b"Adobe") {
+                    if scanned {
+                        return None;
+                    }
+                    transform = Some(segment[11]);
+                }
+                scanned |= marker == 0xDA;
+                at = end;
+            }
+            _ => return None,
+        }
+    }
 }
 
 /// An ink's amount in `0..=1` from its 8-bit sample (as decoded, possibly out of range for a

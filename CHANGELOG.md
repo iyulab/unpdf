@@ -26,6 +26,31 @@
   `unpdf_page_size`, `unpdf_page_pixels`; Python: `Document.page_size`, `PageSize.pixels`;
   .NET: `UnpdfDocument.GetPageSize`, `PageSize.Pixels`.
 
+### Changed
+
+- **Breaking: a JPEG without an Adobe marker is decoded as its `/ColorTransform` says** (ISO 32000-1
+  Table 13). `/ColorTransform 0` keeps three components as they are stored instead of turning them
+  back from YCbCr, and `1` turns four back from YCCK; the last Adobe marker before the first scan
+  still decides where the JPEG has one, and a JPEG whose markers cannot be followed to that scan, or
+  that has an Adobe marker after it, is counted in `RasterGaps::images`. One the decoder reads
+  otherwise than its markers say, such as three components a marker calls YCbCr but whose ids spell
+  R, G and B, is counted in `RasterGaps::images`; it was painted as the decoder read it.
+  `CodecParms::Dct` carries the value: Rust code that matches `CodecParms` exhaustively needs the
+  new arm.
+
+### Fixed
+
+- **A JPEG-coded image is read through its declared color space.** One in a gray, `Indexed`,
+  `Separation` or `DeviceN` space is decoded to its samples, `/Decode` applied, and converted
+  through that space; a `DeviceN` or `Indexed` one was painted as the RGB or gray it decodes to.
+  A JPEG is counted in `RasterGaps::images`, where it was painted as the RGB it decodes to, when
+  its space is one the renderer does not read, when it has another number of components than
+  its space takes, and when a four-component one in a `DeviceN` space was encoded as YCCK.
+- **An image whose soft mask does not decode is counted in `RasterGaps::images`.** It was painted
+  without its mask, as if opaque, and counted nowhere.
+- **A three-component JPEG whose Adobe marker says it is stored untransformed is painted.** It
+  was read as CMYK, failed and left the image white.
+
 ## 0.52.3 — 2026-11-03
 
 ### Fixed

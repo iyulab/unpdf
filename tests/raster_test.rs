@@ -594,6 +594,38 @@ fn an_image_soft_mask_coded_as_a_jpeg_is_applied() {
 }
 
 #[test]
+fn an_image_whose_jpeg_soft_mask_is_refused_is_counted_and_not_painted_unmasked() {
+    let halves = include_bytes!("fixtures/halves_white_black_4x2_gray.jpg");
+    let end = halves.len() - 2;
+    let marker_after_the_scan = [
+        &halves[..end],
+        &[
+            0xFF, 0xEE, 0x00, 0x0E, b'A', b'd', b'o', b'b', b'e', 0x00, 0x64, 0x00, 0x00, 0x00,
+            0x00, 0x00,
+        ],
+        &halves[end..],
+    ]
+    .concat();
+    let mask = stream_object(
+        &format!(
+            "<</Type/XObject/Subtype/Image/Width 4/Height 2/ColorSpace/DeviceGray\
+              /BitsPerComponent 8/Filter/DCTDecode/Length {}>>",
+            marker_after_the_scan.len()
+        ),
+        &marker_after_the_scan,
+    );
+    let page = masked_jpeg_page(mask);
+    assert_eq!(page.gaps.images, 1, "{:?}", page.gaps);
+    for x in [100, 200] {
+        assert!(
+            near(px(&page, x, 842 - 100), WHITE),
+            "{x}: {:?}",
+            px(&page, x, 742)
+        );
+    }
+}
+
+#[test]
 fn an_image_soft_mask_of_another_size_covers_the_same_square() {
     // 2 x 2 mask over a 4 x 2 image: opaque top-left and bottom-right, clear elsewhere.
     let mask = stream_object(
@@ -749,6 +781,310 @@ fn a_gray_jpeg_in_a_tint_space_is_read_through_its_transform() {
         px(&page, 200, 742)
     );
     assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+}
+
+#[test]
+fn a_four_component_jpeg_in_a_devicen_space_is_read_through_its_transform() {
+    let draw = |jpeg: &[u8]| {
+        let image = stream_object(
+            &format!(
+                "<</Type/XObject/Subtype/Image/Width 16/Height 8\
+                  /ColorSpace[/DeviceN[/A/B/C/D]/DeviceCMYK 6 0 R]/BitsPerComponent 8\
+                  /Filter/DCTDecode/Decode[1 0 1 0 1 0 1 0]/Length {}>>",
+                jpeg.len()
+            ),
+            jpeg,
+        );
+        let each_ink_to_the_next = b"{ 4 1 roll }";
+        let transform = stream_object(
+            &format!(
+                "<</FunctionType 4/Domain[0 1 0 1 0 1 0 1]/Range[0 1 0 1 0 1 0 1]/Length {}>>",
+                each_ink_to_the_next.len()
+            ),
+            each_ink_to_the_next,
+        );
+        render(
+            &page_pdf_with_xobjects(
+                A4,
+                b"q 200 0 0 100 50 50 cm /J Do Q",
+                vec![("J", image), ("T", transform)],
+            ),
+            &PT,
+        )
+    };
+    let page = draw(include_bytes!("fixtures/halves_white_cyan_16x8_cmyk.jpg"));
+    let cyan_handed_on_as_magenta = [237, 2, 140];
+    assert!(near(px(&page, 80, 742), WHITE), "{:?}", px(&page, 80, 742));
+    assert!(
+        near(px(&page, 220, 742), cyan_handed_on_as_magenta),
+        "{:?}",
+        px(&page, 220, 742)
+    );
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+    let ycck = draw(include_bytes!("fixtures/halves_ycck_16x8.jpg"));
+    assert_eq!(ycck.gaps.images, 1, "{:?}", ycck.gaps);
+}
+
+/// A page drawing a JPEG of `width` x `height` pixels in `space` over x 50..250, y 50..150.
+fn jpeg_in_space_page(space: &str, (width, height): (u32, u32), jpeg: &[u8]) -> RasteredPage {
+    let image = stream_object(
+        &format!(
+            "<</Type/XObject/Subtype/Image/Width {width}/Height {height}/ColorSpace{space}\
+              /BitsPerComponent 8/Filter/DCTDecode/Length {}>>",
+            jpeg.len()
+        ),
+        jpeg,
+    );
+    render(
+        &page_pdf_with_xobjects(A4, b"q 200 0 0 100 50 50 cm /J Do Q", vec![("J", image)]),
+        &PT,
+    )
+}
+
+#[test]
+fn a_jpeg_in_a_space_that_does_not_take_its_components_is_counted() {
+    let red = (4, 2, &include_bytes!("fixtures/solid_red_4x2.jpg")[..]);
+    let gray = (
+        4,
+        2,
+        &include_bytes!("fixtures/halves_white_black_4x2_gray.jpg")[..],
+    );
+    let cmyk = (
+        16,
+        8,
+        &include_bytes!("fixtures/halves_white_cyan_16x8_cmyk.jpg")[..],
+    );
+    for (label, space, (width, height, jpeg)) in [
+        (
+            "three components in a Separation",
+            "[/Separation/X/DeviceGray<</FunctionType 2/Domain[0 1]/C0[1]/C1[0]/N 1>>]",
+            red,
+        ),
+        (
+            "a DeviceN whose transform does not read",
+            "[/DeviceN[/A/B/C]/DeviceRGB<</FunctionType 9>>]",
+            red,
+        ),
+        ("three components in DeviceGray", "/DeviceGray", red),
+        ("four components in DeviceGray", "/DeviceGray", cmyk),
+        ("one component in DeviceRGB", "/DeviceRGB", gray),
+        ("four components in DeviceRGB", "/DeviceRGB", cmyk),
+        ("one component in DeviceCMYK", "/DeviceCMYK", gray),
+        ("three components in DeviceCMYK", "/DeviceCMYK", red),
+    ] {
+        let page = jpeg_in_space_page(space, (width, height), jpeg);
+        assert_eq!(page.gaps.images, 1, "{label}: {:?}", page.gaps);
+        assert!(near(px(&page, 150, 742), WHITE), "{label}");
+    }
+}
+
+#[test]
+fn a_gray_jpeg_in_an_indexed_space_is_looked_up_in_its_palette() {
+    let palette: String = (0..=255u8)
+        .map(|i| format!("{i:02X}{:02X}00", 255 - i))
+        .collect();
+    let page = jpeg_in_space_page(
+        &format!("[/Indexed/DeviceRGB 255<{palette}>]"),
+        (4, 2),
+        include_bytes!("fixtures/halves_white_black_4x2_gray.jpg"),
+    );
+    assert!(near(px(&page, 100, 742), RED), "{:?}", px(&page, 100, 742));
+    assert!(
+        near(px(&page, 200, 742), [0, 255, 0]),
+        "{:?}",
+        px(&page, 200, 742)
+    );
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+}
+
+/// A page drawing a JPEG of `width` x 8 pixels in `space`, with `entries` in its dictionary, over
+/// x 50..250, y 50..150; object 6 is a calculator function handing on `inputs` inputs as they
+/// are.
+fn identity_jpeg_page(
+    width: u32,
+    space: &str,
+    entries: &str,
+    inputs: usize,
+    jpeg: &[u8],
+) -> RasteredPage {
+    let image = stream_object(
+        &format!(
+            "<</Type/XObject/Subtype/Image/Width {width}/Height 8/ColorSpace{space}\
+              /BitsPerComponent 8/Filter/DCTDecode{entries}/Length {}>>",
+            jpeg.len()
+        ),
+        jpeg,
+    );
+    let identity = stream_object(
+        &format!(
+            "<</FunctionType 4/Domain[{0}]/Range[{0}]/Length 3>>",
+            "0 1 ".repeat(inputs)
+        ),
+        b"{ }",
+    );
+    render(
+        &page_pdf_with_xobjects(
+            A4,
+            b"q 200 0 0 100 50 50 cm /J Do Q",
+            vec![("J", image), ("T", identity)],
+        ),
+        &PT,
+    )
+}
+
+#[test]
+fn a_jpeg_is_turned_back_from_ycbcr_as_its_adobe_marker_or_else_its_color_transform_says() {
+    let stored = [191, 64, 204];
+    let marked = include_bytes!("fixtures/solid_untransformed_8x8.jpg");
+    let unmarked = include_bytes!("fixtures/solid_untransformed_8x8_no_marker.jpg");
+    let devicen = "[/DeviceN[/A/B/C]/DeviceRGB 6 0 R]";
+    let untransformed = "/DecodeParms<</ColorTransform 0>>";
+    for (label, space, entries, jpeg) in [
+        (
+            "unmarked, through a DeviceN",
+            devicen,
+            untransformed,
+            &unmarked[..],
+        ),
+        (
+            "unmarked, in DeviceRGB",
+            "/DeviceRGB",
+            untransformed,
+            &unmarked[..],
+        ),
+        (
+            "marked, whatever /ColorTransform says",
+            devicen,
+            "/DecodeParms<</ColorTransform 1>>",
+            &marked[..],
+        ),
+        ("marked, in DeviceRGB", "/DeviceRGB", "", &marked[..]),
+    ] {
+        let page = identity_jpeg_page(8, space, entries, 3, jpeg);
+        assert!(
+            near(px(&page, 150, 742), stored),
+            "{label}: {:?}",
+            px(&page, 150, 742)
+        );
+        assert!(page.gaps.is_empty(), "{label}: {:?}", page.gaps);
+    }
+}
+
+#[test]
+fn a_jpeg_whose_adobe_marker_says_ycbcr_while_its_ids_spell_rgb_is_counted() {
+    let rgb_ids_marked_ycbcr = include_bytes!("fixtures/solid_8x8_rgb_ids_marked_ycbcr.jpg");
+    for space in ["/DeviceRGB", "[/DeviceN[/A/B/C]/DeviceRGB 6 0 R]"] {
+        let page = identity_jpeg_page(8, space, "", 3, rgb_ids_marked_ycbcr);
+        assert_eq!(page.gaps.images, 1, "{space}: {:?}", page.gaps);
+        assert!(near(px(&page, 150, 742), WHITE), "{space}");
+    }
+}
+
+#[test]
+fn a_jpeg_whose_markers_cannot_be_followed_to_its_scan_is_counted() {
+    let ycck = include_bytes!("fixtures/halves_ycck_16x8.jpg");
+    let junk_after_start = [&ycck[..2], &[0], &ycck[2..]].concat();
+    for space in ["/DeviceCMYK", "[/DeviceN[/A/B/C/D]/DeviceCMYK 6 0 R]"] {
+        let page = identity_jpeg_page(16, space, "", 4, &junk_after_start);
+        assert_eq!(page.gaps.images, 1, "{space}: {:?}", page.gaps);
+        assert!(near(px(&page, 150, 742), WHITE), "{space}");
+    }
+}
+
+#[test]
+fn a_jpeg_is_read_by_the_last_of_its_adobe_markers() {
+    let untransformed_marker = [
+        0xFF, 0xEE, 0x00, 0x0E, b'A', b'd', b'o', b'b', b'e', 0x00, 0x64, 0x00, 0x00, 0x00, 0x00,
+        0x00,
+    ];
+    let rgb_ids_marked_ycbcr = include_bytes!("fixtures/solid_8x8_rgb_ids_marked_ycbcr.jpg");
+    let marked_untransformed_then_ycbcr = [
+        &rgb_ids_marked_ycbcr[..2],
+        &untransformed_marker,
+        &rgb_ids_marked_ycbcr[2..],
+    ]
+    .concat();
+    for space in ["/DeviceRGB", "[/DeviceN[/A/B/C]/DeviceRGB 6 0 R]"] {
+        let page = identity_jpeg_page(8, space, "", 3, &marked_untransformed_then_ycbcr);
+        assert_eq!(page.gaps.images, 1, "{space}: {:?}", page.gaps);
+        assert!(near(px(&page, 150, 742), WHITE), "{space}");
+    }
+}
+
+#[test]
+fn a_jpeg_whose_markers_its_decoder_reads_otherwise_is_counted() {
+    let marked = include_bytes!("fixtures/solid_untransformed_8x8.jpg");
+    let after_marker = 4 + usize::from(u16::from_be_bytes([marked[4], marked[5]]));
+    let short_app0_then_ycbcr_marker = [
+        0xFF, 0xE0, 0x00, 0x06, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xEE, 0x00, 0x0E, b'A', b'd', b'o',
+        b'b', b'e', 0x00, 0x64, 0x00, 0x00, 0x00, 0x00, 0x01,
+    ];
+    let marked_again_past_a_short_app0 = [
+        &marked[..after_marker],
+        &short_app0_then_ycbcr_marker,
+        &marked[after_marker..],
+    ]
+    .concat();
+    for space in ["/DeviceRGB", "[/DeviceN[/A/B/C]/DeviceRGB 6 0 R]"] {
+        let page = identity_jpeg_page(8, space, "", 3, &marked_again_past_a_short_app0);
+        assert_eq!(page.gaps.images, 1, "{space}: {:?}", page.gaps);
+        assert!(near(px(&page, 150, 742), WHITE), "{space}");
+    }
+}
+
+#[test]
+fn a_jpeg_with_an_adobe_marker_after_its_first_scan_is_counted() {
+    let stored = [191, 64, 204];
+    let progressive = include_bytes!("fixtures/solid_untransformed_8x8_progressive.jpg");
+    let second_scan = progressive
+        .windows(2)
+        .enumerate()
+        .filter(|(_, pair)| pair == &[0xFF, 0xDA])
+        .nth(1)
+        .map(|(at, _)| at)
+        .unwrap();
+    let ycbcr_marker = [
+        0xFF, 0xEE, 0x00, 0x0E, b'A', b'd', b'o', b'b', b'e', 0x00, 0x64, 0x00, 0x00, 0x00, 0x00,
+        0x01,
+    ];
+    let marked_again_after_the_first_scan = [
+        &progressive[..second_scan],
+        &ycbcr_marker,
+        &progressive[second_scan..],
+    ]
+    .concat();
+    for space in ["/DeviceRGB", "[/DeviceN[/A/B/C]/DeviceRGB 6 0 R]"] {
+        let marked_once = identity_jpeg_page(8, space, "", 3, progressive);
+        assert!(
+            near(px(&marked_once, 150, 742), stored),
+            "{space}: {:?}",
+            px(&marked_once, 150, 742)
+        );
+        assert!(
+            marked_once.gaps.is_empty(),
+            "{space}: {:?}",
+            marked_once.gaps
+        );
+        let page = identity_jpeg_page(8, space, "", 3, &marked_again_after_the_first_scan);
+        assert_eq!(page.gaps.images, 1, "{space}: {:?}", page.gaps);
+        assert!(near(px(&page, 150, 742), WHITE), "{space}");
+    }
+}
+
+#[test]
+fn a_four_component_jpeg_its_encoder_transformed_is_counted_in_a_devicen_space() {
+    let draw = |entries: &str| {
+        identity_jpeg_page(
+            16,
+            "[/DeviceN[/A/B/C/D]/DeviceCMYK 6 0 R]",
+            entries,
+            4,
+            include_bytes!("fixtures/halves_white_cyan_16x8_cmyk_no_marker.jpg"),
+        )
+    };
+    assert!(draw("").gaps.is_empty(), "{:?}", draw("").gaps);
+    let transformed = draw("/DecodeParms<</ColorTransform 1>>");
+    assert_eq!(transformed.gaps.images, 1, "{:?}", transformed.gaps);
 }
 
 /// A page whose `/S0` color space is `space` with the calculator function `program` (object 5)
