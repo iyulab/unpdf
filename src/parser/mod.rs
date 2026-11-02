@@ -3,6 +3,7 @@
 pub mod backend;
 #[rustfmt::skip]
 mod agl_data;
+mod annotation;
 pub mod bidi;
 mod bilevel;
 mod ccitt;

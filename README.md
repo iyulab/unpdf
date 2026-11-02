@@ -684,9 +684,13 @@ if !page.gaps.is_empty() {
 Painted: text in embedded Type 1, TrueType, OpenType and CFF fonts and in Type 3 fonts, paths,
 clipping, colors, axial and radial shadings (`sh` and shading patterns), tiling patterns (colored
 and uncolored), and images, inline ones included (Flate-family, JPEG, JPEG 2000, CCITT fax and
-JBIG2, with soft and stencil masks), blend modes (all sixteen of ISO 32000-1 §11.3.5) and soft
-masks (`/SMask`, luminosity and alpha). Not yet: mesh and function-based shadings and a soft
-mask's transfer function — each is counted in `gaps`, and the rest of the page is still painted.
+JBIG2, with soft and stencil masks), blend modes (all sixteen of ISO 32000-1 §11.3.5), soft
+masks (`/SMask`, luminosity and alpha) and annotations: their normal appearance (`/AP /N`, the
+state `/AS` selects) is fitted to `/Rect` and painted over the page, except for annotations
+flagged Hidden or NoView, Invisible ones of a type the standard does not define, and pop-ups. Not
+yet: mesh and function-based shadings and a soft mask's transfer function — each is counted in
+`gaps`, as is an annotation appearance that cannot be painted (`gaps.annotations`), and the rest
+of the page is still painted.
 
 Text in a font the PDF names but does not embed — the standard 14, or a system font such as
 Arial or Times New Roman — is painted in a stand-in face of the same class (sans, serif or

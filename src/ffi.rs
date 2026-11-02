@@ -1310,9 +1310,9 @@ struct FfiRasterOptions {
 ///
 /// `out_info`, when not null, receives `{"width":N,"height":N,"gaps":{"text_runs":N,
 /// "images":N,"inline_images":N,"shadings":N,"soft_masks":N,
-/// "undecodable_content_streams":N}, "substituted_text_runs":N}` — free it with `unpdf_free_string`. `substituted_text_runs`
-/// counts text painted in a standard face standing in for a font the PDF does not embed:
-/// readable, not the page's own typeface, and not a gap.
+/// "undecodable_content_streams":N,"annotations":N}, "substituted_text_runs":N}` — free it with
+/// `unpdf_free_string`. `substituted_text_runs` counts text painted in a standard face standing
+/// in for a font the PDF does not embed: readable, not the page's own typeface, and not a gap.
 ///
 /// # Safety
 ///
@@ -1390,6 +1390,7 @@ pub unsafe extern "C" fn unpdf_render_page(
                 "shadings": g.shadings,
                 "soft_masks": g.soft_masks,
                 "undecodable_content_streams": g.undecodable_content_streams,
+                "annotations": g.annotations,
             },
             "substituted_text_runs": page.substituted_text_runs,
         });

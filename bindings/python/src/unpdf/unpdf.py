@@ -642,7 +642,8 @@ class RenderedPage:
     whose dictionary does not read), ``shadings`` (mesh shadings, and tiling
     patterns nested more than three deep), ``soft_masks`` (a soft mask whose
     group does not decode or nests too deep, or whose transfer function is not
-    applied) and ``undecodable_content_streams``. All zero means everything was painted;
+    applied), ``undecodable_content_streams`` and ``annotations`` (annotations whose
+    appearance could not be painted). All zero means everything was painted;
     otherwise the rest of the page still was.
 
     ``substituted_text_runs`` counts text painted in a standard face standing in

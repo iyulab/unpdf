@@ -12,14 +12,15 @@ use tiny_skia::{
     RadialGradient, Rect, Shader, SpreadMode, Stroke, StrokeDash, Transform,
 };
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ops::ControlFlow;
 use std::rc::Rc;
 
 use super::backend::{
-    CodecParms, ContentOp, GlyphAdvance, ImageColorSpace, ObjectId, PageBox, PageId, PdfBackend,
-    PdfValue, RawXObject, ResourceScope, Shading, ShadingGeometry, SoftMask, SoftMaskEntry,
-    TilingPattern, TintSpace, Type3Font,
+    CodecParms, ContentOp, ExtGState, GlyphAdvance, ImageColorSpace, ObjectId, PageBox, PageId,
+    PdfBackend, PdfValue, RawXObject, ResourceScope, Shading, ShadingGeometry, SoftMaskEntry,
+    SoftMaskRef, TilingPattern, TintSpace, Type3Font,
 };
 use super::cmyk::cmyk_to_rgb_unit;
 use super::form_xobject;
@@ -81,6 +82,18 @@ pub struct RasterGaps {
     pub soft_masks: u32,
     /// Content streams of the page that could not be decoded; whatever they held is missing.
     pub undecodable_content_streams: u32,
+    /// Annotations whose normal appearance (`/AP /N`) was not painted: a stream that is
+    /// missing, does not decode or has no `/BBox`, an `/AP` with states and no `/AS`, a
+    /// malformed `/Rect`, a `/BM` that is not a name or names a blend mode other than Normal,
+    /// or an annotation past the first 4096 of the page, which is counted unread; and those
+    /// painted without what they hold of a knockout group or soft mask, an isolated group past
+    /// four nested group layers, a group that is not isolated painted under an alpha, blend
+    /// mode or soft mask, or a form nested more than 32 deep. Isolated groups otherwise blend
+    /// with nothing beneath them. Of the first 4096, an annotation that is hidden (Hidden,
+    /// NoView, or Invisible with a type the standard does not define) or a pop-up, one with no
+    /// appearance, and a state `/AS` selects no stream for are not counted. NoZoom and NoRotate
+    /// are not applied.
+    pub annotations: u32,
 }
 
 impl RasterGaps {
@@ -92,6 +105,7 @@ impl RasterGaps {
         self.shadings += other.shadings;
         self.soft_masks += other.soft_masks;
         self.undecodable_content_streams += other.undecodable_content_streams;
+        self.annotations += other.annotations;
     }
 
     /// Whether anything the page asked for was left unpainted.
@@ -194,13 +208,16 @@ pub(crate) fn render_page(
         .ok_or_else(|| Error::Render(format!("cannot allocate {px_w} x {px_h} pixels")))?;
     pixmap.fill(tiny_skia::Color::WHITE);
 
-    let painted = form_xobject::page_operations(backend, page)?;
+    let shared = Shared::default();
+    let painted = form_xobject::page_operations_with(backend, page, &shared.forms)?;
     let mut painter = Painter::new(backend, page, pixmap, base, budget);
+    painter.shared = shared;
     painter.gaps.undecodable_content_streams = painted.undecodable_streams as u32;
     for op in &painted.ops {
         painter.apply(op);
     }
     painter.end_groups();
+    painter.paint_annotations(base);
     if painter.stopped {
         return Err(Error::RasterStopped);
     }
@@ -384,6 +401,52 @@ impl GState {
 /// A font resource: the form whose resources name it (`None`: the page's), and its name.
 type FontResource = (Option<ObjectId>, Vec<u8>);
 
+/// A resource by the form whose resources name it (`None`: the page's) and its name.
+type Named = (Option<ObjectId>, Vec<u8>);
+
+/// An `/ExtGState` resource, its soft mask's group left unread.
+type GraphicsState = (ExtGState, Option<SoftMaskRef>);
+
+/// What the painters of a page read once and share: its Form XObjects, and the `/ExtGState` and
+/// tiling pattern resources they name.
+#[derive(Clone, Default)]
+struct Shared {
+    forms: form_xobject::Forms,
+    gstates: Rc<RefCell<HashMap<Named, Option<Rc<GraphicsState>>>>>,
+    patterns: Rc<RefCell<HashMap<ObjectId, Option<Rc<TilingPattern>>>>>,
+    shading_patterns: Rc<RefCell<HashMap<ObjectId, Option<Rc<ShadingPattern>>>>>,
+    shadings: Rc<RefCell<HashMap<ObjectId, Option<Rc<Shading>>>>>,
+}
+
+/// A shading pattern: its shading, and its matrix.
+type ShadingPattern = (Shading, [f32; 6]);
+
+/// What `read` gives, read once and kept in `kept` by object id `id`; read every time when
+/// there is no id.
+fn read_once<T>(
+    kept: &RefCell<HashMap<ObjectId, Option<Rc<T>>>>,
+    id: Option<ObjectId>,
+    read: impl FnOnce() -> Option<T>,
+) -> Option<Rc<T>> {
+    let Some(id) = id else {
+        return read().map(Rc::new);
+    };
+    if let Some(value) = kept.borrow().get(&id) {
+        return value.clone();
+    }
+    let value = read().map(Rc::new);
+    kept.borrow_mut().insert(id, value.clone());
+    value
+}
+
+/// A font as a painter keeps it loaded: by its dictionary's object id, so every form naming
+/// it shares it, or by the resource that names it when there is no id.
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum FontId {
+    Object(ObjectId),
+    Named(FontResource),
+}
+
 struct Painter<'a> {
     backend: &'a dyn PdfBackend,
     page: PageId,
@@ -401,10 +464,10 @@ struct Painter<'a> {
     text_clip: Option<PathBuilder>,
     /// The text matrix and text line matrix, inside `BT … ET`.
     text_matrix: TextMatrix,
-    /// Fonts loaded so far, by the resource that names them; `None` when unpaintable.
-    fonts: HashMap<FontResource, Option<LoadedFont>>,
+    /// Fonts loaded so far, by [`FontId`]; `None` when unpaintable.
+    fonts: HashMap<FontId, Option<LoadedFont>>,
     /// Type 3 fonts looked up so far, by the same key; `None` for a font of any other type.
-    type3: HashMap<FontResource, Option<Rc<Type3Font>>>,
+    type3: HashMap<FontId, Option<Rc<Type3Font>>>,
     /// How many Type 3 glyph procedures are running, one inside another.
     glyph_depth: usize,
     /// How many tiling pattern cells are being painted, one inside another: this painter's.
@@ -425,6 +488,16 @@ struct Painter<'a> {
     budget: &'a mut dyn FnMut(u64) -> ControlFlow<()>,
     /// The budget stopped the painting: nothing more is painted.
     stopped: bool,
+    /// What the page's painters read once.
+    shared: Shared,
+    /// Painting an annotation's appearance: what it cannot paint as it should is left out
+    /// rather than painted as the page's content is.
+    in_appearance: bool,
+    /// Something of the appearance being painted was left out.
+    cut: bool,
+    /// How many transparency groups deep the operators being skipped are: those of a group an
+    /// appearance cannot paint as it should.
+    skipped_groups: usize,
 }
 
 /// A tiling pattern cell as painted: the content it was named from (form and name), its
@@ -505,6 +578,10 @@ impl<'a> Painter<'a> {
             substituted_text_runs: 0,
             budget,
             stopped: false,
+            shared: Shared::default(),
+            in_appearance: false,
+            cut: false,
+            skipped_groups: 0,
         }
     }
 
@@ -610,6 +687,14 @@ impl Painter<'_> {
         if !self.admit(1) {
             return;
         }
+        if self.skipped_groups > 0 {
+            match op.operator.as_str() {
+                form_xobject::BEGIN_GROUP => self.skipped_groups += 1,
+                form_xobject::END_GROUP => self.skipped_groups -= 1,
+                _ => {}
+            }
+            return;
+        }
         // A form's operations follow the `q`, `cm` and clip that place it, so where they start
         // the CTM is the form's space. (Leaving a form, the `Q` that follows restores the outer
         // state, this included.)
@@ -689,7 +774,8 @@ impl Painter<'_> {
             }
             "gs" => {
                 if let Some(PdfValue::Name(name)) = op.operands.first() {
-                    if let Some(gs) = self.backend.ext_gstate(op.scope(self.page), name) {
+                    if let Some(read) = self.ext_gstate(op, name) {
+                        let (gs, mask) = &*read;
                         if let Some(lw) = gs.line_width {
                             self.state.line_width = lw.max(0.0);
                         }
@@ -702,16 +788,25 @@ impl Painter<'_> {
                         if let Some(mode) = gs.blend_mode {
                             self.state.blend = blend_mode(mode);
                         }
-                        match &gs.soft_mask {
-                            Some(SoftMaskEntry::None) => {
-                                self.state.soft_mask = None;
-                                self.refresh_masked_clip();
+                        let mask = mask.or_else(|| match &gs.soft_mask {
+                            Some(SoftMaskEntry::Mask(read)) => {
+                                let forms = &self.shared.forms;
+                                forms.mask_group(self.backend, self.page, &read.group);
+                                Some(SoftMaskRef {
+                                    luminosity: read.luminosity,
+                                    group: read.group.id,
+                                    backdrop: read.backdrop,
+                                    transfer_function: read.transfer_function,
+                                })
                             }
-                            Some(SoftMaskEntry::Mask(mask)) => {
-                                self.state.soft_mask = self.render_soft_mask(mask).map(Rc::new);
-                                self.refresh_masked_clip();
-                            }
-                            None => {}
+                            _ => None,
+                        });
+                        if let Some(mask) = mask {
+                            self.state.soft_mask = self.render_soft_mask(&mask).map(Rc::new);
+                            self.refresh_masked_clip();
+                        } else if let Some(SoftMaskEntry::None) = gs.soft_mask {
+                            self.state.soft_mask = None;
+                            self.refresh_masked_clip();
                         }
                     }
                 }
@@ -848,13 +943,33 @@ impl Painter<'_> {
                     None => self.gaps.inline_images += 1,
                 }
             }
-            form_xobject::BEGIN_GROUP => self.begin_group(),
+            form_xobject::BEGIN_GROUP => {
+                let set = |key: &[u8]| {
+                    self.in_appearance
+                        && op
+                            .operands
+                            .iter()
+                            .any(|v| matches!(v, PdfValue::Name(name) if name == key))
+                };
+                if set(b"K") || !self.begin_group(set(b"I")) {
+                    self.cut = true;
+                    self.skipped_groups = 1;
+                }
+            }
             form_xobject::END_GROUP => self.end_group(),
+            form_xobject::FORM_TOO_DEEP => self.cut |= self.in_appearance,
             // Type 3 glyph metrics: `d1` marks the glyph uncolored.
             "d1" if self.glyph_depth > 0 => self.uncolored = true,
             "sh" => {
                 let shading = match op.operands.first() {
-                    Some(PdfValue::Name(name)) => self.backend.shading(op.scope(self.page), name),
+                    Some(PdfValue::Name(name)) => {
+                        let scope = op.scope(self.page);
+                        read_once(
+                            &self.shared.shadings,
+                            self.backend.shading_id(scope, name),
+                            || self.backend.shading(scope, name),
+                        )
+                    }
                     _ => None,
                 };
                 match shading {
@@ -888,6 +1003,62 @@ impl Painter<'_> {
         }
     }
 
+    /// The `/ExtGState` resource `name` names where `op` is, read once for the page, a soft
+    /// mask's group left for [`Self::render_soft_mask`] to read.
+    fn ext_gstate(&self, op: &ContentOp, name: &[u8]) -> Option<Rc<GraphicsState>> {
+        let key = (op.form, name.to_vec());
+        if let Some(gs) = self.shared.gstates.borrow().get(&key) {
+            return gs.clone();
+        }
+        let gs = self
+            .backend
+            .ext_gstate_ref(op.scope(self.page), name)
+            .map(Rc::new);
+        self.shared.gstates.borrow_mut().insert(key, gs.clone());
+        gs
+    }
+
+    /// [`Self::apply`] `op`, breaking once the painting has stopped.
+    fn paint_op(&mut self, op: &ContentOp) -> ControlFlow<()> {
+        self.apply(op);
+        if self.stopped {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
+    }
+
+    /// Paint the page's annotation appearances over its content, one at a time, each from the
+    /// initial graphics state.
+    fn paint_annotations(&mut self, base: Transform) {
+        if self.stopped {
+            return;
+        }
+        let read = self.backend.annotation_appearances(self.page);
+        let mut appearances =
+            form_xobject::Appearances::new(self.backend, self.page, &self.shared.forms);
+        let mut cut = 0;
+        self.in_appearance = true;
+        for appearance in &read.appearances {
+            self.state = GState::new(base);
+            self.stack.clear();
+            self.path = PathBuilder::new();
+            self.pending_clip = None;
+            self.text_clip = None;
+            self.text_matrix = TextMatrix::default();
+            self.tiles.clear();
+            self.cut = false;
+            let painted = appearances.paint(appearance, &mut |op| self.paint_op(&op));
+            self.end_groups();
+            cut += u32::from(self.cut);
+            if painted.is_break() {
+                break;
+            }
+        }
+        self.gaps.annotations = read.unpainted + appearances.unpainted + cut;
+        self.gaps.undecodable_content_streams += appearances.undecodable_streams() as u32;
+    }
+
     /// Paint the strings and position adjustments of a text-showing operator, advancing the
     /// text matrix as text extraction does.
     fn show(&mut self, items: &[PdfValue]) {
@@ -899,20 +1070,24 @@ impl Painter<'_> {
             page: self.page,
             form: key.0,
         };
-        if !self.type3.contains_key(&key) {
+        let id = match self.backend.font_id(scope, &key.1) {
+            Some(id) => FontId::Object(id),
+            None => FontId::Named(key.clone()),
+        };
+        if !self.type3.contains_key(&id) {
             let font = self.backend.type3_font(scope, &key.1).map(Rc::new);
-            self.type3.insert(key.clone(), font);
+            self.type3.insert(id.clone(), font);
         }
-        if let Some(font) = self.type3.get(&key).cloned().flatten() {
+        if let Some(font) = self.type3.get(&id).cloned().flatten() {
             self.show_type3(&font, scope, &key.1, &text, items);
             return;
         }
-        if !self.fonts.contains_key(&key) {
+        if !self.fonts.contains_key(&id) {
             let loaded = self
                 .backend
                 .font_program(scope, &key.1)
                 .and_then(LoadedFont::load);
-            self.fonts.insert(key.clone(), loaded);
+            self.fonts.insert(id.clone(), loaded);
         }
         let vertical = self.backend.is_vertical_font(scope, &key.1);
         let bounds = self.backend.font_bounds(scope, &key.1);
@@ -922,7 +1097,7 @@ impl Painter<'_> {
         let mut substituted = false;
         let mut unpainted_color = false;
         // Taken out of the cache while its glyphs are painted, put back after.
-        let mut loaded = self.fonts.remove(&key).flatten();
+        let mut loaded = self.fonts.remove(&id).flatten();
 
         'run: for item in items {
             let codes = if let PdfValue::Str(bytes) = item {
@@ -1027,7 +1202,7 @@ impl Painter<'_> {
                 self.text_matrix.advance(text.glyph_advance(&measured));
             }
         }
-        self.fonts.insert(key, loaded);
+        self.fonts.insert(id, loaded);
         if missing {
             self.gaps.text_runs += 1;
         }
@@ -1224,17 +1399,23 @@ impl Painter<'_> {
     /// inside it do not show through one another, and an alpha the group sets inside itself
     /// does not undo the one it is painted with. Inside, the alpha starts at one, the blend
     /// mode at Normal and the soft mask at none (a soft mask the group's own content sets
-    /// does not undo the one it is painted with either). A
+    /// does not undo the one it is painted with either). An `isolated` group goes on a layer
+    /// too, so its content blends with nothing under it; `false`, and nothing begun, when it
+    /// cannot have one, or, in an appearance, when a group that is not isolated would need one,
+    /// which would cut it off from its backdrop. A
     /// fully opaque, normally blended group is painted in place, which is the same picture;
     /// so is one nested past `MAX_GROUP_LAYERS`, to bound the memory layers take.
-    fn begin_group(&mut self) {
+    fn begin_group(&mut self, isolated: bool) -> bool {
         const MAX_GROUP_LAYERS: usize = 4;
         let alpha = self.state.fill_alpha;
         let blend = self.state.blend;
         let soft_mask = self.state.soft_mask.clone();
         let layered = self.groups.iter().filter(|g| g.is_some()).count();
-        let own_layer = (alpha < 1.0 || blend != BlendMode::SourceOver || soft_mask.is_some())
-            && layered < MAX_GROUP_LAYERS;
+        let needs_layer = alpha < 1.0 || blend != BlendMode::SourceOver || soft_mask.is_some();
+        if self.in_appearance && needs_layer && !isolated {
+            return false;
+        }
+        let own_layer = (isolated || needs_layer) && layered < MAX_GROUP_LAYERS;
         let layer = (own_layer && self.admit_page())
             .then(|| Pixmap::new(self.pixmap.width(), self.pixmap.height()))
             .flatten();
@@ -1253,8 +1434,13 @@ impl Painter<'_> {
                 // The soft mask applies to the group's result, not to what is painted inside.
                 self.state.soft_mask = None;
                 self.refresh_masked_clip();
+                true
             }
-            None => self.groups.push(None),
+            None if isolated => false,
+            None => {
+                self.groups.push(None);
+                true
+            }
         }
     }
 
@@ -1436,10 +1622,20 @@ impl Painter<'_> {
                 .pattern_base
                 .pre_concat(Transform::from_row(a, b, c, d, e, f))
         };
-        if let Some((shading, matrix)) = self.backend.shading_pattern(scope, name) {
-            return Some(Rc::new(PatternPaint::Shading(shading, place(matrix))));
+        let id = self.backend.pattern_id(scope, name);
+        let shading = read_once(&self.shared.shading_patterns, id, || {
+            self.backend.shading_pattern(scope, name)
+        });
+        if let Some(shading) = shading {
+            let (shading, matrix) = &*shading;
+            return Some(Rc::new(PatternPaint::Shading(
+                shading.clone(),
+                place(*matrix),
+            )));
         }
-        let pattern = self.backend.tiling_pattern(scope, name)?;
+        let pattern = read_once(&self.shared.patterns, id, || {
+            self.backend.tiling_pattern(scope, name)
+        })?;
         let to_device = place(pattern.matrix);
         let t = to_device;
         let key = (
@@ -1525,12 +1721,19 @@ impl Painter<'_> {
         if let Some(bbox) = bbox {
             tile.clip(Some(&PathBuilder::from_rect(bbox)), FillRule::Winding);
         }
-        let cell_ops = form_xobject::content_operations(self.backend, self.page, ops, pattern.id);
-        tile.gaps.undecodable_content_streams += cell_ops.undecodable_streams as u32;
-        for op in &cell_ops.ops {
-            tile.apply(op);
-        }
+        tile.shared = self.shared.clone();
+        tile.in_appearance = self.in_appearance;
+        let undecodable = form_xobject::paint_content(
+            self.backend,
+            self.page,
+            &self.shared.forms,
+            ops,
+            pattern.id,
+            &mut |op| tile.paint_op(&op),
+        );
+        tile.gaps.undecodable_content_streams += undecodable as u32;
         tile.end_groups();
+        self.cut |= tile.cut;
         if tile.stopped {
             self.stopped = true;
             return None;
@@ -1711,21 +1914,24 @@ impl Painter<'_> {
     /// coordinate system in effect now (ISO 32000-1 §11.6.5.2), over its backdrop for a
     /// luminosity mask, then read as luminosity or alpha. `None` -- and what follows painted
     /// unmasked -- when the group cannot be painted.
-    fn render_soft_mask(&mut self, mask: &SoftMask) -> Option<Mask> {
+    fn render_soft_mask(&mut self, mask: &SoftMaskRef) -> Option<Mask> {
         const MAX_MASK_DEPTH: usize = 3;
         if self.pattern_depth >= MAX_MASK_DEPTH {
             self.gaps.soft_masks += 1;
             return None;
         }
-        let group = &mask.group;
-        let Some(ops) = group
-            .content
-            .as_deref()
-            .and_then(|data| self.backend.decode_content(data).ok())
+        let group = self.shared.forms.form(self.backend, self.page, mask.group);
+        let Some((group, ops)) = group
+            .as_ref()
+            .and_then(|group| Some((group, group.ops.as_ref()?)))
         else {
             self.gaps.soft_masks += 1;
             return None;
         };
+        if self.in_appearance && group.group.is_some_and(|group| group.knockout) {
+            self.cut = true;
+            return None;
+        }
         let m = group.matrix;
         let to_device = self
             .state
@@ -1750,7 +1956,7 @@ impl Painter<'_> {
             to_device,
             &mut *self.budget,
         );
-        sub.current_form = Some(group.id);
+        sub.current_form = Some(mask.group);
         sub.pattern_depth = self.pattern_depth + 1;
         sub.glyph_depth = self.glyph_depth;
         if let Some(b) = &group.bbox {
@@ -1764,12 +1970,19 @@ impl Painter<'_> {
                 sub.clip(Some(&PathBuilder::from_rect(rect)), FillRule::Winding);
             }
         }
-        let content = form_xobject::content_operations(self.backend, self.page, &ops, group.id);
-        sub.gaps.undecodable_content_streams += content.undecodable_streams as u32;
-        for op in &content.ops {
-            sub.apply(op);
-        }
+        sub.shared = self.shared.clone();
+        sub.in_appearance = self.in_appearance;
+        let undecodable = form_xobject::paint_content(
+            self.backend,
+            self.page,
+            &self.shared.forms,
+            ops,
+            mask.group,
+            &mut |op| sub.paint_op(&op),
+        );
+        sub.gaps.undecodable_content_streams += undecodable as u32;
         sub.end_groups();
+        self.cut |= sub.cut;
         if sub.stopped {
             self.stopped = true;
             return None;
@@ -2318,6 +2531,14 @@ fn dashes(path: &Path, pattern: &[f32]) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::super::backend::{
+        AnnotationAppearances, BackendFontInfo, DecodedText, FormXObject, PaintedXObject,
+        PdfMetadataRaw, RawBackend, RawOutlineItem,
+    };
+    use super::super::test_pdf::{pdf, stream};
     use super::*;
 
     fn solid(w: u32, h: u32, rgba: [u8; 4]) -> Pixmap {
@@ -2380,6 +2601,470 @@ mod tests {
             let blue = painter.pixmap.pixels().iter().any(|p| p.red() == 0);
             assert_eq!(blue, painted, "{refused}");
         }
+    }
+
+    struct CountingForms {
+        backend: RawBackend,
+        read: AtomicUsize,
+    }
+
+    impl CountingForms {
+        fn load(objects: Vec<Vec<u8>>) -> Self {
+            let bytes = pdf(objects, 1);
+            CountingForms {
+                backend: RawBackend::load_bytes(&bytes).unwrap(),
+                read: Default::default(),
+            }
+        }
+
+        fn take_read(&self) -> usize {
+            self.read.swap(0, Ordering::Relaxed)
+        }
+
+        fn count(&self) {
+            self.read.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    impl PdfBackend for CountingForms {
+        fn pages(&self) -> BTreeMap<u32, PageId> {
+            self.backend.pages()
+        }
+        fn page_fonts(&self, scope: ResourceScope) -> Result<Vec<BackendFontInfo>> {
+            self.backend.page_fonts(scope)
+        }
+        fn page_content(&self, page: PageId) -> Result<Vec<u8>> {
+            self.backend.page_content(page)
+        }
+        fn decode_content(&self, data: &[u8]) -> Result<Vec<ContentOp>> {
+            self.backend.decode_content(data)
+        }
+        fn decode_text(&self, scope: ResourceScope, font_name: &[u8], bytes: &[u8]) -> DecodedText {
+            self.backend.decode_text(scope, font_name, bytes)
+        }
+        fn metadata(&self) -> PdfMetadataRaw {
+            self.backend.metadata()
+        }
+        fn page_box(&self, page: PageId) -> PageBox {
+            self.backend.page_box(page)
+        }
+        fn outline(&self) -> Result<Vec<RawOutlineItem>> {
+            self.backend.outline()
+        }
+        fn page_xobjects(&self, page: PageId) -> Result<Vec<RawXObject>> {
+            self.backend.page_xobjects(page)
+        }
+        fn annotation_appearances(&self, page: PageId) -> AnnotationAppearances {
+            self.backend.annotation_appearances(page)
+        }
+        fn xobject(&self, scope: ResourceScope, name: &[u8]) -> Option<PaintedXObject> {
+            self.count();
+            self.backend.xobject(scope, name)
+        }
+        fn form_xobject_id(&self, scope: ResourceScope, name: &[u8]) -> Option<ObjectId> {
+            self.backend.form_xobject_id(scope, name)
+        }
+        fn tiling_pattern(&self, scope: ResourceScope, name: &[u8]) -> Option<TilingPattern> {
+            self.count();
+            self.backend.tiling_pattern(scope, name)
+        }
+        fn pattern_id(&self, scope: ResourceScope, name: &[u8]) -> Option<ObjectId> {
+            self.backend.pattern_id(scope, name)
+        }
+        fn shading_id(&self, scope: ResourceScope, name: &[u8]) -> Option<ObjectId> {
+            self.backend.shading_id(scope, name)
+        }
+        fn font_id(&self, scope: ResourceScope, font_name: &[u8]) -> Option<ObjectId> {
+            self.backend.font_id(scope, font_name)
+        }
+        fn font_program(
+            &self,
+            scope: ResourceScope,
+            font_name: &[u8],
+        ) -> Option<super::super::backend::FontProgram> {
+            self.count();
+            self.backend.font_program(scope, font_name)
+        }
+        fn shading(&self, scope: ResourceScope, name: &[u8]) -> Option<Shading> {
+            let shading = self.backend.shading(scope, name);
+            if shading.is_some() {
+                self.count();
+            }
+            shading
+        }
+        fn shading_pattern(
+            &self,
+            scope: ResourceScope,
+            name: &[u8],
+        ) -> Option<(Shading, [f32; 6])> {
+            let pattern = self.backend.shading_pattern(scope, name);
+            if pattern.is_some() {
+                self.count();
+            }
+            pattern
+        }
+        fn ext_gstate_ref(
+            &self,
+            scope: ResourceScope,
+            name: &[u8],
+        ) -> Option<(ExtGState, Option<SoftMaskRef>)> {
+            self.backend.ext_gstate_ref(scope, name)
+        }
+        fn ext_gstate(&self, scope: ResourceScope, name: &[u8]) -> Option<ExtGState> {
+            let gs = self.backend.ext_gstate(scope, name);
+            if let Some(ExtGState {
+                soft_mask: Some(SoftMaskEntry::Mask(_)),
+                ..
+            }) = &gs
+            {
+                self.count();
+            }
+            gs
+        }
+        fn form_xobject(&self, id: ObjectId) -> Option<FormXObject> {
+            self.count();
+            self.backend.form_xobject(id)
+        }
+    }
+
+    fn form(entries: &str, content: &str) -> Vec<u8> {
+        stream(
+            &format!(
+                "<</Subtype/Form/BBox[0 0 100 100]{entries}/Length {}>>",
+                content.len()
+            ),
+            content.as_bytes(),
+        )
+    }
+
+    #[test]
+    fn annotations_read_no_form_past_the_step_the_budget_refuses() {
+        let backend = CountingForms::load(vec![
+            b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+            b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+            b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 100 100]/Annots[4 0 R 5 0 R]>>".to_vec(),
+            b"<</Subtype/Stamp/Rect[0 0 100 100]/AP<</N 6 0 R>>>>".to_vec(),
+            b"<</Subtype/Stamp/Rect[0 0 100 100]/AP<</N 9 0 R>>>>".to_vec(),
+            form("/Resources<</XObject<</A 7 0 R/B 8 0 R>>>>", "/A Do /B Do"),
+            form("", "0 0 100 100 re f"),
+            form("", "0 0 100 100 re f"),
+            form("", "0 0 100 100 re f"),
+        ]);
+        let page = backend.pages()[&1];
+        let base = Transform::from_row(1.0, 0.0, 0.0, -1.0, 0.0, 100.0);
+        for (most, read) in [(0, 0), (1, 1)] {
+            let mut budget = |work: u64| {
+                if work > most {
+                    ControlFlow::Break(())
+                } else {
+                    ControlFlow::Continue(())
+                }
+            };
+            let white = solid(100, 100, [255; 4]);
+            let mut painter = Painter::new(&backend, page, white, base, &mut budget);
+            painter.paint_annotations(base);
+            assert!(painter.stopped);
+            assert_eq!(backend.take_read(), read, "{most}");
+        }
+    }
+
+    #[test]
+    fn a_form_the_page_and_its_annotations_paint_is_read_once() {
+        let backend = CountingForms::load(vec![
+            b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+            b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+            b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 100 100]/Annots[4 0 R 4 0 R 5 0 R]\
+              /Resources<</XObject<</Fm 6 0 R>>>>/Contents 8 0 R>>"
+                .to_vec(),
+            b"<</Subtype/Stamp/Rect[10 10 20 20]/AP<</N 6 0 R>>>>".to_vec(),
+            b"<</Subtype/Stamp/Rect[50 50 60 60]/AP<</N 6 0 R>>>>".to_vec(),
+            form("/Resources<</XObject<</Child 7 0 R>>>>", "/Child Do"),
+            form("", "0 0 1 rg 0 0 100 100 re f"),
+            stream("<</Length 6>>", b"/Fm Do"),
+        ]);
+        let options = RasterOptions {
+            dpi: 72.0,
+            region: PageRegion::Crop,
+        };
+        let page = render_page(&backend, 1, &options, &mut |_| ControlFlow::Continue(())).unwrap();
+        assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+        assert_eq!(backend.take_read(), 2);
+    }
+
+    fn painting_through(resources: &str, content: &str, painter: Vec<u8>) -> CountingForms {
+        CountingForms::load(vec![
+            b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+            b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+            b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 100 100]/Annots[4 0 R 5 0 R]>>".to_vec(),
+            b"<</Subtype/Stamp/Rect[0 0 50 50]/AP<</N 6 0 R>>>>".to_vec(),
+            b"<</Subtype/Stamp/Rect[50 50 100 100]/AP<</N 6 0 R>>>>".to_vec(),
+            form(&format!("/Resources<<{resources}>>"), content),
+            painter,
+            form("", "0 0 10 10 re f"),
+            form("", "0 0 10 10 re f"),
+        ])
+    }
+
+    #[test]
+    fn forms_in_an_appearance_s_pattern_or_soft_mask_are_read_once_and_not_past_a_refusal() {
+        let cell = "/A Do /B Do";
+        let pattern = stream(
+            &format!(
+                "<</PatternType 1/PaintType 1/TilingType 1/BBox[0 0 10 10]/XStep 10/YStep 10\
+                 /Resources<</XObject<</A 8 0 R/B 9 0 R>>>>/Length {}>>",
+                cell.len()
+            ),
+            cell.as_bytes(),
+        );
+        let group = form(
+            "/Group<</S/Transparency>>/Resources<</XObject<</A 8 0 R/B 9 0 R>>>>",
+            cell,
+        );
+        let cases = [
+            painting_through(
+                "/Pattern<</P 7 0 R>>",
+                "/Pattern cs /P scn 0 0 100 100 re f",
+                pattern,
+            ),
+            painting_through(
+                "/ExtGState<</M<</SMask<</S/Alpha/G 7 0 R>>>>>>",
+                "/M gs 0 0 1 rg 0 0 100 100 re f",
+                group,
+            ),
+        ];
+        let options = RasterOptions {
+            dpi: 72.0,
+            region: PageRegion::Crop,
+        };
+        for (case, backend) in cases.iter().enumerate() {
+            render_page(backend, 1, &options, &mut |_| ControlFlow::Continue(())).unwrap();
+            assert_eq!(backend.take_read(), 4, "{case}");
+            let refused = render_page(backend, 1, &options, &mut |_| {
+                if backend.read.load(Ordering::Relaxed) < 3 {
+                    ControlFlow::Continue(())
+                } else {
+                    ControlFlow::Break(())
+                }
+            });
+            assert!(refused.is_err(), "{case}");
+            assert_eq!(backend.take_read(), 3, "{case}");
+        }
+    }
+
+    #[test]
+    fn appearances_that_share_a_soft_mask_read_its_group_once() {
+        let masked = form(
+            "/Resources<</ExtGState<</M<</SMask<</S/Alpha/G 8 0 R>>>>>>>>",
+            "/M gs 0 0 1 rg 0 0 100 100 re f",
+        );
+        let backend = CountingForms::load(vec![
+            b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+            b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+            b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 100 100]/Annots[4 0 R 5 0 R]>>".to_vec(),
+            b"<</Subtype/Stamp/Rect[0 0 50 50]/AP<</N 6 0 R>>>>".to_vec(),
+            b"<</Subtype/Stamp/Rect[50 50 100 100]/AP<</N 7 0 R>>>>".to_vec(),
+            masked.clone(),
+            masked,
+            form("/Group<</S/Transparency>>", "0 0 50 50 re f"),
+        ]);
+        let options = RasterOptions {
+            dpi: 72.0,
+            region: PageRegion::Crop,
+        };
+        render_page(&backend, 1, &options, &mut |_| ControlFlow::Continue(())).unwrap();
+        assert_eq!(backend.take_read(), 3);
+    }
+
+    #[test]
+    fn appearances_that_share_a_tiling_pattern_read_it_once() {
+        let patterned = form(
+            "/Resources<</Pattern<</P 8 0 R>>>>",
+            "/Pattern cs /P scn 0 0 100 100 re f",
+        );
+        let cell = "0 0 5 5 re f";
+        let backend = CountingForms::load(vec![
+            b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+            b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+            b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 100 100]/Annots[4 0 R 5 0 R]>>".to_vec(),
+            b"<</Subtype/Stamp/Rect[0 0 50 50]/AP<</N 6 0 R>>>>".to_vec(),
+            b"<</Subtype/Stamp/Rect[50 50 100 100]/AP<</N 7 0 R>>>>".to_vec(),
+            patterned.clone(),
+            patterned,
+            stream(
+                &format!(
+                    "<</PatternType 1/PaintType 1/TilingType 1/BBox[0 0 10 10]/XStep 10\
+                     /YStep 10/Resources<<>>/Length {}>>",
+                    cell.len()
+                ),
+                cell.as_bytes(),
+            ),
+        ]);
+        let options = RasterOptions {
+            dpi: 72.0,
+            region: PageRegion::Crop,
+        };
+        render_page(&backend, 1, &options, &mut |_| ControlFlow::Continue(())).unwrap();
+        assert_eq!(backend.take_read(), 3);
+    }
+
+    fn two_appearances_sharing(resources: &str, content: &str, shared: Vec<Vec<u8>>) -> usize {
+        let painting = form(&format!("/Resources<<{resources}>>"), content);
+        let mut objects = vec![
+            b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+            b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+            b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 100 100]/Annots[4 0 R 5 0 R]>>".to_vec(),
+            b"<</Subtype/Stamp/Rect[0 0 50 50]/AP<</N 6 0 R>>>>".to_vec(),
+            b"<</Subtype/Stamp/Rect[50 50 100 100]/AP<</N 7 0 R>>>>".to_vec(),
+            painting.clone(),
+            painting,
+        ];
+        objects.extend(shared);
+        let backend = CountingForms::load(objects);
+        let options = RasterOptions {
+            dpi: 72.0,
+            region: PageRegion::Crop,
+        };
+        render_page(&backend, 1, &options, &mut |_| ControlFlow::Continue(())).unwrap();
+        backend.take_read()
+    }
+
+    #[test]
+    fn appearances_that_share_a_font_load_it_once() {
+        let read = two_appearances_sharing(
+            "/Font<</F 8 0 R>>",
+            "BT /F 12 Tf 10 10 Td (A) Tj ET",
+            vec![b"<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>".to_vec()],
+        );
+        assert_eq!(read, 3);
+    }
+
+    #[test]
+    fn appearances_that_share_a_shading_read_it_once() {
+        let read = two_appearances_sharing(
+            "/Shading<</Sh 8 0 R>>/Pattern<</P 9 0 R>>",
+            "/Sh sh /Pattern cs /P scn 0 0 10 10 re f",
+            vec![
+                b"<</ShadingType 2/ColorSpace/DeviceRGB/Coords[0 0 100 0]\
+                  /Function<</FunctionType 2/Domain[0 1]/C0[1 0 0]/C1[0 0 1]/N 1>>>>"
+                    .to_vec(),
+                b"<</PatternType 2/Shading 8 0 R>>".to_vec(),
+            ],
+        );
+        assert_eq!(read, 4);
+    }
+
+    #[test]
+    fn a_resource_a_form_writes_inline_has_no_id_though_the_page_names_one_alike() {
+        let shading = "<</ShadingType 2/ColorSpace/DeviceRGB/Coords[0 0 1 0]\
+                       /Function<</FunctionType 2/Domain[0 1]/C0[1 0 0]/C1[1 0 0]/N 1>>>>";
+        let pattern = format!("<</PatternType 2/Shading {shading}>>");
+        let font = "<</Type/Font/Subtype/Type1/BaseFont/Courier>>";
+        let backend = RawBackend::load_bytes(&pdf(
+            vec![
+                b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+                b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+                b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 100 100]\
+                  /Resources<</Shading<</N 4 0 R>>/Pattern<</N 5 0 R>>/Font<</N 6 0 R>>>>>>"
+                    .to_vec(),
+                shading.as_bytes().to_vec(),
+                pattern.clone().into_bytes(),
+                font.as_bytes().to_vec(),
+                form(
+                    &format!(
+                        "/Resources<</Shading<</N {shading}>>/Pattern<</N {pattern}>>\
+                         /Font<</N {font}>>>>"
+                    ),
+                    "",
+                ),
+            ],
+            1,
+        ))
+        .unwrap();
+        let page = backend.pages()[&1];
+        let ids = |scope: ResourceScope| {
+            (
+                backend.shading_id(scope, b"N"),
+                backend.pattern_id(scope, b"N"),
+                backend.font_id(scope, b"N"),
+            )
+        };
+        assert_eq!(
+            ids(ResourceScope::page(page)),
+            (Some((4, 0)), Some((5, 0)), Some((6, 0)))
+        );
+        assert_eq!(ids(ResourceScope::form(page, (7, 0))), (None, None, None));
+    }
+
+    fn deep_chain(tries: usize) -> CountingForms {
+        let mut objects = vec![
+            b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+            b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+            b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 100 100]/Annots[4 0 R]>>".to_vec(),
+            b"<</Subtype/Stamp/Rect[0 0 100 100]/AP<</N 5 0 R>>>>".to_vec(),
+            form("/Resources<</XObject<</Fm 6 0 R>>>>", "/Fm Do"),
+        ];
+        let nested = |entries: String, content: &str| {
+            stream(
+                &format!("<</Subtype/Form{entries}/Length {}>>", content.len()),
+                content.as_bytes(),
+            )
+        };
+        objects.extend((6..36).map(|n| {
+            nested(
+                format!("/Resources<</XObject<</Fm {} 0 R>>>>", n + 1),
+                "/Fm Do",
+            )
+        }));
+        objects.push(nested(
+            "/Resources<</XObject<</Fm 37 0 R>>>>".to_string(),
+            &"/Fm Do ".repeat(tries),
+        ));
+        objects.push(nested(String::new(), "0 0 1 rg 0 0 100 100 re f"));
+        CountingForms::load(objects)
+    }
+
+    fn paint_appearances(
+        backend: &CountingForms,
+        budget: &mut dyn FnMut(u64) -> ControlFlow<()>,
+    ) -> RasterGaps {
+        let page = backend.pages()[&1];
+        let base = Transform::from_row(1.0, 0.0, 0.0, -1.0, 0.0, 100.0);
+        let white = solid(100, 100, [255; 4]);
+        let mut painter = Painter::new(backend, page, white, base, budget);
+        painter.paint_annotations(base);
+        painter.gaps
+    }
+
+    #[test]
+    fn a_form_nested_past_the_limit_is_never_read_and_each_try_is_charged() {
+        let tries = |tries: usize| {
+            let backend = deep_chain(tries);
+            let mut charges = 0;
+            let gaps = paint_appearances(&backend, &mut |_| {
+                charges += 1;
+                ControlFlow::Continue(())
+            });
+            (backend.take_read(), charges, gaps.annotations)
+        };
+        let ((read_once, once, lost_once), (read_four, four, lost_four)) = (tries(1), tries(4));
+        assert_eq!((read_once, read_four), (32, 32));
+        assert_eq!(four - once, 3);
+        assert_eq!((lost_once, lost_four), (1, 1));
+
+        let backend = deep_chain(4);
+        let mut past_the_chain = 0;
+        paint_appearances(&backend, &mut |_| {
+            if backend.read.load(Ordering::Relaxed) < 32 {
+                return ControlFlow::Continue(());
+            }
+            past_the_chain += 1;
+            if past_the_chain < 2 {
+                ControlFlow::Continue(())
+            } else {
+                ControlFlow::Break(())
+            }
+        });
+        assert_eq!((backend.take_read(), past_the_chain), (32, 2));
     }
 
     #[test]
