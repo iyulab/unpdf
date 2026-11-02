@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Deeply nested arrays and dictionaries no longer overflow the stack.** The object and
+  content-stream parsers recursed once per level, so an image dictionary holding 1,000 nested
+  arrays, or a content-stream operand of 3,000, aborted the process -- a stack overflow no
+  caller can catch. Arrays, dictionaries and indirect objects now nest at most 64 deep, PDFium's
+  bound: a deeper object, an inline image dictionary included, fails to parse as a malformed one
+  does, and a deeper content-stream array is cut at the bound. The rest of the page is read.
+
 ## 0.52.0 — 2026-11-02
 
 ### Added

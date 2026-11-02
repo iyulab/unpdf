@@ -1,5 +1,6 @@
 //! PDF content stream parser.
 
+use super::tokenizer::MAX_NESTING_DEPTH;
 use crate::error::Result;
 use crate::parser::backend::{ContentOp, PdfValue};
 
@@ -43,7 +44,7 @@ pub fn parse_content_stream(data: &[u8]) -> Result<Vec<ContentOp>> {
 
         // Array [...]
         if data[i] == b'[' {
-            let (val, next) = parse_array(data, i);
+            let (val, next) = parse_array(data, i, 1);
             operand_stack.push(val);
             i = next;
             continue;
@@ -324,8 +325,8 @@ fn parse_number(data: &[u8], start: usize) -> (PdfValue, usize) {
     }
 }
 
-/// Parse an array starting at `[`, returns (PdfValue, next_index).
-fn parse_array(data: &[u8], start: usize) -> (PdfValue, usize) {
+/// Parse an array starting at `[`, `depth` arrays deep, returns (PdfValue, next_index).
+fn parse_array(data: &[u8], start: usize, depth: usize) -> (PdfValue, usize) {
     let mut i = start + 1; // skip '['
     let len = data.len();
     let mut elements = Vec::new();
@@ -359,8 +360,8 @@ fn parse_array(data: &[u8], start: usize) -> (PdfValue, usize) {
         }
 
         // Nested array
-        if data[i] == b'[' {
-            let (val, next) = parse_array(data, i);
+        if data[i] == b'[' && depth < MAX_NESTING_DEPTH {
+            let (val, next) = parse_array(data, i, depth + 1);
             elements.push(val);
             i = next;
             continue;
@@ -513,6 +514,23 @@ mod tests {
     fn test_empty_content_stream() {
         let ops = parse_content_stream(b"").unwrap();
         assert!(ops.is_empty());
+    }
+
+    #[test]
+    fn an_array_nested_past_the_bound_is_cut_there() {
+        fn depth(value: &PdfValue) -> usize {
+            match value {
+                PdfValue::Array(items) => 1 + items.first().map_or(0, depth),
+                _ => 0,
+            }
+        }
+        for nesting in [MAX_NESTING_DEPTH, MAX_NESTING_DEPTH + 1] {
+            let data = format!("{}{} TJ (x) Tj", "[".repeat(nesting), "]".repeat(nesting));
+            let ops = parse_content_stream(data.as_bytes()).unwrap();
+            let names: Vec<&str> = ops.iter().map(|op| op.operator.as_str()).collect();
+            assert_eq!(names, ["TJ", "Tj"]);
+            assert_eq!(depth(&ops[0].operands[0]), MAX_NESTING_DEPTH);
+        }
     }
 
     #[test]
