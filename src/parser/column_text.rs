@@ -64,6 +64,18 @@ impl ColumnText {
         rows.len()
     }
 
+    /// Whether `left` lies within the extent of the text that rows other than `row` have in
+    /// `column` -- from where an entry starts to where it ends. Text that runs on past `edge`,
+    /// the column's boundary with the next, is a heading over both columns and not the
+    /// column's entry (see [`Self::rows_under`]).
+    fn starts_within(&self, column: usize, row: usize, left: f32, edge: f32) -> bool {
+        self.columns.get(column).is_some_and(|spans| {
+            spans
+                .iter()
+                .any(|&(r, l, rt)| r != row && rt <= edge && l - 0.5 <= left && left < rt)
+        })
+    }
+
     /// The column of a span of `row`, from `left` to `right`, that starts in column `start`,
     /// whose boundary with the next column is `edge`: the next column when the span lies
     /// over that column's text in more of the other rows than over its own column's text;
@@ -85,6 +97,13 @@ impl ColumnText {
         let Some(edge) = edge else {
             return otherwise;
         };
+        // A span that starts within its own column's text is set in that column, however far
+        // it runs on: a row label or a group heading that spans the table begins where the
+        // column's entries begin. Only text that starts short of the column's entries -- in the
+        // channel before them -- is read as belonging to the column it lies over.
+        if self.starts_within(start, row, left, edge) {
+            return start;
+        }
         let here = self.rows_under(start, row, Some(edge), left, right);
         let next = self.rows_under(start + 1, row, None, left, right);
         if here == 0 && next == 0 {
@@ -172,5 +191,21 @@ mod tests {
     fn the_last_column_has_no_next() {
         let text = ports();
         assert_eq!(text.column_for(0, 2, None, 270.0, 300.0, 2), 2);
+    }
+
+    /// A group heading that runs across the table starts where the first column's entries
+    /// start: it is that column's, although it lies over the next column's text as well.
+    #[test]
+    fn a_span_starting_within_its_columns_text_stays_however_far_it_runs() {
+        let mut text = ColumnText::new(3);
+        for row in 1..5 {
+            text.add(row, 0, 94.0, 160.0);
+            text.add(row, 1, 209.0, 270.0);
+            text.add(row, 2, 323.0, 400.0);
+        }
+        // Starts at 94, runs to 290: over column 1's text in every row, yet begins in column 0's.
+        assert_eq!(text.column_for(0, 0, Some(193.0), 94.0, 290.0, 0), 0);
+        // Begun in the channel before column 1's entries, the same span goes with them.
+        assert_eq!(text.column_for(0, 0, Some(193.0), 180.0, 290.0, 0), 1);
     }
 }

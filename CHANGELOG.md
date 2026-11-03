@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A ruled table keeps its columns when a title or a group heading spans them.** Between two
+  rules the columns are the gaps no line of text crosses, with a fifth of the lines allowed to
+  cross; in a table of nine lines, a title and a heading that each ran across the first two
+  columns closed the gap, and the table was read with one column fewer (`pH (1 % in water)
+  4.0 - 8.0` in one cell). A line that is one run of text and short enough to be a label (at
+  most ten words) no longer closes a gap that at least three lines set in cells keep open, as
+  pdfplumber's text edges ask of at least three words; a paragraph under the table still does.
+  A line that spans the table is placed in the column it starts in, as the lines below it are.
+
 ## 0.53.0 — 2026-11-03
 
 ### Added

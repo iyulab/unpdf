@@ -244,7 +244,6 @@ pub(crate) fn reads_as_prose(rows: &[&TableRowData]) -> bool {
 /// reason to lose the table. Up to a fifth of the rows may cross, and none in a table of
 /// fewer than five rows; the run that crosses stays in the cell it starts in.
 fn column_gaps(rows: &[&TableRowData]) -> Vec<(f32, f32)> {
-    let extent = TextSpan::ink_extent;
     let mut sizes: Vec<f32> = rows
         .iter()
         .flat_map(|r| r.spans.iter())
@@ -255,8 +254,61 @@ fn column_gaps(rows: &[&TableRowData]) -> Vec<(f32, f32)> {
     }
     sizes.sort_by(f32::total_cmp);
     let min_gap = sizes[sizes.len() / 2] * COLUMN_GAP_EM;
-    let allowed = if rows.len() >= 5 { rows.len() / 5 } else { 0 };
+    let allowed = |n: usize| if n >= 5 { n / 5 } else { 0 };
 
+    let mut gaps = open_gaps(rows, min_gap, allowed(rows.len()), rows.len().min(2));
+
+    // A row that is one run of text -- a table's own title, a label that spans its columns --
+    // says nothing about where the columns are, yet by crossing a gap it can close it. A gap the
+    // rows set in cells keep open stands anyway when at least three of them have text on both
+    // sides of it, the evidence pdfplumber asks of a text edge (`min_words_vertical`). Without
+    // these rows the table would lose a column to two heading lines, as one with its title and a
+    // group label did (nine lines, one allowed to cross).
+    let cells: Vec<&TableRowData> = rows
+        .iter()
+        .copied()
+        .filter(|r| r.spans.len() >= 2)
+        .collect();
+    let runs = rows.len() - cells.len();
+    // Only a label or a title: a line of running text under the table is not one, and letting
+    // it through would draw the paragraph below a table into its cells.
+    let labels_only = rows.iter().filter(|r| r.spans.len() < 2).all(|r| {
+        r.spans
+            .iter()
+            .map(|s| s.text.split_whitespace().count())
+            .sum::<usize>()
+            <= LABEL_WORDS
+    });
+    if runs > 0 && runs * 2 <= rows.len() && labels_only && cells.len() >= MIN_EDGE_ROWS {
+        for gap in open_gaps(&cells, min_gap, allowed(cells.len()), MIN_EDGE_ROWS) {
+            if !gaps.iter().any(|g| g.0 < gap.1 && gap.0 < g.1) {
+                gaps.push(gap);
+            }
+        }
+        gaps.sort_by(|a, b| a.0.total_cmp(&b.0));
+    }
+    if gaps.is_empty() {
+        gaps = worksheet_gaps(rows, min_gap);
+    }
+    gaps
+}
+
+/// The longest line, in words, that counts as a label or a title rather than running text.
+const LABEL_WORDS: usize = 10;
+
+/// Rows with text on both sides of a gap that let it stand without the rows that are one run of
+/// text (see [`column_gaps`]).
+const MIN_EDGE_ROWS: usize = 3;
+
+/// The x ranges, as `(start, end)`, that at most `allowed` of `rows` cover, wide enough to part
+/// two cells, with text on both sides of the gap in `need_both_sides` rows.
+fn open_gaps(
+    rows: &[&TableRowData],
+    min_gap: f32,
+    allowed: usize,
+    need_both_sides: usize,
+) -> Vec<(f32, f32)> {
+    let extent = TextSpan::ink_extent;
     let left = rows
         .iter()
         .flat_map(|r| r.spans.iter())
@@ -309,12 +361,9 @@ fn column_gaps(rows: &[&TableRowData]) -> Vec<(f32, f32)> {
                     && r.spans.iter().any(|s| extent(s).0 >= b - STEP)
             })
             .count();
-        if both_sides >= rows.len().min(2) {
+        if both_sides >= need_both_sides {
             gaps.push((a, b));
         }
-    }
-    if gaps.is_empty() {
-        gaps = worksheet_gaps(rows, min_gap);
     }
     gaps
 }
@@ -412,8 +461,18 @@ fn grid_of(
         .map(|row| {
             let mut cells = vec![String::new(); col_bounds.len() - 1];
             for span in &row.spans {
-                let mid = span.x + span.width / 2.0;
-                let column = col_bounds.iter().skip(1).take_while(|&&b| mid >= b).count();
+                // A run that crosses a column boundary stays in the cell it starts in; a run
+                // inside one cell is placed by its middle.
+                let end = span.x + span.width;
+                let crosses = col_bounds[1..col_bounds.len() - 1]
+                    .iter()
+                    .any(|&b| span.x < b && b < end);
+                let at = if crosses {
+                    span.x
+                } else {
+                    span.x + span.width / 2.0
+                };
+                let column = col_bounds.iter().skip(1).take_while(|&&b| at >= b).count();
                 let cell = &mut cells[column.min(col_bounds.len() - 2)];
                 if !cell.is_empty() {
                     cell.push(' ');
@@ -786,5 +845,106 @@ mod tests {
         let grids = grids(&rule_stacks(&rules), &spans, &[]);
         assert_eq!(grids.len(), 1, "{grids:?}");
         assert_eq!((grids[0].row_count(), grids[0].column_count()), (6, 2));
+    }
+
+    /// A specification sheet: a group heading and a label that span the table, over a header and
+    /// rows of three cells. The two spanning lines cross the gap between the first two columns,
+    /// and in a table of nine lines one line may cross -- the heading rows used to close the
+    /// column. Lines that are one run say nothing about where the columns are.
+    fn specification_sheet(heading_rows: usize) -> Vec<TextSpan> {
+        let mut spans = Vec::new();
+        let mut y = 590.0;
+        if heading_rows >= 1 {
+            spans.push(span("GENERAL DESCRIPTION OF THE PRODUCT", 105.0, y));
+            y -= 14.0;
+        }
+        if heading_rows >= 2 {
+            spans.push(span("Wettable Powder Formulation", 105.0, y));
+            y -= 14.0;
+        }
+        for (a, b, c) in [
+            ("CHARACTERISTIC", "SPECIFICATION", "METHOD"),
+            ("AI, as Methomyl", "87.5 - 92.5", "HPLC"),
+            ("pH in water", "4.0 - 8.0", "pH-meter"),
+            ("Appearance", "White", "Visual"),
+        ] {
+            y -= 12.0;
+            spans.push(span(a, 105.0, y));
+            spans.push(span(b, 230.0, y));
+            spans.push(span(c, 340.0, y));
+        }
+        spans
+    }
+
+    #[test]
+    fn headings_that_span_the_columns_do_not_close_a_column() {
+        let rules = vec![h(610.0, 100.0, 450.0), h(400.0, 100.0, 450.0)];
+        let spans = specification_sheet(2);
+        let grids = grids(&rule_stacks(&rules), &spans, &[]);
+        assert_eq!(grids.len(), 1);
+        assert_eq!(
+            grids[0].col_bounds.len(),
+            4,
+            "three columns: {:?}",
+            grids[0].col_bounds
+        );
+    }
+
+    #[test]
+    fn rows_set_in_cells_are_what_open_a_column() {
+        // Three rows in cells hold both gaps open; one spanning line is no veto.
+        let rules = vec![h(610.0, 100.0, 450.0), h(400.0, 100.0, 450.0)];
+        let one = grids(&rule_stacks(&rules), &specification_sheet(1), &[]);
+        assert_eq!(one[0].col_bounds.len(), 4);
+        // Without spanning lines nothing changed.
+        let none = grids(&rule_stacks(&rules), &specification_sheet(0), &[]);
+        assert_eq!(none[0].col_bounds.len(), 4);
+    }
+
+    #[test]
+    fn lines_of_one_run_alone_do_not_make_columns() {
+        // Only two rows are set in cells, among several that are one run: not enough to hold a
+        // gap against the lines that cross it.
+        let rules = vec![h(610.0, 100.0, 450.0), h(400.0, 100.0, 450.0)];
+        let spans = vec![
+            span("GENERAL DESCRIPTION", 105.0, 590.0),
+            span("Wettable Powder Formulation", 105.0, 576.0),
+            span("A long label across", 105.0, 562.0),
+            span("one", 105.0, 548.0),
+            span("left", 105.0, 520.0),
+            span("right", 340.0, 520.0),
+            span("second", 105.0, 508.0),
+            span("pair", 340.0, 508.0),
+        ];
+        let grids = grids(&rule_stacks(&rules), &spans, &[]);
+        assert!(
+            grids.iter().all(|g| g.col_bounds.len() <= 3),
+            "no third column from two rows: {:?}",
+            grids.iter().map(|g| &g.col_bounds).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_paragraph_under_the_table_is_not_drawn_into_it() {
+        // The relaxation is for labels and titles: lines of running text between the rules
+        // still close the column they cross.
+        let rules = vec![h(610.0, 100.0, 450.0), h(400.0, 100.0, 450.0)];
+        let mut spans = specification_sheet(0);
+        for (i, line) in [
+            "Another way to represent the two rates of return measures is to draw a scatter graph",
+            "We may visually observe how the two sets of rates of return move together by drawing",
+        ]
+        .iter()
+        .enumerate()
+        {
+            spans.push(span(line, 105.0, 520.0 - i as f32 * 12.0));
+        }
+        let grids = grids(&rule_stacks(&rules), &spans, &[]);
+        let cells: usize = grids.iter().map(|g| g.col_bounds.len()).sum();
+        assert!(
+            grids.is_empty() || cells <= 4,
+            "paragraph lines must not become rows of a wider grid: {:?}",
+            grids.iter().map(|g| &g.col_bounds).collect::<Vec<_>>()
+        );
     }
 }
