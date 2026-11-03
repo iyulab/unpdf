@@ -157,7 +157,15 @@ pub(crate) fn grids(
             while j + 1 < bands.len() && is_tabular(&bands[j + 1].2) {
                 j += 1;
             }
-            let all: Vec<TableRowData> = bands[i..=j]
+            // The band right above the run may be its header, even when it does not line up
+            // in columns by itself: a header of two lines, the second with one cell
+            // (`Entry R Conditions Yield` over `cis:trans`), or one whose cells span columns.
+            let first = if i > 0 && is_header_band(&bands[i - 1].2) {
+                i - 1
+            } else {
+                i
+            };
+            let all: Vec<TableRowData> = bands[first..=j]
                 .iter()
                 .flat_map(|b| b.2.iter().cloned())
                 .collect();
@@ -169,7 +177,7 @@ pub(crate) fn grids(
             let top = if kept.start > 0 {
                 (all[kept.start - 1].y + all[kept.start].y) / 2.0
             } else {
-                bands[i].0
+                bands[first].0
             };
             let bottom = if kept.end < all.len() {
                 (all[kept.end - 1].y + all[kept.end].y) / 2.0
@@ -180,6 +188,8 @@ pub(crate) fn grids(
             // because a header above a rule may hold cells that span several columns.
             let body: Vec<&TableRowData> = if j > i && bands[j].2.len() >= 2 {
                 bands[j].2.iter().collect()
+            } else if first < i {
+                bands[i].2.iter().collect()
             } else {
                 rows.clone()
             };
@@ -191,6 +201,16 @@ pub(crate) fn grids(
     }
     out.sort_by(|a, b| b.top_y.total_cmp(&a.top_y));
     out
+}
+
+/// Whether a band that is not a table by itself can head the table below it: its lines are
+/// not prose, and one of them is set in cells (two runs or more, a caption is one).
+fn is_header_band(rows: &[TableRowData]) -> bool {
+    let refs: Vec<&TableRowData> = rows.iter().collect();
+    !rows.is_empty()
+        && !is_tabular(rows)
+        && !reads_as_prose(&refs)
+        && rows.iter().any(|r| r.spans.len() >= 2)
 }
 
 /// Whether a band's lines read as table rows: some gap stays open down all of them, and
@@ -524,6 +544,47 @@ mod tests {
         // The same layout with words in the second column is a table.
         let words = spans(&["Annex", "Note", "Index", "Other"]);
         assert_eq!(grids(&rule_stacks(&rules), &words, &[]).len(), 1);
+    }
+
+    /// A header of two lines, the second with one cell, does not line up in columns by itself
+    /// (the second line crosses no gap) but heads the table under it.
+    #[test]
+    fn a_two_line_header_with_a_sparse_second_line_stays_in_its_table() {
+        let rules = vec![
+            h(500.0, 100.0, 400.0),
+            h(460.0, 100.0, 400.0),
+            h(400.0, 100.0, 400.0),
+        ];
+        let spans = vec![
+            span("Entry", 105.0, 488.0),
+            span("Yield", 300.0, 488.0),
+            span("cis:trans", 300.0, 474.0),
+            span("alpha", 105.0, 448.0),
+            span("71", 300.0, 448.0),
+            span("beta", 105.0, 436.0),
+            span("85", 300.0, 436.0),
+            span("gamma", 105.0, 424.0),
+            span("62", 300.0, 424.0),
+        ];
+        let grids = grids(&rule_stacks(&rules), &spans, &[]);
+        assert_eq!(grids.len(), 1, "{grids:?}");
+        assert_eq!(grids[0].top_y, 500.0);
+        let (table, consumed) = super::super::lattice::build_table(&grids[0], &spans).unwrap();
+        assert_eq!(consumed.len(), spans.len());
+        let first: Vec<String> = table.rows[0].cells.iter().map(|c| c.plain_text()).collect();
+        assert_eq!(first, ["Entry", "Yield"]);
+    }
+
+    /// A caption over a table is one run of text, not a header band.
+    #[test]
+    fn a_caption_over_a_ruled_table_is_not_its_header() {
+        let (rules, spans) = three_rule_table();
+        let mut rules = rules;
+        rules.insert(0, h(540.0, 100.0, 400.0));
+        let mut spans = spans;
+        spans.push(span("Table 1", 105.0, 520.0));
+        let grids = grids(&rule_stacks(&rules), &spans, &[]);
+        assert!(grids.iter().all(|g| g.top_y <= 500.0), "{grids:?}");
     }
 
     /// Rules with a real gap between them are two rules: two tables side by side, not one.

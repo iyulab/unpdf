@@ -20,6 +20,9 @@
   before the rules-only (booktabs-style) table path looks for tables, which recovers tables
   that came out as running text. A list of entries ruled off against page references is still
   a list, as it is for text-aligned tables.
+  The band right above such a table can be its header even when it does not line up in
+  columns by itself (a second header line with one cell, cells that span columns), and is no
+  longer left outside the table as running text.
 
 
 ## 0.52.1 — 2026-11-03
