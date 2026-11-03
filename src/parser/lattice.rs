@@ -499,15 +499,24 @@ pub(crate) fn build_table(grid: &LatticeGrid, spans: &[TextSpan]) -> Option<(Tab
     // Each line of text is in one row: the row the middle of its main text's letters is in --
     // its largest, so a subscript lowered across a row boundary, or to within a couple of
     // points of the table's top rule, stays with the line it marks.
+    //
+    // The lines are the table's own: text that starts outside its columns is placed in no
+    // cell, so it must not take part in a line either. A column of body text beside the table,
+    // its baselines a couple of points off the rows', would otherwise join a row's line and, with
+    // the larger type, decide which row the whole line is in.
+    let inside: Vec<usize> = (0..spans.len())
+        .filter(|&i| bin_index(&grid.col_bounds, spans[i].x).is_some())
+        .collect();
+    let candidates: Vec<TextSpan> = inside.iter().map(|&i| spans[i].clone()).collect();
     let mut line_row: Vec<Option<usize>> = vec![None; spans.len()];
-    for line in group_into_rows(spans, CELL_LINE_TOLERANCE) {
+    for line in group_into_rows(&candidates, CELL_LINE_TOLERANCE) {
         let row = line
             .spans
             .iter()
             .max_by(|a, b| a.font_size.total_cmp(&b.font_size))
             .and_then(|main| bin_index(&grid.row_bounds, letters_middle(main)));
         for &i in &line.sources {
-            line_row[i] = row;
+            line_row[inside[i]] = row;
         }
     }
 

@@ -4,6 +4,19 @@
 
 ### Fixed
 
+- **A table with a double rule above and under it is read as a table.** A journal draws the
+  rules above and under a table twice, two or three points apart. The strip between the two
+  strokes holds no text but counted as a band, and a table with four bands of which two were
+  empty was taken for a chart's gridlines and set as running text. Rules of one extent closer
+  than three points are now one rule, as pdfplumber's `snap_tolerance` has it. A line of text
+  still fits between rules that are further apart.
+- **A column of text beside a ruled table no longer pulls the table's rows together.** The lines
+  of a ruled table were formed from every line of text on the page, so body text in the next
+  column, a couple of points off the table's baselines and in larger type, joined a row's line
+  and decided which row it was in: the last two rows of one table became one row (`YOBr YOI`)
+  with an empty row under it. Only text that starts inside the table's columns forms its lines.
+  On the 1 403 olmOCR-Bench pages the two changes alter 23 outputs, score +5 / −0 tests, and
+  leave all 200 ODL outputs unchanged.
 - **A form field whose type, name or flags are indirect objects is read.** An entry may hold its
   value as an indirect object (ISO 32000-1 7.3.10), which PDFium and pdf.js follow. `/FT 5 0 R`
   made the field vanish from `form_fields`, `/T 5 0 R` left it with an empty name, and

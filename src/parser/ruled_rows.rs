@@ -26,6 +26,11 @@ const MIN_RULE_LENGTH: f32 = 40.0;
 const EXTENT_TOLERANCE: f32 = 3.0;
 /// Rules closer than this are one rule drawn twice (points).
 const SAME_RULE: f32 = 1.0;
+/// Rules of a stack closer than this are one rule: a journal's double rule, two strokes 2–3
+/// points apart, with no room between them for a line of text. pdfplumber snaps edges within
+/// 3 points (`snap_tolerance`) for the same reason; kept apart, the strip between the strokes
+/// is an empty band and the stack reads as a chart's gridlines.
+const DOUBLE_RULE: f32 = 3.0;
 /// Rows of a band are grouped like stream-mode rows: baselines within this share of the size.
 const ROW_TOLERANCE: f32 = 0.5;
 /// A cell this many words long is a line of prose, not a table entry.
@@ -84,7 +89,7 @@ pub(crate) fn rule_stacks(lines: &[GraphicsLine]) -> Vec<RuleStack> {
         };
         match stacks.iter_mut().find(same_extent) {
             Some(stack) => {
-                if stack.ys.last().is_none_or(|&last| last - y > SAME_RULE) {
+                if stack.ys.last().is_none_or(|&last| last - y > DOUBLE_RULE) {
                     stack.ys.push(y);
                 }
             }
@@ -143,6 +148,13 @@ pub(crate) fn grids(
         // a row at least.
         let empty = bands.iter().filter(|b| b.2.is_empty()).count();
         if empty * 2 >= bands.len() {
+            log::debug!(
+                "ruled rows: {} rules at x {:.0}..{:.0} read as a chart's gridlines ({empty} of {} bands hold no text)",
+                stack.ys.len(),
+                stack.left_x,
+                stack.right_x,
+                bands.len()
+            );
             continue;
         }
 
@@ -150,6 +162,12 @@ pub(crate) fn grids(
         let mut i = 0;
         while i < bands.len() {
             if !is_tabular(&bands[i].2) {
+                log::debug!(
+                    "ruled rows: band y {:.0}..{:.0} ({} lines) does not line up in columns or reads as prose",
+                    bands[i].0,
+                    bands[i].1,
+                    bands[i].2.len()
+                );
                 i += 1;
                 continue;
             }
@@ -194,6 +212,13 @@ pub(crate) fn grids(
                 rows.clone()
             };
             if let Some(grid) = grid_of(stack, top, bottom, &rows, &body) {
+                log::debug!(
+                    "ruled rows: table y {top:.1}..{bottom:.1} from {} lines at {:?}; row bounds {:.1?}, column bounds {:.1?}",
+                    rows.len(),
+                    rows.iter().map(|r| r.y).collect::<Vec<_>>(),
+                    grid.row_bounds,
+                    grid.col_bounds
+                );
                 out.push(grid);
             }
             i = j + 1;
@@ -438,6 +463,11 @@ fn grid_of(
         gaps = column_gaps(rows);
     }
     if gaps.is_empty() || rows.len() < 2 || !reads_as_table(rows, &gaps) {
+        log::debug!(
+            "ruled rows: run y {top:.0}..{bottom:.0} is not a table ({} lines, {} column gaps)",
+            rows.len(),
+            gaps.len()
+        );
         return None;
     }
     let left = rows
@@ -571,6 +601,70 @@ mod tests {
         assert_eq!(stacks.len(), 1, "{stacks:?}");
         assert_eq!((stacks[0].left_x, stacks[0].right_x), (100.0, 400.0));
         assert_eq!(grids(&stacks, &spans, &[]).len(), 1);
+    }
+
+    /// A journal draws the rules above and under a table twice, a few points apart. The strip
+    /// between the two strokes holds no text and is not a band: counted as one, two of the four
+    /// bands are empty and the stack reads as a chart's gridlines.
+    #[test]
+    fn a_rule_drawn_twice_a_few_points_apart_is_one_rule() {
+        let rules = vec![
+            h(500.0, 100.0, 400.0),
+            h(497.2, 100.0, 400.0),
+            h(484.0, 100.0, 400.0),
+            h(440.0, 100.0, 400.0),
+            h(437.2, 100.0, 400.0),
+        ];
+        let (_, spans) = three_rule_table();
+        let stacks = rule_stacks(&rules);
+        assert_eq!(stacks.len(), 1, "{stacks:?}");
+        assert_eq!(stacks[0].ys.len(), 3, "{stacks:?}");
+        let grids = grids(&stacks, &spans, &[]);
+        assert_eq!(grids.len(), 1, "{grids:?}");
+        let (table, consumed) = super::super::lattice::build_table(&grids[0], &spans).unwrap();
+        assert_eq!(consumed.len(), spans.len());
+        assert_eq!(table.rows.len(), 4);
+    }
+
+    /// A double rule between the header and the body does not cut the table in two.
+    #[test]
+    fn a_double_rule_under_the_header_does_not_split_the_table() {
+        let rules = vec![
+            h(500.0, 100.0, 400.0),
+            h(484.0, 100.0, 400.0),
+            h(481.2, 100.0, 400.0),
+            h(440.0, 100.0, 400.0),
+        ];
+        let (_, spans) = three_rule_table();
+        let grids = grids(&rule_stacks(&rules), &spans, &[]);
+        assert_eq!(grids.len(), 1, "{grids:?}");
+        assert_eq!((grids[0].top_y, grids[0].bottom_y), (500.0, 440.0));
+    }
+
+    /// A column of text beside the table, its baselines a few points off the table's, must not
+    /// pull a row of the table into the line above: the lines are the table's own, not the page's.
+    #[test]
+    fn text_beside_a_table_does_not_move_its_rows() {
+        let (rules, mut spans) = three_rule_table();
+        let mut aside = span("beside", 420.0, 462.0);
+        aside.font_size = 12.0;
+        spans.push(aside);
+        let grids = grids(&rule_stacks(&rules), &spans, &[]);
+        assert_eq!(grids.len(), 1, "{grids:?}");
+        let (table, _) = super::super::lattice::build_table(&grids[0], &spans).unwrap();
+        let first_column: Vec<String> =
+            table.rows.iter().map(|r| r.cells[0].plain_text()).collect();
+        assert_eq!(first_column, ["Mineral", "kaolinite", "illite", "humus"]);
+    }
+
+    /// Rules a line of text can fit between stay apart: a table ruled between its rows.
+    #[test]
+    fn rules_a_line_of_text_apart_are_not_merged() {
+        let rules: Vec<GraphicsLine> = [500.0, 488.0, 476.0, 464.0]
+            .into_iter()
+            .map(|y| h(y, 100.0, 400.0))
+            .collect();
+        assert_eq!(rule_stacks(&rules)[0].ys.len(), 4);
     }
 
     /// A contents list ruled between its entries is still a list: entries against page numbers
