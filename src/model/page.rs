@@ -35,10 +35,12 @@ pub struct Page {
     /// Page number (1-indexed)
     pub number: u32,
 
-    /// Page width in points (1 point = 1/72 inch)
+    /// Page width in points (1 point = 1/72 inch): the page's `/MediaBox` as written, with
+    /// neither `/CropBox` nor `/Rotate` applied. The size a page is *displayed* at, which is what
+    /// a rendered page measures, is `PdfParser::page_size` (feature `raster`).
     pub width: f32,
 
-    /// Page height in points
+    /// Page height in points, as [`width`](Self::width) is the width: the `/MediaBox`.
     pub height: f32,
 
     /// Content blocks on the page

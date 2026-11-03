@@ -102,6 +102,7 @@ impl Forms {
     }
 
     /// Form XObject `id`, read and decoded once for the page; `None` when it is not a stream.
+    #[cfg(feature = "raster")]
     pub(crate) fn form(
         &self,
         backend: &dyn PdfBackend,
