@@ -388,6 +388,13 @@ impl RawDocument {
         self.objects.get(&id)
     }
 
+    /// The name `dict` holds under `key`, following an indirect reference to it
+    /// (ISO 32000-1 §7.3.10: a name entry may be an indirect object, as PDFium's
+    /// `GetNameFor` and pdf.js's `Dict.get` read it).
+    pub fn dict_name<'a>(&'a self, dict: &'a PdfDict, key: &[u8]) -> Option<&'a [u8]> {
+        self.resolve(dict.get(key)?).as_name()
+    }
+
     /// Resolve a PdfObject: if it's a Reference, follow it to the actual object.
     /// If not a reference, return the object itself.
     pub fn resolve<'a>(&'a self, obj: &'a PdfObject) -> &'a PdfObject {

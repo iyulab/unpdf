@@ -35,6 +35,12 @@
   did not paint it and the images inside it were not extracted. An image XObject written that
   way was neither extracted nor painted. The `/Subtype` is resolved wherever an XObject's kind
   is decided.
+- **A name a dictionary holds as an indirect object is read as that name.** A font's or a font
+  file's `/Subtype`, an image's `/ColorSpace`, a font's `/BaseEncoding` and a strike-out
+  annotation's `/Subtype` written as `N 0 R` were taken for "no name" -- a standard font lost
+  its metrics, a composite font was read as a simple one -- although ISO 32000-1 §7.3.10 allows
+  any object to be indirect and PDFium and pdf.js follow the reference. One document-level
+  accessor now reads them all, the XObject `/Subtype` included.
 
 ## 0.52.2 — 2026-11-03
 

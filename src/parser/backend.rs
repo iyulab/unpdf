@@ -1287,9 +1287,7 @@ impl PdfBackend for RawBackend {
             let Some(annot) = raw_resolve_dict(&self.doc, annot) else {
                 continue;
             };
-            if raw_dict_get(annot, b"Subtype").and_then(|s| s.as_name())
-                != Some(b"StrikeOut".as_slice())
-            {
+            if self.doc.dict_name(annot, b"Subtype") != Some(b"StrikeOut".as_slice()) {
                 continue;
             }
             let Some(points) =
@@ -1408,8 +1406,7 @@ impl PdfBackend for RawBackend {
         let mut image = self.read_image(&stream, "inline".to_string(), 1);
         // A space by name other than the device ones is a `/ColorSpace` resource.
         if image.color.is_none() {
-            if let Some(name) = raw_dict_get(&stream.dict, b"ColorSpace").and_then(|v| v.as_name())
-            {
+            if let Some(name) = self.doc.dict_name(&stream.dict, b"ColorSpace") {
                 image.color = self.named_color_space(scope, name);
             }
         }
@@ -1600,13 +1597,12 @@ impl PdfBackend for RawBackend {
     fn font_bounds(&self, scope: ResourceScope, font_name: &[u8]) -> Option<PageBox> {
         let doc = &self.doc;
         let font = self.font_resolver.find_font(doc, scope, font_name)?;
-        let dict = if font.is_composite() {
+        let dict = if font.is_composite(doc) {
             self.font_resolver.cid_font_dict(doc, &font)?
         } else {
             font.dict
         };
-        let is_type3 =
-            raw_dict_get(dict, b"Subtype").and_then(|s| s.as_name()) == Some(b"Type3".as_slice());
+        let is_type3 = self.doc.dict_name(dict, b"Subtype") == Some(b"Type3".as_slice());
         let (dict, matrix) = if is_type3 {
             (
                 dict,
@@ -1641,7 +1637,7 @@ impl PdfBackend for RawBackend {
         let doc = &self.doc;
         let font = self.font_resolver.find_font(doc, scope, font_name)?;
         let dict = font.dict;
-        let subtype = raw_dict_get(dict, b"Subtype").and_then(|s| s.as_name());
+        let subtype = doc.dict_name(dict, b"Subtype");
         if subtype != Some(b"Type3".as_slice()) {
             return None;
         }
@@ -2096,7 +2092,7 @@ fn embedded_font_program(
         return Some((FontFormat::Type1, read(stream)));
     }
     let stream = stream_at(b"FontFile3")?;
-    let format = match raw_dict_get(&stream.dict, b"Subtype").and_then(|s| s.as_name()) {
+    let format = match doc.dict_name(&stream.dict, b"Subtype") {
         Some(b"OpenType") => FontFormat::OpenType,
         Some(b"Type1C") | Some(b"CIDFontType0C") => FontFormat::Cff,
         _ => return None,
@@ -2773,8 +2769,8 @@ impl<'d> FontRef<'d> {
     /// Composite fonts address glyphs through CIDs, so their content-stream bytes must
     /// be decoded via a CMap (ToUnicode, embedded cmap, or a predefined CMap). Any
     /// single-byte fallback decoding is meaningless for them.
-    fn is_composite(&self) -> bool {
-        raw_dict_get(self.dict, b"Subtype").and_then(|s| s.as_name()) == Some(b"Type0".as_slice())
+    fn is_composite(&self, doc: &RawDocument) -> bool {
+        doc.dict_name(self.dict, b"Subtype") == Some(b"Type0".as_slice())
             || raw_dict_get(self.dict, b"DescendantFonts").is_some()
     }
 
@@ -2792,7 +2788,7 @@ impl<'d> FontRef<'d> {
     /// Whether the font carries its glyphs: a Type 3 font, or one whose descriptor embeds
     /// a program.
     fn has_own_glyphs(&self, doc: &RawDocument) -> bool {
-        raw_dict_get(self.dict, b"Subtype").and_then(|s| s.as_name()) == Some(b"Type3".as_slice())
+        doc.dict_name(self.dict, b"Subtype") == Some(b"Type3".as_slice())
             || raw_dict_get(self.dict, b"FontDescriptor")
                 .and_then(|d| raw_resolve_dict(doc, d))
                 .is_some_and(|d| {
@@ -2896,7 +2892,7 @@ impl RawFontResolver {
         let font_dict = font.dict;
         let number = |obj: &RawPdfObject| doc.resolve(obj).as_f32();
 
-        if font.is_composite() {
+        if font.is_composite(doc) {
             let (coding, is_vertical) = match font.encoding_name(doc) {
                 Some(b"Identity-H") => (CidCoding::Identity, false),
                 Some(b"Identity-V") => (CidCoding::Identity, true),
@@ -2950,8 +2946,8 @@ impl RawFontResolver {
 
         // Type 3 glyph widths are in glyph space; FontMatrix maps them to text space.
         // Every other simple font is already in thousandths of text space.
-        let is_type3 = raw_dict_get(font_dict, b"Subtype")
-            .and_then(|s| s.as_name())
+        let is_type3 = doc
+            .dict_name(font_dict, b"Subtype")
             .is_some_and(|n| n == b"Type3");
         let scale = if is_type3 {
             raw_dict_get(font_dict, b"FontMatrix")
@@ -2991,7 +2987,7 @@ impl RawFontResolver {
     /// The standard 14 font a simple font dictionary names, if any. Composite fonts
     /// and Type 3 fonts are never standard fonts, whatever their `/BaseFont` says.
     fn standard_font(&self, doc: &RawDocument, font: &FontRef<'_>) -> Option<StandardFont> {
-        let subtype = raw_dict_get(font.dict, b"Subtype").and_then(|s| s.as_name())?;
+        let subtype = doc.dict_name(font.dict, b"Subtype")?;
         if !matches!(subtype, b"Type1" | b"MMType1" | b"TrueType") {
             return None;
         }
@@ -3026,7 +3022,7 @@ impl RawFontResolver {
         //    orders the sources per character code, not per string).
         if let Some(font) = font {
             is_identity_h = font.has_identity_cmap(doc);
-            is_composite = font.is_composite();
+            is_composite = font.is_composite(doc);
             if let Some(cmap) = self.get_to_unicode_map(doc, font) {
                 if is_composite {
                     if let Some(decoded) = self.decode_composite(doc, font, &cmap, bytes, mapping) {
@@ -3509,7 +3505,7 @@ impl RawFontResolver {
     ) -> Option<FontProgram> {
         let font = &self.find_font(doc, scope, font_name)?;
         let font_dict = font.dict;
-        if font.is_composite() {
+        if font.is_composite(doc) {
             if !font.has_identity_cmap(doc) {
                 return None;
             }
@@ -3576,7 +3572,7 @@ impl RawFontResolver {
         font: &FontRef<'_>,
         flags: Option<i64>,
     ) -> Option<Vec<u8>> {
-        let subtype = raw_dict_get(font.dict, b"Subtype").and_then(|s| s.as_name())?;
+        let subtype = doc.dict_name(font.dict, b"Subtype")?;
         if !matches!(subtype, b"Type1" | b"TrueType" | b"MMType1") {
             return None;
         }
@@ -3628,7 +3624,9 @@ impl RawFontResolver {
             return cached.clone();
         }
         let result = Some(font.dict)
-            .filter(|dict| !font.is_composite() && raw_dict_get(dict, b"FontDescriptor").is_some())
+            .filter(|dict| {
+                !font.is_composite(doc) && raw_dict_get(dict, b"FontDescriptor").is_some()
+            })
             .and_then(|dict| embedded_font_program(doc, dict))
             .and_then(|(format, data)| match format {
                 FontFormat::Type1 => super::type1::builtin_encoding_chars(&data),
@@ -3694,8 +3692,8 @@ impl RawFontResolver {
         dict: &RawPdfDict,
         differences: &[(u8, String)],
     ) -> EncodingMap {
-        let named = raw_dict_get(dict, b"BaseEncoding")
-            .and_then(|b| b.as_name())
+        let named = doc
+            .dict_name(dict, b"BaseEncoding")
             .and_then(BaseEncoding::from_name);
         if named.is_none() {
             let own = self
@@ -3765,7 +3763,7 @@ impl RawFontResolver {
         }
         let style = (|| -> Option<DeclaredStyle> {
             let mut dict = font.dict;
-            if font.is_composite() {
+            if font.is_composite(doc) {
                 dict = self.cid_font_dict(doc, font)?;
             }
             let descriptor = raw_resolve_dict(doc, raw_dict_get(dict, b"FontDescriptor")?)?;
@@ -3797,7 +3795,7 @@ impl RawFontResolver {
             // writes FixedPitch on every face it embeds -- Roboto included -- so a flag that
             // the font's own widths contradict is not believed.
             let fixed_pitch = flags & FIXED_PITCH != 0
-                && !declared_widths_refute_fixed_pitch(doc, dict, font.is_composite());
+                && !declared_widths_refute_fixed_pitch(doc, dict, font.is_composite(doc));
             Some(DeclaredStyle {
                 bold,
                 italic,
@@ -3863,8 +3861,8 @@ fn declared_widths_refute_fixed_pitch(
             expand_w_array(&cid_width_entries(doc, dict, b"W")).into_values(),
         );
     }
-    if raw_dict_get(dict, b"Subtype")
-        .and_then(|s| s.as_name())
+    if doc
+        .dict_name(dict, b"Subtype")
         .is_some_and(|n| n == b"Type3")
     {
         return false;
@@ -4189,6 +4187,32 @@ mod raw_backend_tests {
     #[test]
     fn names_after_a_negative_differences_code_wait_for_the_next_code() {
         assert_eq!(differences("[-1 /a 65 /B]"), names(&[(65, "B")]));
+    }
+
+    #[test]
+    fn a_font_subtype_may_be_an_indirect_object() {
+        use crate::parser::test_pdf::pdf;
+        let bytes = pdf(
+            vec![
+                b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+                b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+                b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]                  /Resources<</Font<</F1 4 0 R/F2 6 0 R>>>>>>"
+                    .to_vec(),
+                b"<</Type/Font/Subtype 5 0 R/BaseFont/Helvetica>>".to_vec(),
+                b"/Type1".to_vec(),
+                b"<</Type/Font/Subtype 7 0 R/BaseFont/Composite/Encoding/Identity-H                  /DescendantFonts[]>>"
+                    .to_vec(),
+                b"/Type0".to_vec(),
+            ],
+            1,
+        );
+        let raw = RawBackend::load_bytes(&bytes).unwrap();
+        let scope = ResourceScope::page(raw.pages()[&1]);
+        let simple = raw.font_resolver.find_font(&raw.doc, scope, b"F1").unwrap();
+        assert!(!simple.is_composite(&raw.doc));
+        assert!(raw.font_resolver.standard_font(&raw.doc, &simple).is_some());
+        let composite = raw.font_resolver.find_font(&raw.doc, scope, b"F2").unwrap();
+        assert!(composite.is_composite(&raw.doc));
     }
 
     #[test]
