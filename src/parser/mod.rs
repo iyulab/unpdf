@@ -37,6 +37,7 @@ mod layout;
 mod link;
 mod ocr_gate;
 mod options;
+mod page_turn;
 mod pdf_parser;
 pub(crate) mod png_encode;
 mod postscript;

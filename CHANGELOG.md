@@ -4,6 +4,16 @@
 
 ### Fixed
 
+- **A page turned by `/Rotate` is read as it is shown.** A landscape table written into a
+  portrait content stream and turned by `/Rotate 90` was read on its side: every column was a
+  line of text and every row a column (`| Value | 10 20 |` over `| Name | alpha beta |`), and a
+  page's running heads and folios were looked for at its left and right edges. The turn is now
+  the first matrix of the content stream (ISO 32000-1 §7.7.3.3), for the text, the rules, the
+  link areas and the margins alike, as the rasterizer already paints such a page. A page without
+  `/Rotate` has the identity turn and reads as before: on the olmOCR-Bench and ODL pages
+  without it every output is byte for byte the same. Of the 15 olmOCR-Bench pages with `/Rotate`
+  11 outputs change, scoring +8 / −0 tests (7 of the 188 table pages are turned; they passed
+  0 of 30 table tests, they now pass 8), and no ODL output changes.
 - **A table ruled between its records, each a short key with a description that wraps, is read
   as a table.** In a glossary or a list of options a band between two rules holds one line with
   text on both sides of the gap and the description's further lines to its right, so a band

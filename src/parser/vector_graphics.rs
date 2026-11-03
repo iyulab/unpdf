@@ -50,12 +50,15 @@ const MAX_FILLED_RULE_THICKNESS: f32 = 3.0;
 /// to the curve's end so subsequent segments stay correctly anchored, but the
 /// curve itself is not approximated as a line.
 ///
-/// Only what the page shows counts: a line outside `visible` (the page's crop box) or the
+/// Lines are placed on the page as shown: `base` takes user space to it (the page's turn, see
+/// `page_turn`) and `visible` is the page's box as shown.
+///
+/// Only what the page shows counts: a line outside `visible` or the
 /// clipping path in force when it is painted — a printer's crop mark in the slug area, the
 /// frame of a larger page placed onto a smaller one — is dropped. So is the outline of a filled
 /// area inside another of the same colour ([`unseen_fills`]): its edges lie on paint of its own
 /// colour and show nothing.
-pub fn extract_lines(ops: &[ContentOp], visible: PageBox) -> Vec<GraphicsLine> {
+pub fn extract_lines(ops: &[ContentOp], visible: PageBox, base: [f32; 6]) -> Vec<GraphicsLine> {
     let mut lines = Vec::new();
     // Filled areas (not rules) as painted: where, in what colour, and which of `lines` they gave.
     let mut areas: Vec<FilledArea> = Vec::new();
@@ -68,7 +71,7 @@ pub fn extract_lines(ops: &[ContentOp], visible: PageBox) -> Vec<GraphicsLine> {
         clip.admits(&Bounds::around([(line.x0, line.y0), (line.x1, line.y1)]).expect("two points"))
     };
 
-    let mut ctm: [f32; 6] = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+    let mut ctm: [f32; 6] = base;
     let mut ctm_stack: Vec<[f32; 6]> = Vec::new();
     // The line width in force (`w`, user space; 1.0 by default), saved and restored with the
     // graphics state. A stroke wider than a rule is a bar drawn with a pen, not a rule.
@@ -341,7 +344,7 @@ mod tests {
     };
 
     fn lines_of(ops: &[ContentOp]) -> Vec<GraphicsLine> {
-        extract_lines(ops, PAGE)
+        extract_lines(ops, PAGE, [1.0, 0.0, 0.0, 1.0, 0.0, 0.0])
     }
 
     /// A cell shaded, then each line of its text shaded again in the same colour over it, as

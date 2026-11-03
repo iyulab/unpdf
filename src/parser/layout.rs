@@ -11,7 +11,8 @@ use super::backend::{
     TextSuppression,
 };
 use super::clip::{Bounds, ClipTracker};
-use super::link::{LinkSpanStyle, PageLinks, TextLink};
+use super::link::{LinkAnnotations, LinkArea, LinkSpanStyle, PageLinks, TextLink};
+use super::page_turn::PageTurn;
 use super::text_ranges::{copy_ranges, push_range};
 use super::text_state::Shift;
 use crate::error::{Error, Result};
@@ -1444,6 +1445,14 @@ impl<'a> LayoutAnalyzer<'a> {
         Self::group_lines_into_blocks(lines)
     }
 
+    /// The turn of a page: how `/Rotate` takes its user space to the page as shown.
+    fn page_turn(&self, page_id: super::backend::PageId) -> PageTurn {
+        PageTurn::new(
+            self.backend.crop_box(page_id),
+            self.backend.page_rotation(page_id),
+        )
+    }
+
     /// Filter header/footer spans in-place using page dimensions.
     ///
     /// Exposed so callers that operate on raw spans (e.g., the table-detection
@@ -1451,7 +1460,7 @@ impl<'a> LayoutAnalyzer<'a> {
     pub fn filter_spans_for_page(&self, spans: &mut Vec<TextSpan>, page_num: u32) {
         let pages = self.backend.pages();
         if let Some(&page_id) = pages.get(&page_num) {
-            let omitted = filter_header_footer_spans(spans, self.backend.crop_box(page_id));
+            let omitted = filter_header_footer_spans(spans, self.page_turn(page_id).shown);
             let mut facts = self.page_facts.get();
             facts.omitted_page_number_chars =
                 facts.omitted_page_number_chars.saturating_add(omitted);
@@ -1483,10 +1492,11 @@ impl<'a> LayoutAnalyzer<'a> {
             .as_ref()
             .is_none_or(|links| links.page != *page_id)
         {
+            let turn = self.page_turn(*page_id);
             *self.links.borrow_mut() = Some(PageLinks::new(
                 *page_id,
-                self.backend.link_annotations(*page_id),
-                self.backend.crop_box(*page_id),
+                turned_links(self.backend.link_annotations(*page_id), &turn),
+                turn.shown,
             ));
         }
 
@@ -1554,8 +1564,9 @@ impl<'a> LayoutAnalyzer<'a> {
         // inside a form than on the page.
         let mut fonts: HashMap<Option<super::backend::ObjectId>, HashMap<Vec<u8>, FontInfo>> =
             HashMap::new();
-        let ruling_lines =
-            super::vector_graphics::extract_lines(operations, self.backend.crop_box(page_id));
+        // The page as it is shown: everything below is placed by the page's turn (`/Rotate`).
+        let turn = self.page_turn(page_id);
+        let ruling_lines = super::vector_graphics::extract_lines(operations, turn.shown, turn.ctm);
         let lattice_grids =
             super::lattice::infer_grids(&ruling_lines, &super::lattice::LatticeConfig::default());
         let rule_stacks = super::ruled_rows::rule_stacks(&ruling_lines);
@@ -1575,21 +1586,14 @@ impl<'a> LayoutAnalyzer<'a> {
         self.page_facts.set(facts);
         // What the page shows: marks outside its crop box or its clipping path are never
         // seen, so they are not page content.
-        let visible = self.backend.crop_box(page_id);
+        let visible = turn.shown;
         let mut clip = ClipTracker::new(visible);
-        // The top and bottom tenth of the page as it is shown: a page turned a quarter
-        // (`/Rotate` 90 or 270) shows its box's left and right edges at the top and bottom.
-        // A geometric stand-in -- the format's own signal for running heads and folios is a
-        // `/Pagination` artifact (ISO 32000-1 §14.8.2.2), which tagged files alone carry.
-        let quarter_turned = self.backend.page_rotation(page_id) % 180 == 90;
-        let in_margin = |(x, y): (f32, f32)| {
-            if quarter_turned {
-                let band = 0.1 * visible.width();
-                x <= visible.llx + band || x >= visible.urx - band
-            } else {
-                let band = 0.1 * visible.height();
-                y <= visible.lly + band || y >= visible.ury - band
-            }
+        // The top and bottom tenth of the page as it is shown. A geometric stand-in -- the
+        // format's own signal for running heads and folios is a `/Pagination` artifact
+        // (ISO 32000-1 §14.8.2.2), which tagged files alone carry.
+        let in_margin = |(_, y): (f32, f32)| {
+            let band = 0.1 * visible.height();
+            y <= visible.lly + band || y >= visible.ury - band
         };
         // Where each image paint shows on the page, in page space.
         let mut image_rects: Vec<Bounds> = Vec::new();
@@ -1613,8 +1617,9 @@ impl<'a> LayoutAnalyzer<'a> {
         let mut text_state_stack: Vec<TextState> = Vec::new();
         let mut text_matrix = super::text_state::TextMatrix::default();
         let mut in_text_block = false;
-        // Current Transformation Matrix (starts as identity [1,0,0,1,0,0])
-        let mut ctm: [f32; 6] = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+        // Current Transformation Matrix: it starts as the page's turn (the identity for a page
+        // that is not turned), so every position is a position on the page as shown.
+        let mut ctm: [f32; 6] = turn.ctm;
         let mut ctm_stack: Vec<[f32; 6]> = Vec::new();
 
         for op in operations {
@@ -2782,6 +2787,22 @@ pub(crate) fn trim_leaders(text: &str) -> &str {
     } else {
         text
     }
+}
+
+/// Link areas placed on the page as shown, like the text they lie over.
+fn turned_links(links: LinkAnnotations, turn: &PageTurn) -> LinkAnnotations {
+    let mut links = links;
+    if turn.ctm == [1.0, 0.0, 0.0, 1.0, 0.0, 0.0] {
+        return links;
+    }
+    for annotation in &mut links.annotations {
+        for area in &mut annotation.areas {
+            *area = LinkArea {
+                points: area.points.map(|p| turn.apply(p)),
+            };
+        }
+    }
+    links
 }
 
 /// Filter out header/footer text spans (page numbers, running headers).
