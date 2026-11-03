@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.53.0 — 2026-11-03
 
 ### Added
 
@@ -104,9 +104,6 @@
   lands against a letter and the link's brackets stay whole; a group beside a word, or one that
   ends in a link, is written run by run as before. Only the Markdown changes; the JSON does not.
 
-
-
-
 ### Fixed
 
 - **A JPEG-coded image is read through its declared color space.** One in a gray, `Indexed`,
@@ -117,6 +114,9 @@
   its space takes, and when a four-component one in a `DeviceN` space was encoded as YCCK.
 - **An image whose soft mask does not decode is counted in `RasterGaps::images`.** It was painted
   without its mask, as if opaque, and counted nowhere.
+- **An inline image is read past a comment before its `ID`, and an indirect `/Subtype` is followed.**
+  The dictionary of a `BI` image may be followed by a comment before `ID`, and an XObject's
+  `/Subtype` may be an indirect object; `render_page` now paints such images.
 - **A three-component JPEG whose Adobe marker says it is stored untransformed is painted.** It
   was read as CMYK, failed and left the image white.
 - **A rendered page counts the text it drops, and keeps pattern-filled text legible.**
@@ -136,8 +136,6 @@
 - **A stroke color space set to one the renderer does not convert no longer starts white.** `CS`
   starts the stroke at full tint, as `cs` starts the fill, and a color that fails to evaluate no
   longer keeps the one before it.
-- **An image whose soft mask does not decode is counted in `RasterGaps::images`.** It was painted
-  without its mask, as if opaque, and counted nowhere.
 - **A sampled function's outputs are clipped to its `/Range`** (ISO 32000-1 §7.10.2), in a
   shading as in a tint transform; a `/Decode` past the range gave colors outside it.
 
