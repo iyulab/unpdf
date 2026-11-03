@@ -1018,7 +1018,7 @@ impl TableDetector {
     /// Whether the region is a table of contents: the last column holds page
     /// references — arabic numbers that never decrease, or roman numerals for front
     /// matter — on most rows, and the entries before them are text.
-    fn is_table_of_contents(cells: &[Vec<String>]) -> bool {
+    pub(crate) fn is_table_of_contents(cells: &[Vec<String>]) -> bool {
         let Some(last) = cells.first().map(|r| r.len().saturating_sub(1)) else {
             return false;
         };

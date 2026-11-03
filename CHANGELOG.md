@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A table ruled across, drawn in pieces, is found.** Word and some other producers draw a
+  table's border as one filled rectangle per cell, with a joint a fraction of a point wide
+  where two cells meet, so one rule reached table detection as several pieces and no rule
+  spanned the table. Pieces of one line whose ends meet (within a point) are now one rule
+  before the rules-only (booktabs-style) table path looks for tables, which recovers tables
+  that came out as running text. A list of entries ruled off against page references is still
+  a list, as it is for text-aligned tables.
+
+
 ## 0.52.1 — 2026-11-03
 
 ### Fixed

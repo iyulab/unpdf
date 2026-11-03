@@ -40,15 +40,40 @@ pub(crate) struct RuleStack {
     pub ys: Vec<f32>,
 }
 
+/// Rules drawn in pieces that meet are one rule: Word, among others, draws a table's border as
+/// one filled rectangle per cell, and a joint a fraction of a point wide where two cells meet.
+/// `(left, right, y)` pieces on one line (within [`SAME_RULE`]) whose ends touch (within
+/// [`SAME_RULE`]) are joined; a gap wider than that keeps two rules apart.
+fn joined_rules(pieces: impl Iterator<Item = (f32, f32, f32)>) -> Vec<(f32, f32, f32)> {
+    let mut pieces: Vec<(f32, f32, f32)> = pieces.collect();
+    pieces.sort_by(|a, b| b.2.total_cmp(&a.2).then(a.0.total_cmp(&b.0)));
+    let mut joined: Vec<(f32, f32, f32)> = Vec::new();
+    for (left, right, y) in pieces {
+        // Pieces arrive top to bottom, left to right: only a rule on this line can be joined
+        // to, and the last such rule is the one that ends furthest right so far.
+        let on_line = joined
+            .iter_mut()
+            .rev()
+            .take_while(|j| (j.2 - y).abs() <= SAME_RULE)
+            .max_by(|a, b| a.1.total_cmp(&b.1));
+        match on_line {
+            Some(rule) if left <= rule.1 + SAME_RULE => rule.1 = rule.1.max(right),
+            _ => joined.push((left, right, y)),
+        }
+    }
+    joined
+}
+
 /// Group a page's horizontal rules by the extent they share. Only stacks of two or more
 /// rules can bound a table.
 pub(crate) fn rule_stacks(lines: &[GraphicsLine]) -> Vec<RuleStack> {
-    let mut rules: Vec<(f32, f32, f32)> = lines
-        .iter()
-        .filter(|l| l.ruled && (l.y0 - l.y1).abs() <= 1.0)
-        .map(|l| (l.x0.min(l.x1), l.x0.max(l.x1), (l.y0 + l.y1) / 2.0))
-        .filter(|(left, right, _)| right - left >= MIN_RULE_LENGTH)
-        .collect();
+    let mut rules = joined_rules(
+        lines
+            .iter()
+            .filter(|l| l.ruled && (l.y0 - l.y1).abs() <= 1.0)
+            .map(|l| (l.x0.min(l.x1), l.x0.max(l.x1), (l.y0 + l.y1) / 2.0)),
+    );
+    rules.retain(|(left, right, _)| right - left >= MIN_RULE_LENGTH);
     rules.sort_by(|a, b| b.2.total_cmp(&a.2));
 
     let mut stacks: Vec<RuleStack> = Vec::new();
@@ -360,6 +385,28 @@ fn grid_of(
     col_bounds.extend(gaps.iter().map(|(a, b)| (a + b) / 2.0));
     col_bounds.push(right + 1.0);
 
+    // Entries ruled off against page references are a table of contents, which is a list, as
+    // stream detection reads one.
+    let cells: Vec<Vec<String>> = rows
+        .iter()
+        .map(|row| {
+            let mut cells = vec![String::new(); col_bounds.len() - 1];
+            for span in &row.spans {
+                let mid = span.x + span.width / 2.0;
+                let column = col_bounds.iter().skip(1).take_while(|&&b| mid >= b).count();
+                let cell = &mut cells[column.min(col_bounds.len() - 2)];
+                if !cell.is_empty() {
+                    cell.push(' ');
+                }
+                cell.push_str(span.text.trim());
+            }
+            cells
+        })
+        .collect();
+    if super::table_detector::TableDetector::is_table_of_contents(&cells) {
+        return None;
+    }
+
     let mut ys: Vec<f32> = rows.iter().map(|r| r.y).collect();
     ys.sort_by(|a, b| b.total_cmp(a));
     let mut row_bounds = vec![top];
@@ -430,6 +477,63 @@ mod tests {
             span("200", 300.0, 446.0),
         ];
         (rules, spans)
+    }
+
+    /// Word draws a table's border in one piece per cell, with a joint a half point wide where
+    /// two cells meet; the pieces end where the next begins. They are one rule, as drawn.
+    #[test]
+    fn a_rule_drawn_in_pieces_per_cell_is_one_rule() {
+        let (_, spans) = three_rule_table();
+        let rules: Vec<GraphicsLine> = [500.0, 484.0, 440.0]
+            .into_iter()
+            .flat_map(|y| [h(y, 100.0, 250.0), h(y, 250.0, 250.4), h(y, 250.4, 400.0)])
+            .collect();
+        let stacks = rule_stacks(&rules);
+        assert_eq!(stacks.len(), 1, "{stacks:?}");
+        assert_eq!((stacks[0].left_x, stacks[0].right_x), (100.0, 400.0));
+        assert_eq!(grids(&stacks, &spans, &[]).len(), 1);
+    }
+
+    /// A contents list ruled between its entries is still a list: entries against page numbers
+    /// that never go down.
+    #[test]
+    fn a_ruled_table_of_contents_is_not_a_table() {
+        let rules: Vec<GraphicsLine> = [500.0, 480.0, 460.0, 440.0, 420.0]
+            .into_iter()
+            .map(|y| h(y, 100.0, 400.0))
+            .collect();
+        let entries = [
+            ("Executive Summary", "4"),
+            ("Legal Framework", "6"),
+            ("Election Administration", "11"),
+            ("Civil Society Engagement", "15"),
+        ];
+        let spans = |second: &[&str]| -> Vec<TextSpan> {
+            entries
+                .iter()
+                .zip(second)
+                .enumerate()
+                .flat_map(|(i, ((name, _), value))| {
+                    let y = 486.0 - i as f32 * 20.0;
+                    [span(name, 105.0, y), span(value, 380.0, y)]
+                })
+                .collect()
+        };
+        let pages = spans(&["4", "6", "11", "15"]);
+        assert!(grids(&rule_stacks(&rules), &pages, &[]).is_empty());
+        // The same layout with words in the second column is a table.
+        let words = spans(&["Annex", "Note", "Index", "Other"]);
+        assert_eq!(grids(&rule_stacks(&rules), &words, &[]).len(), 1);
+    }
+
+    /// Rules with a real gap between them are two rules: two tables side by side, not one.
+    #[test]
+    fn rules_with_a_gap_between_them_stay_apart() {
+        let rules: Vec<GraphicsLine> = [500.0, 440.0]
+            .into_iter()
+            .flat_map(|y| [h(y, 100.0, 240.0), h(y, 260.0, 400.0)])
+            .collect();
+        assert_eq!(rule_stacks(&rules).len(), 2);
     }
 
     #[test]
