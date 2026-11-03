@@ -880,11 +880,20 @@ class TestRenderPage:
         assert size.pixels(dpi) == (page.width, page.height)
 
     def test_a_page_number_a_c_int_cannot_hold_is_out_of_range(self):
-        with unpdf.Document(_image_only_pdf()) as doc:
-            for page_number in (4294967297, -4294967295):
-                with pytest.raises(unpdf.UnpdfError) as err:
-                    doc.page_size(page_number)
-                assert err.value.kind == unpdf.ErrorKind.PAGE_OUT_OF_RANGE
+        pdf = _image_only_pdf()
+        with unpdf.Document(pdf) as doc:
+            calls = (
+                doc.page_size,
+                doc.render_page,
+                doc.get_page_stats,
+                lambda page_number: unpdf.render_page(pdf, page_number),
+                lambda page_number: unpdf.get_page_stats(pdf, page_number),
+            )
+            for call in calls:
+                for page_number in (4294967297, -4294967295, 10**5000 + 1, 1 - 10**5000):
+                    with pytest.raises(unpdf.UnpdfError) as err:
+                        call(page_number)
+                    assert err.value.kind == unpdf.ErrorKind.PAGE_OUT_OF_RANGE
 
     def test_a_region_holding_a_nul_is_refused(self):
         with unpdf.Document(_image_only_pdf()) as doc:

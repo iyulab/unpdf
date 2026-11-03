@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Python: a page number a C `int` cannot hold raises instead of reading another page.**
+  `render_page` and `get_page_stats`, as functions and as `Document` methods, passed the number
+  to ctypes, which wraps it, so page `4294967297` rendered or measured page 1. They now raise
+  `UnpdfError` with `ErrorKind.PAGE_OUT_OF_RANGE`, as `Document.page_size` does, and a number
+  of more digits than Python converts to a string raises it too instead of `ValueError`.
+
 ## 0.53.0 — 2026-11-03
 
 ### Added
