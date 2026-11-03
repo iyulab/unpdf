@@ -4,6 +4,11 @@
 
 ### Fixed
 
+- **A form field whose type, name or flags are indirect objects is read.** An entry may hold its
+  value as an indirect object (ISO 32000-1 7.3.10), which PDFium and pdf.js follow. `/FT 5 0 R`
+  made the field vanish from `form_fields`, `/T 5 0 R` left it with an empty name, and
+  `/Ff 5 0 R` read a radio button as a check box. All three are read through the reference now
+  (the value entry already was).
 - **A link over text with a subscript or superscript is written as one link.** One link
   annotation over `CO` and a subscript `2` reached the output as `[CO](u)[2](u)`: two links to the
   same address, because a link label carries one style and the subscript changes it. Markdown

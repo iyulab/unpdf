@@ -3022,8 +3022,10 @@ impl RawBackend {
         };
 
         // Build qualified name
+        // The entries below may each be an indirect object (ISO 32000-1 §7.3.10), as PDFium and
+        // pdf.js read them: a field whose type, name or flags are indirect is still that field.
         let partial_name = raw_dict_get(dict, b"T")
-            .and_then(|o| o.as_str_bytes())
+            .and_then(|o| self.doc.resolve(o).as_str_bytes())
             .map(sanitize_field_string);
 
         let qualified_name = match &partial_name {
@@ -3033,8 +3035,9 @@ impl RawBackend {
         };
 
         // Get field type (may be inherited from parent)
-        let ft = raw_dict_get(dict, b"FT")
-            .and_then(|o| o.as_name())
+        let ft = self
+            .doc
+            .dict_name(dict, b"FT")
             .map(|n| n.to_vec())
             .or(inherited_ft.clone());
 
@@ -3063,7 +3066,7 @@ impl RawBackend {
         };
 
         let ff = raw_dict_get(dict, b"Ff")
-            .and_then(|o| o.as_i64())
+            .and_then(|o| self.doc.resolve(o).as_i64())
             .unwrap_or(0) as u32;
 
         let field_type = match ft_bytes {
