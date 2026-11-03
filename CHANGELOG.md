@@ -4,6 +4,14 @@
 
 ### Fixed
 
+- **Text set at an absurd size or position no longer allocates gigabytes.** The column and
+  table-cell gap searches profiled the width their text spans in bins of two points (half a
+  point for table cells), so a run at a 90-million-point font size, or text placed at 1e30,
+  asked for a profile of billions of bins: 2.7 GB for a 1 KB page, or a capacity overflow. A
+  profile now holds at most 65,536 bins and widens them only for text spread over more than
+  131,072 points (32,768 for table cells), which no real page reaches. Text spread past the
+  largest float, and a cut that would leave one side of a region empty, leave the region
+  unsplit instead of recursing until the stack overflows.
 - **A form field whose type, name or flags are indirect objects is read.** An entry may hold its
   value as an indirect object (ISO 32000-1 7.3.10), which PDFium and pdf.js follow. `/FT 5 0 R`
   made the field vanish from `form_fields`, `/T 5 0 R` left it with an empty name, and
