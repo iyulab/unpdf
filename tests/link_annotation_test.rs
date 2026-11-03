@@ -675,8 +675,10 @@ fn incomplete_state_survives_internal_retries_without_leaking_to_other_pages_or_
 
 #[test]
 fn code_keeps_its_text_and_reports_that_its_links_cannot_be_represented() {
+    // A page set wholly in Courier is a listing only when it reads as one (`=` and `;` here);
+    // plain words in Courier alone are a typewritten page, which is prose.
     let mut parts = objects(
-        "BT /F1 10 Tf 72 700 Td (Label) Tj ET",
+        "BT /F1 10 Tf 72 700 Td (Label = 1;) Tj ET",
         &annotation("72 697 110 709", TARGET),
         "",
         "",
@@ -684,7 +686,7 @@ fn code_keeps_its_text_and_reports_that_its_links_cannot_be_represented() {
     parts[4] = font("Courier").into_bytes();
     let document = parse(&assemble(parts));
     assert!(document.pages[0].link_annotations_incomplete);
-    assert_eq!(document.plain_text().trim(), "Label");
+    assert_eq!(document.plain_text().trim(), "Label = 1;");
     let md = markdown(&document);
     assert!(md.contains("```"), "{md}");
     assert!(!md.contains(TARGET));

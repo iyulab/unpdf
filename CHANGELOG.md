@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A fixed-pitch flag the font's widths contradict is not believed.** Some producers (Skia-based
+  exporters such as Google Docs and Chrome) write `FixedPitch` in the descriptor of every font
+  they embed, proportional faces included, so whole pages of ordinary prose were written as
+  fenced code blocks. A face whose declared glyph widths (`/Widths`, or a CIDFont's `/W`) fall in
+  more than two groups is proportional whatever the flag says; one advance, or the two of a CJK
+  face, still confirms it. MuPDF reads the same fonts as proportional.
+- **A typewritten page is prose, not a code block.** When fixed-pitch runs carry nine tenths of a
+  page's text there is nothing proportional to set a listing apart from, and the pitch is the
+  page's typeface (a decree, a typed manuscript): the page is read as prose, its lines joined and
+  a word hyphenated at the line end made whole again, as it was before 0.49.0. A page whose
+  characters read as a program (symbols such as `{ } ; = /` at three in a hundred or more)
+  stays a code block, and so does fixed-pitch text among proportional text.
+
 ## 0.52.0 — 2026-11-02
 
 ### Added

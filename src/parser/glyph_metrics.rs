@@ -208,6 +208,27 @@ pub(crate) fn expand_w2_array(entries: &[WEntry]) -> BTreeMap<u32, [f32; 3]> {
     expand_cid_array::<3>(entries)
 }
 
+/// Whether the glyph widths a font declares show it is not fixed-pitch, whatever its
+/// descriptor's `FixedPitch` flag says.
+///
+/// A fixed-pitch face gives every glyph one advance. CJK faces give two (half- and full-width),
+/// so widths in at most two groups, 10 units apart or more, still fit. Widths that fall in more
+/// than two groups belong to a proportional face: some producers (Skia, so Google Docs and
+/// Chrome exports) write `FixedPitch` on every font they embed, `Roboto` included. A
+/// proportional face is not made fixed-pitch by uniform widths either (placeholders), but the
+/// reverse is conclusive: widths that vary cannot be a fixed pitch. Zero widths (unused codes)
+/// say nothing and are left out.
+pub(crate) fn widths_refute_fixed_pitch(widths: impl IntoIterator<Item = f32>) -> bool {
+    let mut groups: Vec<i64> = widths
+        .into_iter()
+        .filter(|w| w.is_finite() && *w > 0.0)
+        .map(|w| (w / 10.0).round() as i64)
+        .collect();
+    groups.sort_unstable();
+    groups.dedup();
+    groups.len() > 2
+}
+
 /// The shared scan of `/W` and `/W2`, whose entries carry `N` numbers per CID.
 fn expand_cid_array<const N: usize>(entries: &[WEntry]) -> BTreeMap<u32, [f32; N]> {
     /// A range wider than any real font's CID space is malformed, not a request
@@ -261,6 +282,26 @@ fn expand_cid_array<const N: usize>(entries: &[WEntry]) -> BTreeMap<u32, [f32; N
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn varied_widths_refute_a_fixed_pitch_flag() {
+        // Roboto-Regular's first widths, as a Skia export writes them beside `FixedPitch`.
+        assert!(widths_refute_fixed_pitch([
+            248.0, 273.0, 647.0, 568.0, 502.0, 640.0
+        ]));
+    }
+
+    #[test]
+    fn one_advance_or_two_does_not() {
+        assert!(!widths_refute_fixed_pitch([600.0; 40]));
+        // Rounding noise around one advance is still one.
+        assert!(!widths_refute_fixed_pitch([600.0, 599.0, 601.0, 600.0]));
+        // A CJK face: half- and full-width.
+        assert!(!widths_refute_fixed_pitch([500.0, 1000.0, 500.0, 1000.0]));
+        // Nothing declared, or only unused codes, says nothing.
+        assert!(!widths_refute_fixed_pitch([]));
+        assert!(!widths_refute_fixed_pitch([0.0, 0.0, 0.0]));
+    }
 
     #[test]
     fn simple_font_indexes_widths_from_first_char() {

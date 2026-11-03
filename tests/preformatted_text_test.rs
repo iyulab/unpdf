@@ -218,3 +218,84 @@ fn a_negative_font_size_is_read() {
     let md = markdown(&page(content, COURIER));
     assert!(md.contains("int a;") && md.contains("int b;"), "{md}");
 }
+
+/// A descriptor that says FixedPitch with `/Widths` of `widths(code)` for the codes 32..=126.
+fn flagged_with_widths(name: &str, widths: impl Fn(u8) -> u32) -> String {
+    let list: Vec<String> = (32u8..=126).map(|c| widths(c).to_string()).collect();
+    format!(
+        "{}/FirstChar 32/LastChar 126/Widths[{}]",
+        flagged(name),
+        list.join(" ")
+    )
+}
+
+/// A producer that writes FixedPitch on every face it embeds (Skia: Google Docs, Chrome) does
+/// not make the face fixed-pitch: its own widths say it is not. Its prose stays prose.
+#[test]
+fn a_flag_that_the_fonts_widths_contradict_is_not_believed() {
+    let content = b"BT /F2 11 Tf 72 700 Td (This sentence continues) Tj ET \
+        BT /F2 11 Tf 72 686 Td (on the following line.) Tj ET\n";
+    let font = flagged_with_widths("ABCDEF+Roboto-Regular", |c| 400 + u32::from(c % 7) * 50);
+    let md = markdown(&page(content, &font));
+    assert!(!md.contains("```"), "{md}");
+    assert!(
+        md.contains("This sentence continues on the following line."),
+        "{md}"
+    );
+}
+
+/// The same flag with every glyph one advance is a fixed-pitch face: listings still fence.
+#[test]
+fn a_flag_that_the_fonts_widths_confirm_is_believed() {
+    let content = b"BT /F2 11 Tf 72 700 Td (int first; // first declaration) Tj ET \
+        BT /F2 11 Tf 72 686 Td (int second; // second declaration) Tj ET\n";
+    let font = flagged_with_widths("ABCDEF+FiraCode-Regular", |_| 600);
+    let md = markdown(&page(content, &font));
+    assert!(
+        md.contains("```\nint first; // first declaration\nint second; // second declaration\n```"),
+        "{md}"
+    );
+}
+
+/// A page typed on a typewriter -- every run fixed-pitch, nothing to set a listing apart from --
+/// is prose: the typist's line breaks do not stay, and a word hyphenated at the line end is
+/// whole again.
+#[test]
+fn a_typewritten_page_is_prose_not_one_code_block() {
+    let content = b"BT /F2 10 Tf 72 700 Td (The sentence wraps at inter-) Tj ET \
+        BT /F2 10 Tf 72 688 Td (national boundaries and ends here.) Tj ET \
+        BT /F2 10 Tf 72 676 Td (The next sentence follows it on the page.) Tj ET\n";
+    let md = markdown(&page(content, COURIER));
+    assert!(!md.contains("```"), "{md}");
+    assert!(
+        md.contains("international boundaries and ends here."),
+        "{md}"
+    );
+}
+
+/// A typewritten page that reads as a program is still a listing.
+#[test]
+fn a_page_of_nothing_but_a_program_is_still_code() {
+    let content = b"BT /F2 10 Tf 72 700 Td (// the first declaration) Tj ET \
+        BT /F2 10 Tf 72 688 Td (int a = 1;) Tj ET \
+        BT /F2 10 Tf 72 676 Td (int b = a + 2;) Tj ET\n";
+    let md = markdown(&page(content, COURIER));
+    assert!(
+        md.contains("```\n// the first declaration\nint a = 1;\nint b = a + 2;\n```"),
+        "{md}"
+    );
+}
+
+/// With proportional text on the page the fixed pitch does set a run apart, however plain its
+/// words: a command in a manual stays as printed.
+#[test]
+fn fixed_pitch_among_proportional_text_still_sets_a_run_apart() {
+    let content = b"BT /F1 11 Tf 72 740 Td (Run the following command from the project directory and then read the output carefully.) Tj ET \
+        BT /F2 11 Tf 72 700 Td (build the project now) Tj ET \
+        BT /F2 11 Tf 72 686 Td (and then run the tests) Tj ET\n";
+    let md = markdown(&page(content, COURIER));
+    assert!(
+        md.contains("```\nbuild the project now\nand then run the tests\n```"),
+        "{md}"
+    );
+}

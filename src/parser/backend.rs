@@ -19,7 +19,8 @@ use super::font::{
     is_likely_binary, parse_to_unicode_cmap, parse_truetype_cmap_table, ToUnicodeMap,
 };
 use super::glyph_metrics::{
-    expand_w2_array, expand_w_array, CidCoding, FontMetrics, VerticalFont, WEntry,
+    expand_w2_array, expand_w_array, widths_refute_fixed_pitch, CidCoding, FontMetrics,
+    VerticalFont, WEntry,
 };
 use super::link::LinkAnnotations;
 use super::sanitize::sanitize_extracted_text;
@@ -2911,22 +2912,7 @@ impl RawFontResolver {
             let default_width = raw_dict_get(cid_font, b"DW")
                 .and_then(number)
                 .unwrap_or(1000.0);
-            let entries = |key: &[u8]| -> Vec<WEntry> {
-                raw_dict_get(cid_font, key)
-                    .and_then(|w| doc.resolve(w).as_array())
-                    .map(|items| {
-                        items
-                            .iter()
-                            .map_while(|item| match doc.resolve(item) {
-                                RawPdfObject::Array(list) => {
-                                    Some(WEntry::Array(list.iter().filter_map(number).collect()))
-                                }
-                                other => other.as_f32().map(WEntry::Number),
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default()
-            };
+            let entries = |key: &[u8]| cid_width_entries(doc, cid_font, key);
             // `/DW2` is `[vy w1y]`; anything else leaves the default.
             let vertical = is_vertical.then(|| VerticalFont {
                 default: raw_dict_get(cid_font, b"DW2")
@@ -3805,10 +3791,15 @@ impl RawFontResolver {
                         os2_weight_class(&data).is_some_and(|w| w >= 600)
                     }
                 });
+            // The flag is a declaration; the widths are the font. Skia (Google Docs, Chrome)
+            // writes FixedPitch on every face it embeds -- Roboto included -- so a flag that
+            // the font's own widths contradict is not believed.
+            let fixed_pitch = flags & FIXED_PITCH != 0
+                && !declared_widths_refute_fixed_pitch(doc, dict, font.is_composite());
             Some(DeclaredStyle {
                 bold,
                 italic,
-                fixed_pitch: flags & FIXED_PITCH != 0,
+                fixed_pitch,
             })
         })()
         .unwrap_or_default();
@@ -3856,6 +3847,51 @@ impl RawFontResolver {
 // ---------------------------------------------------------------------------
 // RawBackend helper functions
 // ---------------------------------------------------------------------------
+
+/// Whether the widths declared by `dict` -- a simple font's, or a CIDFont's when `composite` --
+/// contradict a `FixedPitch` flag ([`widths_refute_fixed_pitch`]). A Type 3 font's widths are
+/// in glyph space and say nothing here.
+fn declared_widths_refute_fixed_pitch(
+    doc: &RawDocument,
+    dict: &RawPdfDict,
+    composite: bool,
+) -> bool {
+    if composite {
+        return widths_refute_fixed_pitch(
+            expand_w_array(&cid_width_entries(doc, dict, b"W")).into_values(),
+        );
+    }
+    if raw_dict_get(dict, b"Subtype")
+        .and_then(|s| s.as_name())
+        .is_some_and(|n| n == b"Type3")
+    {
+        return false;
+    }
+    raw_dict_get(dict, b"Widths")
+        .and_then(|w| doc.resolve(w).as_array())
+        .is_some_and(|widths| {
+            widths_refute_fixed_pitch(widths.iter().filter_map(|w| doc.resolve(w).as_f32()))
+        })
+}
+
+/// The entries of a CIDFont's `/W` or `/W2` array (ISO 32000-1 §9.7.4.3), as written.
+fn cid_width_entries(doc: &RawDocument, cid_font: &RawPdfDict, key: &[u8]) -> Vec<WEntry> {
+    let number = |obj: &RawPdfObject| doc.resolve(obj).as_f32();
+    raw_dict_get(cid_font, key)
+        .and_then(|w| doc.resolve(w).as_array())
+        .map(|items| {
+            items
+                .iter()
+                .map_while(|item| match doc.resolve(item) {
+                    RawPdfObject::Array(list) => {
+                        Some(WEntry::Array(list.iter().filter_map(number).collect()))
+                    }
+                    other => other.as_f32().map(WEntry::Number),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
 
 /// Whether `base_font` names a standard Courier face (ISO 32000-1 §9.6.2.2), with or without
 /// a subset tag (`ABCDEF+Courier`).

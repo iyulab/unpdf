@@ -192,6 +192,76 @@ pub(super) fn is_monospaced_line(line: &TextLine) -> bool {
     spans.next().is_some_and(|s| s.is_monospace) && spans.all(|s| s.is_monospace)
 }
 
+/// The share of a page's text that fixed-pitch runs must carry for the page to be typewritten.
+const TYPEWRITTEN_SHARE: f32 = 0.9;
+
+/// The share of a typewritten page's characters that are symbols, from which it reads as a
+/// listing: prose carries well under a hundredth of them (full stops and commas are not among
+/// them), a program a tenth or more.
+const LISTING_SYMBOL_SHARE: f32 = 0.03;
+
+/// Whether `c` is one of the characters a program is made of far more than prose is.
+fn is_listing_symbol(c: char) -> bool {
+    matches!(
+        c,
+        '{' | '}'
+            | '['
+            | ']'
+            | '<'
+            | '>'
+            | '='
+            | ';'
+            | '+'
+            | '*'
+            | '/'
+            | '\\'
+            | '|'
+            | '&'
+            | '^'
+            | '~'
+            | '#'
+            | '$'
+            | '@'
+            | '%'
+            | '_'
+    )
+}
+
+/// Settles what the fixed pitch of a page's text means.
+///
+/// Fixed pitch sets a run apart only against proportional text around it: a listing in a report,
+/// a command in a manual. A page whose text is almost all fixed-pitch is typewritten -- a decree,
+/// a manuscript, a form filled in on a typewriter -- and the pitch is its typeface, not a
+/// declaration that every line is code. Such a page is read as prose (its lines wrapped by the
+/// typist, its words hyphenated at the line end) unless its characters read as a program's.
+/// Nothing is dropped either way; only whether the lines are kept as printed changes.
+pub(super) fn settle_page_pitch(spans: &mut [TextSpan]) {
+    let (mut fixed, mut total, mut symbols) = (0usize, 0usize, 0usize);
+    for span in spans.iter() {
+        let chars = span.text.chars().filter(|c| !c.is_whitespace());
+        let count = if span.is_monospace {
+            let (n, s) = chars.fold((0, 0), |(n, s), c| {
+                (n + 1, s + is_listing_symbol(c) as usize)
+            });
+            fixed += n;
+            symbols += s;
+            n
+        } else {
+            chars.count()
+        };
+        total += count;
+    }
+    if fixed == 0 || (fixed as f32) < TYPEWRITTEN_SHARE * total as f32 {
+        return;
+    }
+    if (symbols as f32) >= LISTING_SYMBOL_SHARE * fixed as f32 {
+        return;
+    }
+    for span in spans.iter_mut() {
+        span.is_monospace = false;
+    }
+}
+
 /// The pitch of the lines around the gap above line `i`: the smallest of the two spacings before
 /// that gap and the two after it (`spacings[j]` is the distance from line `j - 1` to line `j`),
 /// or `None` when there are none.
@@ -1421,7 +1491,8 @@ impl<'a> LayoutAnalyzer<'a> {
         self.undecodable_content_streams
             .set(painted.undecodable_streams);
         self.form_op_count.set(painted.forms_painted);
-        let (spans, signals, grids) = self.parse_operations(&painted.ops, *page_id)?;
+        let (mut spans, signals, grids) = self.parse_operations(&painted.ops, *page_id)?;
+        settle_page_pitch(&mut spans);
 
         if self.suppress_low_confidence_ocr && signals.is_ocr_layer_over_scan() {
             let text = spans
