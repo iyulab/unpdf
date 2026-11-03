@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Changed
+
+- **A table the page's layout suggests but whose cells are mostly empty is written as rows of
+  text.** A chart's axis labels, a block diagram's boxes and a displayed equation come out of
+  layout analysis as grids in which fewer than three in ten cells hold text and the top row
+  does not name the columns; they are now one paragraph per row, with every cell's text kept,
+  instead of a Markdown table of empty cells. A worksheet with a named header row and empty
+  entries is still a table, and so is any table with a link in a cell.
+
 ### Fixed
 
 - **A table ruled across, drawn in pieces, is found.** Word and some other producers draw a

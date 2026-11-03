@@ -635,6 +635,64 @@ struct Element {
     block: Block,
 }
 
+/// The share of a table's cells that must hold text for it to be read as a table. Structure
+/// recovered from a page's layout is only as good as what fills it: a chart's axis labels, a
+/// block diagram's boxes, a displayed equation come out as grids of mostly empty cells.
+const MIN_FILLED_CELLS: f32 = 0.30;
+
+/// Whether a table the parser inferred from the page holds so little in its cells that it is
+/// text laid out, not a table: at least two rows and two columns, fewer than
+/// [`MIN_FILLED_CELLS`] of its cells with any text, and a top row that does not name its
+/// columns (fewer than half its cells hold text). A worksheet to fill in has a header and
+/// empty cells by design, and is a table. Cells that carry a link are not given up (a
+/// paragraph of plain rows has nowhere to put the link).
+fn is_mostly_empty(table: &crate::model::Table) -> bool {
+    let cells: Vec<&crate::model::TableCell> =
+        table.rows.iter().flat_map(|row| &row.cells).collect();
+    if table.rows.len() < 2 || table.column_count() < 2 || cells.is_empty() {
+        return false;
+    }
+    let linked = cells.iter().any(|cell| {
+        cell.content
+            .iter()
+            .flat_map(|p| &p.content)
+            .any(|i| matches!(i, crate::model::InlineContent::Link { .. }))
+    });
+    let filled = cells.iter().filter(|cell| !cell.is_empty()).count();
+    let header = &table.rows[0].cells;
+    let header_named = header.iter().filter(|cell| !cell.is_empty()).count() * 2 >= header.len();
+    !linked && !header_named && (filled as f32) < MIN_FILLED_CELLS * cells.len() as f32
+}
+
+/// `table` as the page's element: the table, or -- when it is mostly empty -- its rows as
+/// lines of text, each with its cells' text and nothing left out, as the rows of a table too
+/// uncertain to keep are written.
+fn table_elements(top: f32, table: crate::model::Table) -> Vec<Element> {
+    if !is_mostly_empty(&table) {
+        return vec![Element::table(top, table)];
+    }
+    table
+        .rows
+        .iter()
+        .map(|row| {
+            row.cells
+                .iter()
+                .map(|cell| cell.plain_text())
+                .filter(|text| !text.trim().is_empty())
+                .collect::<Vec<_>>()
+                .join("  ")
+        })
+        .filter(|text| !text.is_empty())
+        .map(|text| Element {
+            y: top,
+            // Not a single-line paragraph: rows share `top`, and single lines at one height
+            // are merged back into one line (`merge_same_row_paragraphs`).
+            single_line: false,
+            block: Block::Paragraph(crate::model::Paragraph::with_text(text)),
+        })
+        .collect()
+}
+
 impl Element {
     fn table(top: f32, table: crate::model::Table) -> Self {
         Element {
@@ -949,7 +1007,7 @@ fn extract_page_with_tables_fn(
             .collect();
 
         for (extent, table) in lattice_tables {
-            tables.push((extent, vec![Element::table(extent.top, table)]));
+            tables.push((extent, table_elements(extent.top, table)));
         }
 
         const TABLE_CONFIDENCE_THRESHOLD: f32 = 0.4;
@@ -982,7 +1040,7 @@ fn extract_page_with_tables_fn(
             } else {
                 let table = table_detector.to_table_model(detected);
                 if !table.is_empty() {
-                    tables.push((extent, vec![Element::table(extent.top, table)]));
+                    tables.push((extent, table_elements(extent.top, table)));
                 }
             }
         }
@@ -1124,6 +1182,80 @@ fn parse_pdf_date(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{Table, TableCell, TableRow};
+
+    fn grid(rows: &[&[&str]]) -> Table {
+        let mut table = Table::new();
+        for row in rows {
+            table.add_row(TableRow::new(
+                row.iter()
+                    .map(|text| {
+                        if text.is_empty() {
+                            TableCell::empty()
+                        } else {
+                            TableCell::text(*text)
+                        }
+                    })
+                    .collect(),
+            ));
+        }
+        table
+    }
+
+    /// A chart's axis labels or a diagram's boxes come out of layout analysis as a grid of
+    /// mostly empty cells: its rows are written as lines, every word kept.
+    #[test]
+    fn a_table_that_is_mostly_empty_cells_is_written_as_rows_of_text() {
+        let table = grid(&[
+            &["0.8 0.6", "", "", "", ""],
+            &["", "", "RF Chain", "", ""],
+            &["", "0.5", "", "", "1"],
+        ]);
+        let elements = table_elements(700.0, table);
+        let texts: Vec<String> = elements
+            .iter()
+            .map(|e| match &e.block {
+                Block::Paragraph(p) => p.plain_text(),
+                other => panic!("not a paragraph: {other:?}"),
+            })
+            .collect();
+        assert_eq!(texts, ["0.8 0.6", "RF Chain", "0.5  1"]);
+    }
+
+    #[test]
+    fn a_table_with_its_cells_filled_stays_a_table() {
+        let table = grid(&[&["Name", "Qty"], &["bolt", "4"], &["nut", ""]]);
+        let elements = table_elements(700.0, table);
+        assert!(matches!(elements.as_slice(), [e] if matches!(e.block, Block::Table(_))));
+    }
+
+    /// A worksheet to fill in names its columns and leaves the cells empty: a table.
+    #[test]
+    fn a_blank_worksheet_with_a_header_stays_a_table() {
+        let table = grid(&[
+            &[
+                "Dimension",
+                "",
+                "Strengths",
+                "Weaknesses",
+                "Opportunities",
+                "Threats",
+            ],
+            &["", "a. Community", "", "", "", ""],
+            &["", "", "", "", "", ""],
+            &["", "", "", "", "", ""],
+            &["", "b. Outreach", "", "", "", ""],
+            &["", "", "", "", "", ""],
+        ]);
+        assert!(!is_mostly_empty(&table));
+    }
+
+    /// A small table with a blank column is still a table: the share is of all cells.
+    #[test]
+    fn a_table_with_one_blank_column_stays_a_table() {
+        let table = grid(&[&["a", "b", ""], &["c", "d", ""]]);
+        assert!(!is_mostly_empty(&table));
+    }
 
     #[test]
     fn raw_fallback_keeps_links_on_ordinary_body_text() {
