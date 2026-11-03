@@ -202,7 +202,26 @@ fn push_inline_content_in(
     cell: bool,
 ) {
     let content = &coalesce_written_runs(content);
-    for (i, item) in content.iter().enumerate() {
+    let mut i = 0;
+    while i < content.len() {
+        if let Some(count) = linked_emphasis_group(content, i) {
+            let before = output.chars().next_back();
+            let after = content.get(i + count).and_then(leading_char);
+            if before.is_none_or(|c| !c.is_alphanumeric())
+                && after.is_none_or(|c| !c.is_alphanumeric())
+            {
+                output.push_str(&linked_emphasis(
+                    &content[i..i + count],
+                    before,
+                    after,
+                    options,
+                    cell,
+                ));
+                i += count;
+                continue;
+            }
+        }
+        let item = &content[i];
         match item {
             InlineContent::Text(run) => {
                 let text = if options.escape_special_chars {
@@ -258,7 +277,83 @@ fn push_inline_content_in(
                 output.push_str(&markdown::image(alt, &path, cell));
             }
         }
+        i += 1;
     }
+}
+
+/// How many items from `start` are one emphasis with a link inside it: text, a link, text, ...
+/// written in the same style, beginning and ending in text. `(` , a linked citation and `)` in
+/// one italic is `*([Name 2007](url))*`; written run by run it is `*(*[*Name 2007*](url)*)*`,
+/// three emphases for one. `None` when the items are not such a group.
+fn linked_emphasis_group(content: &[InlineContent], start: usize) -> Option<usize> {
+    let marks_of = |item: &InlineContent| match item {
+        InlineContent::Text(run) => Some(written_marks(&run.style)),
+        InlineContent::Link { style, .. } => Some(written_marks(style)),
+        _ => None,
+    };
+    if !matches!(content.get(start)?, InlineContent::Text(_)) {
+        return None;
+    }
+    let marks = marks_of(&content[start])?;
+    if marks == (false, false, false, false) {
+        return None;
+    }
+    let mut count = 1;
+    while content.get(start + count).and_then(marks_of) == Some(marks) {
+        count += 1;
+    }
+    // The group ends in text: a link at the edge would put the delimiter against `)`.
+    while count > 0 && !matches!(content[start + count - 1], InlineContent::Text(_)) {
+        count -= 1;
+    }
+    let active_links = content[start..start + count]
+        .iter()
+        .filter(|item| matches!(item, InlineContent::Link { url, .. } if active_link(url)))
+        .count();
+    (active_links > 0).then_some(count)
+}
+
+/// The items of a [`linked_emphasis_group`] as Markdown: the text and links written plain, the
+/// whole wrapped once in the group's style.
+fn linked_emphasis(
+    group: &[InlineContent],
+    before: Option<char>,
+    after: Option<char>,
+    options: &RenderOptions,
+    cell: bool,
+) -> String {
+    let escaped = |text: &str| {
+        if options.escape_special_chars {
+            escape_markdown(text)
+        } else {
+            text.to_string()
+        }
+    };
+    let mut inner = String::new();
+    let mut style = TextStyle::default();
+    for (n, item) in group.iter().enumerate() {
+        match item {
+            InlineContent::Text(run) => {
+                if n == 0 {
+                    style = run.style.clone();
+                }
+                inner.push_str(&escaped(&run.text));
+            }
+            InlineContent::Link {
+                text, url, title, ..
+            } => {
+                let label = escaped(text);
+                if active_link(url) {
+                    inner.push_str(&markdown::link(&label, url, title.as_deref(), cell));
+                } else {
+                    inner.push_str(&label);
+                }
+            }
+            // Never in a group (`linked_emphasis_group` stops at them).
+            InlineContent::LineBreak | InlineContent::Image { .. } => {}
+        }
+    }
+    apply_text_style(&inner, &style, before, after)
 }
 
 /// The first character `item` writes — what a styled run just before it lands against.
@@ -649,6 +744,84 @@ mod tests {
             &RenderOptions::default(),
         );
         assert_eq!(out, "*cph*");
+    }
+
+    fn styled_text(text: &str, italic: bool) -> InlineContent {
+        InlineContent::Text(crate::model::TextRun {
+            text: text.to_string(),
+            style: TextStyle {
+                italic,
+                ..TextStyle::default()
+            },
+        })
+    }
+
+    fn styled_link(text: &str, url: &str, italic: bool) -> InlineContent {
+        InlineContent::Link {
+            text: text.to_string(),
+            url: url.to_string(),
+            title: None,
+            style: TextStyle {
+                italic,
+                ..TextStyle::default()
+            },
+        }
+    }
+
+    fn written(content: &[InlineContent]) -> String {
+        let mut out = String::new();
+        push_inline_content(&mut out, content, &RenderOptions::default());
+        out
+    }
+
+    #[test]
+    fn a_linked_citation_in_italic_is_one_emphasis() {
+        let content = [
+            styled_text("as shown ", false),
+            styled_text("(", true),
+            styled_link("Name 2007", "https://example.org/a", true),
+            styled_text(")", true),
+            styled_text(" later", false),
+        ];
+        assert_eq!(
+            written(&content),
+            "as shown *([Name 2007](https://example.org/a))* later"
+        );
+    }
+
+    #[test]
+    fn a_link_beside_text_of_another_style_keeps_its_own_emphasis() {
+        // The link is italic, the text around it is not: nothing to join.
+        let content = [
+            styled_text("see ", false),
+            styled_link("Name", "https://example.org/a", true),
+            styled_text(" now", false),
+        ];
+        assert_eq!(written(&content), "see [*Name*](https://example.org/a) now");
+    }
+
+    #[test]
+    fn an_italic_link_at_the_edge_of_italic_text_is_not_joined() {
+        // Text, link: the group would end in the link, putting the closing delimiter against `)`.
+        let content = [
+            styled_text("see ", true),
+            styled_link("Name", "https://example.org/a", true),
+        ];
+        assert_eq!(written(&content), "*see* [*Name*](https://example.org/a)");
+    }
+
+    #[test]
+    fn a_linked_group_against_a_word_is_left_run_by_run() {
+        // A delimiter that touches a letter outside would move punctuation across the link's
+        // brackets, so a group beside a word keeps the old, safe form.
+        let content = [
+            styled_text("word", false),
+            styled_text("(", true),
+            styled_link("Name", "https://example.org/a", true),
+            styled_text(")", true),
+        ];
+        let out = written(&content);
+        assert!(out.contains("[*Name*](https://example.org/a)"), "{out}");
     }
 
     #[test]

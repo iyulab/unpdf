@@ -98,6 +98,11 @@
   R, G and B, is counted in `RasterGaps::images`; it was painted as the decoder read it.
   `CodecParms::Dct` carries the value: Rust code that matches `CodecParms` exhaustively needs the
   new arm.
+- **A linked citation in styled text is written as one emphasis.** Text, a link and text in the
+  same style were three emphases around one phrase, `*(*[*Name 2007*](url)*)*`; they are now
+  `*([Name 2007](url))*`. Only where both neighbours are not word characters, so a delimiter never
+  lands against a letter and the link's brackets stay whole; a group beside a word, or one that
+  ends in a link, is written run by run as before. Only the Markdown changes; the JSON does not.
 
 
 
