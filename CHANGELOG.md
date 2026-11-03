@@ -4,6 +4,12 @@
 
 ### Fixed
 
+- **A link over text with a subscript or superscript is written as one link.** One link
+  annotation over `CO` and a subscript `2` reached the output as `[CO](u)[2](u)`: two links to the
+  same address, because a link label carries one style and the subscript changes it. Markdown
+  writes a script's text as the line's own, so adjacent links to one address that Markdown
+  writes the same way (same bold, italic, underline and strike-through) are now one link,
+  `[CO2](u)`, as the same text outside a link is already one run.
 - **A ruled table keeps its columns when a title or a group heading spans them.** Between two
   rules the columns are the gaps no line of text crosses, with a fifth of the lines allowed to
   cross; in a table of nine lines, a title and a heading that each ran across the first two

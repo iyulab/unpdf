@@ -178,12 +178,37 @@ fn coalesce_written_runs(content: &[InlineContent]) -> Vec<InlineContent> {
             _ => None,
         };
         let item = plain.as_ref().unwrap_or(item);
-        if let (InlineContent::Text(run), Some(InlineContent::Text(last))) = (item, out.last_mut())
-        {
-            if written_marks(&run.style) == written_marks(&last.style) {
+        match (item, out.last_mut()) {
+            (InlineContent::Text(run), Some(InlineContent::Text(last)))
+                if written_marks(&run.style) == written_marks(&last.style) =>
+            {
                 last.text.push_str(&run.text);
                 continue;
             }
+            // One annotation over `CO` and a subscript `2` is two links to one target by the
+            // time it reaches the model; written, it is one link, as the same text outside a
+            // link is one run.
+            (
+                InlineContent::Link {
+                    text,
+                    url,
+                    title,
+                    style,
+                },
+                Some(InlineContent::Link {
+                    text: last_text,
+                    url: last_url,
+                    title: last_title,
+                    style: last_style,
+                }),
+            ) if url == last_url
+                && title == last_title
+                && written_marks(style) == written_marks(last_style) =>
+            {
+                last_text.push_str(text);
+                continue;
+            }
+            _ => {}
         }
         out.push(item.clone());
     }
@@ -987,6 +1012,73 @@ mod tests {
         assert_eq!(
             paragraph_markdown(&Paragraph::with_text("1. Scope"), &raw),
             "1. Scope\n\n"
+        );
+    }
+
+    fn link(text: &str, url: &str, style: TextStyle) -> InlineContent {
+        InlineContent::Link {
+            text: text.to_string(),
+            url: url.to_string(),
+            title: None,
+            style,
+        }
+    }
+
+    fn render_content(content: &[InlineContent]) -> String {
+        let mut out = String::new();
+        push_inline_content(&mut out, content, &RenderOptions::default());
+        out
+    }
+
+    /// One annotation over `CO` and a subscript `2` reaches the model as two links to one
+    /// target; Markdown writes the subscript as the line's text, so it is one link, as the
+    /// same text in no link is one run.
+    #[test]
+    fn a_link_across_a_script_is_one_link() {
+        let sub = TextStyle {
+            subscript: true,
+            ..TextStyle::default()
+        };
+        let content = [
+            link("CO", "https://example.test/co2", TextStyle::default()),
+            link("2", "https://example.test/co2", sub),
+            InlineContent::Text(crate::model::TextRun {
+                text: " levels".to_string(),
+                style: TextStyle::default(),
+            }),
+        ];
+        assert_eq!(
+            render_content(&content),
+            "[CO2](https://example.test/co2) levels"
+        );
+    }
+
+    #[test]
+    fn links_to_different_targets_stay_two_links() {
+        let content = [
+            link("one", "https://example.test/a", TextStyle::default()),
+            link("two", "https://example.test/b", TextStyle::default()),
+        ];
+        assert_eq!(
+            render_content(&content),
+            "[one](https://example.test/a)[two](https://example.test/b)"
+        );
+    }
+
+    #[test]
+    fn links_to_one_target_written_differently_stay_two_links() {
+        let bold = TextStyle {
+            bold: true,
+            ..TextStyle::default()
+        };
+        let text = render_content(&[
+            link("plain", "https://example.test/a", TextStyle::default()),
+            link("strong", "https://example.test/a", bold),
+        ]);
+        assert_eq!(
+            text.matches("](https://example.test/a)").count(),
+            2,
+            "{text}"
         );
     }
 }
