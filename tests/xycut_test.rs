@@ -761,3 +761,52 @@ fn a_two_line_title_over_columns_is_banded_off_without_their_first_rows() {
         "the title's group holds no column row: {groups:?}"
     );
 }
+
+#[test]
+fn text_set_absurdly_far_apart_is_segmented_in_a_bounded_profile() {
+    let far = 1.0e30;
+    let blocks = vec![
+        make_block(0.0, 700.0, 200.0, 12.0),
+        make_block(0.0, 680.0, 200.0, 12.0),
+        make_block(far, 700.0, 200.0, 12.0),
+        make_block(far, 680.0, 200.0, 12.0),
+    ];
+    let groups = xycut_segment(&blocks, &WIDE_ONLY);
+    assert_eq!(groups.iter().map(Vec::len).sum::<usize>(), blocks.len());
+}
+
+#[test]
+fn text_spread_past_the_largest_float_is_left_unsplit() {
+    let edge = 3.0e38;
+    for blocks in [
+        vec![
+            make_block(-edge, 700.0, 200.0, 12.0),
+            make_block(edge, 700.0, 200.0, 12.0),
+        ],
+        vec![
+            make_block(72.0, -edge, 200.0, 12.0),
+            make_block(72.0, edge, 200.0, 12.0),
+        ],
+    ] {
+        let groups = xycut_segment(&blocks, &WIDE_ONLY);
+        assert_eq!(groups.iter().map(Vec::len).sum::<usize>(), blocks.len());
+    }
+}
+
+#[test]
+fn text_one_float_apart_at_an_extreme_position_is_left_unsplit() {
+    let at = |bits: u32| f32::from_bits(bits);
+    for blocks in [
+        vec![
+            make_block(at(0x7149_f2ca), 700.0, 200.0, 12.0),
+            make_block(at(0x7149_f2cb), 700.0, 200.0, 12.0),
+        ],
+        vec![
+            make_block(72.0, at(0x7149_f2cb), 200.0, 12.0),
+            make_block(72.0, at(0x7149_f2cc), 200.0, 12.0),
+        ],
+    ] {
+        let groups = xycut_segment(&blocks, &WIDE_ONLY);
+        assert_eq!(groups.iter().map(Vec::len).sum::<usize>(), blocks.len());
+    }
+}

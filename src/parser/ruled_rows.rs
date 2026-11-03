@@ -480,16 +480,19 @@ fn open_gaps(
         .flat_map(|r| r.spans.iter())
         .map(|s| extent(s).1)
         .fold(f32::MIN, f32::max);
-    // How many rows cover each point of the width, in steps of half a point.
-    const STEP: f32 = 0.5;
-    let bins = ((right - left) / STEP).ceil().max(1.0) as usize;
+    if !(right - left).is_finite() {
+        return Vec::new();
+    }
+    // How many rows cover each step of the width: half a point, wider for very wide text.
+    let step = super::xycut::profile_bin(right - left, 0.5);
+    let bins = ((right - left) / step).ceil().max(1.0) as usize;
     let mut covering = vec![0usize; bins];
     for row in rows {
         let mut mark = vec![false; bins];
         for span in &row.spans {
             let (a, b) = extent(span);
-            let from = ((a - left) / STEP).floor().max(0.0) as usize;
-            let to = (((b - left) / STEP).ceil() as usize).min(bins);
+            let from = ((a - left) / step).floor().max(0.0) as usize;
+            let to = (((b - left) / step).ceil() as usize).min(bins);
             for m in &mut mark[from..to] {
                 *m = true;
             }
@@ -510,7 +513,7 @@ fn open_gaps(
         while i < bins && covering[i] <= allowed {
             i += 1;
         }
-        let (a, b) = (left + start as f32 * STEP, left + i as f32 * STEP);
+        let (a, b) = (left + start as f32 * step, left + i as f32 * step);
         // Interior only, and wide enough to part two cells.
         if start == 0 || i >= bins || b - a < min_gap {
             continue;
@@ -518,8 +521,8 @@ fn open_gaps(
         let both_sides = rows
             .iter()
             .filter(|r| {
-                r.spans.iter().any(|s| extent(s).1 <= a + STEP)
-                    && r.spans.iter().any(|s| extent(s).0 >= b - STEP)
+                r.spans.iter().any(|s| extent(s).1 <= a + step)
+                    && r.spans.iter().any(|s| extent(s).0 >= b - step)
             })
             .count();
         if both_sides >= need_both_sides {
@@ -1466,5 +1469,22 @@ mod tests {
             "paragraph lines must not become rows of a wider grid: {:?}",
             grids.iter().map(|g| &g.col_bounds).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn cells_set_absurdly_far_apart_are_profiled_in_bounded_bins() {
+        let far = 1.0e30;
+        let rows: Vec<TableRowData> = (0..3)
+            .map(|i| {
+                let y = 700.0 - 20.0 * i as f32;
+                TableRowData {
+                    y,
+                    spans: vec![span("Name", 72.0, y), span("Value", far, y)],
+                    sources: Vec::new(),
+                }
+            })
+            .collect();
+        let refs: Vec<&TableRowData> = rows.iter().collect();
+        assert!(column_gaps(&refs).len() <= 1);
     }
 }

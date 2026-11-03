@@ -71,6 +71,15 @@ pub const SIDE_JOIN_GUTTERS: f32 = 2.0;
 /// the column adds many short label lines without making it any less a column of text.
 pub const COLUMN_LINE_MIN_SHARE: f32 = 0.25;
 
+/// The most bins a coverage profile holds, however far its text runs.
+pub(crate) const MAX_PROFILE_BINS: f32 = 65_536.0;
+
+/// The width of one bin of a coverage profile over `range` points: `finest`, or wider when that
+/// would take more than [`MAX_PROFILE_BINS`] bins.
+pub(crate) fn profile_bin(range: f32, finest: f32) -> f32 {
+    (range / MAX_PROFILE_BINS).max(finest)
+}
+
 /// What recursive XY-cut made of a page's blocks.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Segmentation {
@@ -169,8 +178,9 @@ fn partition_recursive(
     // With no column gutter left in the region, a strip of letters stacked in its margin is
     // read on its own before the region is cut into bands, which would scatter it.
     if v_gap.is_none() {
-        if let Some(at) = margin_strip(&blocks, min_x, max_x, config) {
-            for part in split_v(at) {
+        let strip = margin_strip(&blocks, min_x, max_x, config).map(split_v);
+        if let Some(parts) = strip.filter(|parts| !parts.is_empty()) {
+            for part in parts {
                 partition_recursive(all, &part, config, out);
             }
             return;
@@ -181,8 +191,9 @@ fn partition_recursive(
     // or a subtitle under a title -- is read before the columns, not as the first line of the
     // one it happens to stand over.
     if v_gap.is_some() {
-        if let Some(at) = centred_head(&blocks, min_x, max_x, config) {
-            for part in split_h(at) {
+        let head = centred_head(&blocks, min_x, max_x, config).map(split_h);
+        if let Some(parts) = head.filter(|parts| !parts.is_empty()) {
+            for part in parts {
                 partition_recursive(all, &part, config, out);
             }
             return;
@@ -275,7 +286,11 @@ fn split_indices(
     first: impl Fn(&Block) -> bool,
 ) -> Vec<Vec<usize>> {
     let (a, b): (Vec<usize>, Vec<usize>) = indices.iter().partition(|&&i| first(&all[i]));
-    vec![a, b]
+    if a.is_empty() || b.is_empty() {
+        Vec::new()
+    } else {
+        vec![a, b]
+    }
 }
 
 /// Whether a region left whole nonetheless looks like two columns of text — see
@@ -409,7 +424,10 @@ fn gutter_past_few_lines(
         .iter()
         .map(|l| l.extent.right())
         .fold(f32::MIN, f32::max);
-    let resolution = 2.0;
+    if !(hi - lo).is_finite() {
+        return None;
+    }
+    let resolution = profile_bin(hi - lo, 2.0);
     let bins = (((hi - lo) / resolution) as usize).max(1);
     let mut coverage = vec![0usize; bins];
     for line in &lines {
@@ -733,11 +751,11 @@ fn find_best_vertical_gap(
 ) -> Option<(f32, f32)> {
     let min_gap = config.min_gutter.min(config.min_x_gap);
     let range = max_x - min_x;
-    if range < min_gap * 2.0 {
+    if !range.is_finite() || range < min_gap * 2.0 {
         return None;
     }
 
-    let resolution = 2.0;
+    let resolution = profile_bin(range, 2.0);
     let num_bins = ((range / resolution) as usize).max(1);
     let mut profile = vec![0u32; num_bins];
 
@@ -855,11 +873,11 @@ fn find_best_horizontal_gap(
     min_gap: f32,
 ) -> Option<(f32, f32)> {
     let range = max_y - min_y;
-    if range < min_gap * 2.0 {
+    if !range.is_finite() || range < min_gap * 2.0 {
         return None;
     }
 
-    let resolution = 2.0;
+    let resolution = profile_bin(range, 2.0);
     let num_bins = ((range / resolution) as usize).max(1);
     let mut profile = vec![0u32; num_bins];
 
