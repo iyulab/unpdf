@@ -106,7 +106,8 @@ pub(crate) fn rule_stacks(lines: &[GraphicsLine]) -> Vec<RuleStack> {
 
 /// The tables the rule stacks bound, as grids for [`super::lattice::build_table`]: one row per
 /// line of text, one column per gap the lines leave open. A stack overlapping a ruled
-/// (lattice) grid is that grid's business.
+/// (lattice) grid that found columns is that grid's business; one that overlaps only a frame of
+/// one column is read for records alone.
 pub(crate) fn grids(
     stacks: &[RuleStack],
     spans: &[TextSpan],
@@ -114,15 +115,23 @@ pub(crate) fn grids(
 ) -> Vec<LatticeGrid> {
     let mut out = Vec::new();
     for stack in stacks {
-        let overlaps_lattice = lattice.iter().any(|g| {
-            g.left_x < stack.right_x
-                && stack.left_x < g.right_x
-                && g.bottom_y < stack.ys[0]
-                && stack.ys[stack.ys.len() - 1] < g.top_y
-        });
-        if overlaps_lattice {
+        let overlapping: Vec<&LatticeGrid> = lattice
+            .iter()
+            .filter(|g| {
+                g.left_x < stack.right_x
+                    && stack.left_x < g.right_x
+                    && g.bottom_y < stack.ys[0]
+                    && stack.ys[stack.ys.len() - 1] < g.top_y
+            })
+            .collect();
+        // A grid that found columns is the owner of what it covers. A frame of one column found
+        // none: the lattice reads it as a list of items or declines it as text drawn in boxes,
+        // and what it declines nobody else reads — except records (see `record_run`), which a
+        // grid that builds cannot be (a record that wraps is a cell of several lines).
+        if overlapping.iter().any(|g| g.column_count() > 1) {
             continue;
         }
+        let records_only = !overlapping.is_empty();
         // Each band between two neighbouring rules, with the lines of text inside it.
         let bands: Vec<(f32, f32, Vec<TableRowData>)> = stack
             .ys
@@ -164,6 +173,10 @@ pub(crate) fn grids(
             if let Some((last, grid)) = record_run(&bands, i) {
                 out.push(grid);
                 i = last + 1;
+                continue;
+            }
+            if records_only {
+                i += 1;
                 continue;
             }
             if !is_tabular(&bands[i].2) {
@@ -829,6 +842,27 @@ mod tests {
             "{rows:?}"
         );
         assert_eq!(rows[3][0], "Password");
+    }
+
+    /// The same records inside a frame drawn round them, with no rule between the key and the
+    /// description: the rules found one column, and a column whose cells hold paragraphs is text
+    /// drawn in boxes, which the grid declines. The records are still a table. A frame that
+    /// found columns of its own keeps the stack.
+    #[test]
+    fn records_in_a_frame_of_one_column_are_a_table_a_frame_of_two_keeps_them() {
+        let (rules, spans) = glossary();
+        let frame = |columns: &[f32]| LatticeGrid {
+            top_y: 500.0,
+            bottom_y: 388.0,
+            left_x: 100.0,
+            right_x: 460.0,
+            row_bounds: vec![500.0, 484.0, 452.0, 420.0, 388.0],
+            col_bounds: columns.to_vec(),
+            rules: Vec::new(),
+        };
+        let stacks = rule_stacks(&rules);
+        assert_eq!(grids(&stacks, &spans, &[frame(&[100.0, 460.0])]).len(), 1);
+        assert!(grids(&stacks, &spans, &[frame(&[100.0, 200.0, 460.0])]).is_empty());
     }
 
     /// One boxed note with a label hanging beside its paragraph is drawn the same way, and is

@@ -11,8 +11,10 @@
   more such bands whose descriptions start at one x are now a table with a row per band, the
   description staying in its cell. One band is a note with a label and is left alone, as is a row
   of three cells, which is three columns, and a key or description without words (a chart's
-  figures between its rules). On the olmOCR-Bench pages this alters 3 outputs on top of the
-  change below, scores +6 / −0 tests, and leaves all 200 ODL outputs unchanged.
+  figures between its rules). Records inside a frame drawn round them are read the same way:
+  the rules of a frame find one column, and a column whose cells hold paragraphs is declined as
+  text drawn in boxes. On the olmOCR-Bench pages this alters 4 outputs on top of the change
+  below, scores +11 / −0 tests, and leaves all 200 ODL outputs unchanged.
 - **A table with a double rule above and under it is read as a table.** A journal draws the
   rules above and under a table twice, two or three points apart. The strip between the two
   strokes holds no text but counted as a band, and a table with four bands of which two were
