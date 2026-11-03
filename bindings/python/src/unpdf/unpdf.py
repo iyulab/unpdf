@@ -93,7 +93,7 @@ def _page_number(page_number: int) -> int:
     onto another page when the ``int`` cannot hold it."""
     if not -(2**31) <= page_number < 2**31:
         raise UnpdfError(
-            f"unpdf error: page {page_number} is out of range",
+            "unpdf error: page number out of range",
             ErrorKind.PAGE_OUT_OF_RANGE,
         )
     return page_number
@@ -496,7 +496,7 @@ def get_page_stats(
     lib = get_library()
     handle = _parse_file(lib, source, options)
     try:
-        result = lib.unpdf_page_stats(handle, page_number)
+        result = lib.unpdf_page_stats(handle, _page_number(page_number))
         if not result:
             raise _native_error(lib)
         return json.loads(_take_string(lib, result))
@@ -723,7 +723,11 @@ def _render(
     out_len = ctypes.c_size_t(0)
     info = ctypes.c_void_p(None)
     result = lib.unpdf_render_page(
-        handle, page_number, options, ctypes.byref(out_len), ctypes.byref(info)
+        handle,
+        _page_number(page_number),
+        options,
+        ctypes.byref(out_len),
+        ctypes.byref(info),
     )
     if not result:
         raise _native_error(lib)
@@ -822,7 +826,7 @@ class Document:
 
     def get_page_stats(self, page_number: int) -> "dict[str, Any]":
         """Statistics for a page — see :func:`get_page_stats`."""
-        result = self._lib.unpdf_page_stats(self._live(), page_number)
+        result = self._lib.unpdf_page_stats(self._live(), _page_number(page_number))
         if not result:
             raise _native_error(self._lib)
         return json.loads(_take_string(self._lib, result))
