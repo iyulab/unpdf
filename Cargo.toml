@@ -6,7 +6,7 @@ resolver = "3"
 
 [package]
 name = "unpdf"
-version = "0.52.0"
+version = "0.52.1"
 edition = "2021"
 authors = ["iyulab"]
 license = "MIT"
