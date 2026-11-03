@@ -4,6 +4,15 @@
 
 ### Fixed
 
+- **A table ruled between its records, each a short key with a description that wraps, is read
+  as a table.** In a glossary or a list of options a band between two rules holds one line with
+  text on both sides of the gap and the description's further lines to its right, so a band
+  alone shows no column, and the wrapped lines counted as long cells, which read as prose. Two or
+  more such bands whose descriptions start at one x are now a table with a row per band, the
+  description staying in its cell. One band is a note with a label and is left alone, as is a row
+  of three cells, which is three columns, and a key or description without words (a chart's
+  figures between its rules). On the olmOCR-Bench pages this alters 3 outputs on top of the
+  change below, scores +6 / −0 tests, and leaves all 200 ODL outputs unchanged.
 - **A table with a double rule above and under it is read as a table.** A journal draws the
   rules above and under a table twice, two or three points apart. The strip between the two
   strokes holds no text but counted as a band, and a table with four bands of which two were

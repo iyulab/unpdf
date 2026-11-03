@@ -161,6 +161,11 @@ pub(crate) fn grids(
         // A table is a run of bands whose text lines up in columns.
         let mut i = 0;
         while i < bands.len() {
+            if let Some((last, grid)) = record_run(&bands, i) {
+                out.push(grid);
+                i = last + 1;
+                continue;
+            }
             if !is_tabular(&bands[i].2) {
                 log::debug!(
                     "ruled rows: band y {:.0}..{:.0} ({} lines) does not line up in columns or reads as prose",
@@ -226,6 +231,124 @@ pub(crate) fn grids(
     }
     out.sort_by(|a, b| b.top_y.total_cmp(&a.top_y));
     out
+}
+
+/// The most words a record's key holds: a name, an option, a reference, not a sentence.
+const KEY_WORDS: usize = 5;
+
+/// A band that is one record of a glossary-like table: its first line is a short key and the
+/// text of its description, and every further line starts to the right of the key, as a wrapped
+/// description does.
+struct Record {
+    key_right: f32,
+    text_left: f32,
+    /// Whether the description wraps onto lines of its own.
+    wraps: bool,
+}
+
+fn record_of(rows: &[TableRowData]) -> Option<Record> {
+    let first = rows.first()?;
+    // Exactly a key and its description: a row of three cells is three columns, and two would
+    // run the last pair together.
+    let [key, text] = first.spans.as_slice() else {
+        return None;
+    };
+    // Both are words: a chart's figures between its rules have a key and a description too.
+    let worded = |s: &TextSpan| s.text.chars().filter(|c| c.is_alphabetic()).count() >= 2;
+    if key.text.split_whitespace().count() > KEY_WORDS || !worded(key) || !worded(text) {
+        return None;
+    }
+    let key_right = key.ink_extent().1;
+    let gap = key.font_size * COLUMN_GAP_EM;
+    if text.x - key_right < gap {
+        return None;
+    }
+    // A wrapped description stays right of the gap; a line that comes back to the key's
+    // column is another row, or a paragraph.
+    let wraps = rows.len() > 1;
+    if rows[1..]
+        .iter()
+        .any(|r| r.spans.iter().any(|s| s.x < key_right + gap))
+    {
+        return None;
+    }
+    Some(Record {
+        key_right,
+        text_left: text.x,
+        wraps,
+    })
+}
+
+/// The table made of the records that start at band `start`: bands each holding a short key and
+/// a description, ruled apart, at least two and at least one of them wrapped. A band alone shows
+/// no column (one line has text on both sides of the gap) and its description lines read as long
+/// cells; the same gap in every band does show it. The row is the band, so a description that
+/// wraps stays in its cell. A single band is a note with a label, not a table.
+fn record_run(
+    bands: &[(f32, f32, Vec<TableRowData>)],
+    start: usize,
+) -> Option<(usize, LatticeGrid)> {
+    let mut records = Vec::new();
+    for band in &bands[start..] {
+        match record_of(&band.2) {
+            Some(r) => records.push(r),
+            None => break,
+        }
+    }
+    // The description column starts at one x in every band.
+    let text_left = records.first()?.text_left;
+    let aligned = records
+        .iter()
+        .take_while(|r| (r.text_left - text_left).abs() <= EXTENT_TOLERANCE)
+        .count();
+    records.truncate(aligned);
+    if records.len() < 2 || !records.iter().any(|r| r.wraps) {
+        return None;
+    }
+    let last = start + records.len() - 1;
+    let run = &bands[start..=last];
+    let key_right = records.iter().map(|r| r.key_right).fold(f32::MIN, f32::max);
+
+    let cells: Vec<Vec<String>> = run
+        .iter()
+        .map(|b| {
+            let first = &b.2[0];
+            let rest: Vec<&str> =
+                b.2.iter()
+                    .flat_map(|r| r.spans.iter())
+                    .skip(1)
+                    .map(|s| s.text.trim())
+                    .collect();
+            vec![first.spans[0].text.trim().to_string(), rest.join(" ")]
+        })
+        .collect();
+    if super::table_detector::TableDetector::is_table_of_contents(&cells) {
+        return None;
+    }
+
+    let spans = || {
+        run.iter()
+            .flat_map(|b| b.2.iter())
+            .flat_map(|r| r.spans.iter())
+    };
+    let left = spans().map(|s| s.x).fold(f32::MAX, f32::min);
+    let right = spans().map(|s| s.x + s.width).fold(f32::MIN, f32::max);
+    let mut row_bounds: Vec<f32> = run.iter().map(|b| b.0).collect();
+    row_bounds.push(run[run.len() - 1].1);
+    let grid = LatticeGrid {
+        top_y: run[0].0,
+        bottom_y: run[run.len() - 1].1,
+        left_x: left - 1.0,
+        right_x: right + 1.0,
+        row_bounds,
+        col_bounds: vec![left - 1.0, (key_right + text_left) / 2.0, right + 1.0],
+        rules: Vec::new(),
+    };
+    log::debug!(
+        "ruled rows: {} records ruled apart, keys left of x {key_right:.0}, descriptions from x {text_left:.0}",
+        run.len()
+    );
+    Some((last, grid))
 }
 
 /// Whether a band that is not a table by itself can head the table below it: its lines are
@@ -655,6 +778,163 @@ mod tests {
         let first_column: Vec<String> =
             table.rows.iter().map(|r| r.cells[0].plain_text()).collect();
         assert_eq!(first_column, ["Mineral", "kaolinite", "illite", "humus"]);
+    }
+
+    /// A rule between records, each a short key and a description that wraps under its own first
+    /// line: a glossary, a list of options. A band holds one line with text on both sides of the
+    /// gap, the rest start to its right, so the band alone shows no column and the description
+    /// lines read as long cells; the same gap in every band does show it. The row is the band.
+    fn glossary() -> (Vec<GraphicsLine>, Vec<TextSpan>) {
+        let rules = [500.0, 484.0, 452.0, 420.0, 388.0]
+            .into_iter()
+            .map(|y| h(y, 100.0, 460.0))
+            .collect();
+        let spans = vec![
+            span("Option", 105.0, 488.0),
+            span("Description", 250.0, 488.0),
+            span("Accessibility", 105.0, 470.0),
+            span(
+                "Turns on the mode that lets you drive the page",
+                250.0,
+                470.0,
+            ),
+            span("from the keyboard only", 250.0, 458.0),
+            span("Email", 105.0, 438.0),
+            span("Reserved for future use and not yet working", 250.0, 438.0),
+            span("in this release", 250.0, 426.0),
+            span("Password", 105.0, 406.0),
+            span("Use the Password tab to change your password", 250.0, 406.0),
+            span("or reset it from the sign in page", 250.0, 394.0),
+        ];
+        (rules, spans)
+    }
+
+    #[test]
+    fn records_ruled_apart_with_wrapped_descriptions_are_a_table() {
+        let (rules, spans) = glossary();
+        let grids = grids(&rule_stacks(&rules), &spans, &[]);
+        assert_eq!(grids.len(), 1, "{grids:?}");
+        let (table, consumed) = super::super::lattice::build_table(&grids[0], &spans).unwrap();
+        assert_eq!(consumed.len(), spans.len());
+        let rows: Vec<Vec<String>> = table
+            .rows
+            .iter()
+            .map(|r| r.cells.iter().map(|c| c.plain_text()).collect())
+            .collect();
+        assert_eq!(rows.len(), 4, "{rows:?}");
+        assert_eq!(rows[0], ["Option", "Description"]);
+        assert_eq!(rows[1][0], "Accessibility");
+        assert!(
+            rows[1][1].contains("drive the page") && rows[1][1].contains("keyboard only"),
+            "{rows:?}"
+        );
+        assert_eq!(rows[3][0], "Password");
+    }
+
+    /// One boxed note with a label hanging beside its paragraph is drawn the same way, and is
+    /// not a table: a record is evidence only in a run of them.
+    #[test]
+    fn a_single_labelled_paragraph_between_rules_is_not_a_table() {
+        let rules = vec![h(500.0, 100.0, 460.0), h(430.0, 100.0, 460.0)];
+        let spans = vec![
+            span("NOTE", 105.0, 488.0),
+            span(
+                "Turns on the mode that lets you drive the page",
+                250.0,
+                488.0,
+            ),
+            span(
+                "from the keyboard only and is meant for those",
+                250.0,
+                476.0,
+            ),
+            span("who cannot use a pointing device at all", 250.0, 464.0),
+            span("and for nobody else on this release", 250.0, 452.0),
+        ];
+        assert!(grids(&rule_stacks(&rules), &spans, &[]).is_empty());
+    }
+
+    /// A chart's figures between its rules have a «key» and a «description» too, and no words.
+    #[test]
+    fn figures_ruled_apart_are_not_records() {
+        let rules: Vec<GraphicsLine> = [500.0, 460.0, 420.0, 380.0]
+            .into_iter()
+            .map(|y| h(y, 100.0, 460.0))
+            .collect();
+        let spans = vec![
+            span("32", 105.0, 488.0),
+            span("37 20", 250.0, 488.0),
+            span("40", 250.0, 476.0),
+            span("30", 105.0, 448.0),
+            span("17 21", 250.0, 448.0),
+            span("46", 250.0, 436.0),
+            span("20", 105.0, 408.0),
+            span("38 22", 250.0, 408.0),
+            span("19", 250.0, 396.0),
+        ];
+        assert!(grids(&rule_stacks(&rules), &spans, &[]).is_empty());
+    }
+
+    /// A row of three cells is a table of three columns, not a key and its description: reading
+    /// it as two would run the last two together.
+    #[test]
+    fn a_row_of_three_cells_is_not_a_record() {
+        let rules: Vec<GraphicsLine> = [500.0, 460.0, 420.0, 380.0]
+            .into_iter()
+            .map(|y| h(y, 100.0, 460.0))
+            .collect();
+        let spans = vec![
+            span("Salt", 105.0, 480.0),
+            span("Sea salt", 200.0, 480.0),
+            span("Storms over the sea", 330.0, 480.0),
+            span("and spray", 330.0, 468.0),
+            span("Nitric acid", 105.0, 440.0),
+            span("Lightning", 200.0, 440.0),
+            span("Forest fires", 330.0, 440.0),
+            span("and traffic", 330.0, 428.0),
+            span("Heavy metals", 105.0, 400.0),
+            span("Mining", 200.0, 400.0),
+            span("Industry", 330.0, 400.0),
+            span("and waste", 330.0, 388.0),
+        ];
+        // Whatever reads it, no grid of two columns.
+        let grids = grids(&rule_stacks(&rules), &spans, &[]);
+        assert!(grids.iter().all(|g| g.col_bounds.len() >= 4), "{grids:?}");
+    }
+
+    /// Paragraphs ruled apart that each start at the left are not records: no short key on its
+    /// own, no gap the lines leave open.
+    #[test]
+    fn paragraphs_ruled_apart_are_not_records() {
+        let rules: Vec<GraphicsLine> = [500.0, 460.0, 420.0, 380.0]
+            .into_iter()
+            .map(|y| h(y, 100.0, 460.0))
+            .collect();
+        let spans = vec![
+            span(
+                "Turns on the mode that lets you drive the page",
+                105.0,
+                480.0,
+            ),
+            span(
+                "from the keyboard only and is meant for those",
+                105.0,
+                468.0,
+            ),
+            span(
+                "who cannot use a pointing device at all today",
+                105.0,
+                440.0,
+            ),
+            span("and for nobody else on this release of it", 105.0, 428.0),
+            span(
+                "A third paragraph of ordinary running text here",
+                105.0,
+                400.0,
+            ),
+            span("and a fourth line that goes on and on", 105.0, 388.0),
+        ];
+        assert!(grids(&rule_stacks(&rules), &spans, &[]).is_empty());
     }
 
     /// Rules a line of text can fit between stay apart: a table ruled between its rows.
