@@ -586,6 +586,73 @@ fn is_worksheet(rows: &[&TableRowData], gap: (f32, f32)) -> bool {
         })
 }
 
+/// The fewest lines of text a band holds to be taken for a page's body set in columns.
+const PAGE_COLUMN_LINES: usize = 12;
+
+/// Whether rows are a page's text set in columns rather than a table: two columns, each running
+/// across about two fifths of the table's width or more and standing side by side, sentence-like
+/// lines, and nothing else but narrow strips. A page of body text between its running head's rule
+/// and its foot's has all of it — the rules bound the page, the gutter is the one gap no line
+/// crosses — and read as a table, its lines come out one from each column, interleaved. A table
+/// of two wide text columns and some narrow figures has runs of a word or two, and a heading
+/// across the columns makes them overlap.
+fn set_in_page_columns(rows: &[&TableRowData], col_bounds: &[f32], left: f32, right: f32) -> bool {
+    if rows.len() < PAGE_COLUMN_LINES || col_bounds.len() < 3 {
+        return false;
+    }
+    let width = (right - left).max(1.0);
+    let mut ink = vec![(f32::MAX, f32::MIN); col_bounds.len() - 1];
+    let (mut words, mut runs) = (0usize, 0usize);
+    for span in rows.iter().flat_map(|r| r.spans.iter()) {
+        let column = col_bounds
+            .iter()
+            .skip(1)
+            .take_while(|&&b| span.x >= b)
+            .count()
+            .min(col_bounds.len() - 2);
+        let (a, b) = span.ink_extent();
+        ink[column] = (ink[column].0.min(a), ink[column].1.max(b));
+        words += span.text.split_whitespace().count();
+        runs += 1;
+    }
+    if (words as f32) < runs as f32 * PAGE_COLUMN_WORDS {
+        return false;
+    }
+    let shares: Vec<f32> = ink
+        .iter()
+        .map(|&(a, b)| if b > a { (b - a) / width } else { 0.0 })
+        .collect();
+    let mut wide: Vec<f32> = shares
+        .iter()
+        .copied()
+        .filter(|&s| s >= PAGE_COLUMN_SHARE)
+        .collect();
+    wide.sort_by(|a, b| b.total_cmp(a));
+    let side_by_side = wide.len() >= 2 && wide[0] + wide[1] <= PAGE_COLUMN_FIT;
+    let rest_narrow = shares
+        .iter()
+        .all(|&s| s >= PAGE_COLUMN_SHARE || s < PAGE_COLUMN_STRIP);
+    if side_by_side && rest_narrow {
+        log::debug!(
+            "ruled rows: {} lines set in page columns, not a table",
+            rows.len()
+        );
+    }
+    side_by_side && rest_narrow
+}
+
+/// A column that runs across this share of the table's width is a column of the page's text.
+const PAGE_COLUMN_SHARE: f32 = 0.4;
+
+/// The two widest columns stand side by side: together at most this share of the width.
+const PAGE_COLUMN_FIT: f32 = 1.05;
+
+/// Any other column is a strip narrower than this share (a margin number, a stray run).
+const PAGE_COLUMN_STRIP: f32 = 0.15;
+
+/// Words per run, at least, of lines of sentences; a table's cells are a word or two.
+const PAGE_COLUMN_WORDS: f32 = 2.5;
+
 /// The grid of one ruled table: columns at the body's gaps, a row per line of text.
 fn grid_of(
     stack: &RuleStack,
@@ -619,6 +686,9 @@ fn grid_of(
     let mut col_bounds = vec![left - 1.0];
     col_bounds.extend(gaps.iter().map(|(a, b)| (a + b) / 2.0));
     col_bounds.push(right + 1.0);
+    if set_in_page_columns(rows, &col_bounds, left, right) {
+        return None;
+    }
 
     // Entries ruled off against page references are a table of contents, which is a list, as
     // stream detection reads one.
@@ -969,6 +1039,48 @@ mod tests {
             span("and a fourth line that goes on and on", 105.0, 388.0),
         ];
         assert!(grids(&rule_stacks(&rules), &spans, &[]).is_empty());
+    }
+
+    /// A page's body set in two columns between a rule under the running head and one over the
+    /// foot: the rules bound the page, the gutter is the gap no line crosses. Not a table.
+    #[test]
+    fn a_page_of_text_in_two_columns_between_two_rules_is_not_a_table() {
+        // The rules run the width of the text, as a running head's and a foot's do.
+        let rules = vec![h(740.0, 103.0, 545.0), h(60.0, 103.0, 545.0)];
+        let line = |i: usize| -> [&'static str; 2] {
+            // Narrow columns: a line of five or six words, short of a «long» cell.
+            let words = [
+                "the committee reviewed the proposal",
+                "while members asked several questions",
+                "and the chair summarised the points",
+            ];
+            [words[i % 3], words[(i + 1) % 3]]
+        };
+        let mut spans = Vec::new();
+        for i in 0..16 {
+            let y = 720.0 - i as f32 * 12.0;
+            let [left, right] = line(i);
+            spans.push(span(left, 105.0, y));
+            spans.push(span(right, 355.0, y));
+        }
+        assert!(grids(&rule_stacks(&rules), &spans, &[]).is_empty());
+    }
+
+    /// Two wide columns of words beside narrow figures, a word or two a cell, stay a table.
+    #[test]
+    fn two_wide_columns_of_short_entries_stay_a_table() {
+        let rules = vec![
+            h(740.0, 100.0, 600.0),
+            h(700.0, 100.0, 600.0),
+            h(60.0, 100.0, 600.0),
+        ];
+        let mut spans = vec![span("Name", 105.0, 710.0), span("Role", 355.0, 710.0)];
+        for i in 0..16 {
+            let y = 688.0 - i as f32 * 12.0;
+            spans.push(span("Alpha", 105.0, y));
+            spans.push(span("Lead", 355.0, y));
+        }
+        assert_eq!(grids(&rule_stacks(&rules), &spans, &[]).len(), 1);
     }
 
     /// Rules a line of text can fit between stay apart: a table ruled between its rows.

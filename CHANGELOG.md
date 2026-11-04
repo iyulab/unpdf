@@ -4,6 +4,16 @@
 
 ### Fixed
 
+- **A page's body set in two columns between its running head's rule and its foot's is not read
+  as a table.** The two rules bound the page, the gutter is the one gap no line crosses, and a
+  page of lines too short to read as long cells (five or six words) came out as a two-column
+  table whose rows interleave the columns: a sentence is not one run of text in the output. Two
+  columns that each run across two fifths of the table or more, standing side by side, in lines
+  of sentences (at least two and a half words a run, twelve lines or more), with nothing else but
+  narrow strips, are the page's text. A table of two wide columns of one-word entries, or one
+  whose columns overlap because a heading runs across them, is still a table. On the olmOCR-Bench
+  pages this alters 6 outputs, scores +8 / −0 tests (all in the multi-column set), and leaves all
+  200 ODL outputs unchanged.
 - **A page turned by `/Rotate` is read as it is shown.** A landscape table written into a
   portrait content stream and turned by `/Rotate 90` was read on its side: every column was a
   line of text and every row a column (`| Value | 10 20 |` over `| Name | alpha beta |`), and a
