@@ -2084,7 +2084,10 @@ impl<'a> LayoutAnalyzer<'a> {
         self.suppressed_text_runs.set(suppressed_runs);
         *self.unreadable_fonts.borrow_mut() = unreadable_fonts;
 
-        let page_area = Bounds::from_page_box(visible).area();
+        let page = Bounds::from_page_box(visible);
+        let page_area = page.area();
+        let visible_area =
+            f64::from((page.x1 - page.x0).max(0.0)) * f64::from((page.y1 - page.y0).max(0.0));
         let clipped = image_rects;
         if page_area > 0.0 {
             signals.has_page_covering_image = clipped
@@ -2092,8 +2095,8 @@ impl<'a> LayoutAnalyzer<'a> {
                 .any(|r| r.area() / page_area >= PageTextLayerSignals::PAGE_COVERAGE);
         }
         let coverage = |rects: &[Bounds]| {
-            if page_area > 0.0 {
-                (union_area(rects) / page_area).clamp(0.0, 1.0)
+            if visible_area > 0.0 {
+                (union_area(rects) / visible_area).clamp(0.0, 1.0) as f32
             } else {
                 0.0
             }
@@ -3313,72 +3316,87 @@ fn unit_square_on_page(ctm: &[f32; 6]) -> Bounds {
     Bounds::around(corners).expect("four corners")
 }
 
-/// The area covered by the union of `rects`.
-///
-/// Exact by coordinate compression, which costs the square of the number of rectangles; a
-/// page with more image paints than that can afford (tiled scans run to hundreds) is
-/// measured on a sampling grid instead, accurate to well under a percent of the page.
-fn union_area(rects: &[Bounds]) -> f32 {
-    const EXACT_LIMIT: usize = 256;
-    if rects.is_empty() {
-        return 0.0;
-    }
-    if rects.len() > EXACT_LIMIT {
-        return sampled_union_area(rects);
-    }
-    let mut xs: Vec<f32> = rects.iter().flat_map(|r| [r.x0, r.x1]).collect();
-    xs.sort_by(f32::total_cmp);
-    xs.dedup();
+/// The area covered by the union of `rects`, exact for any number of them: a sweep along x
+/// over their left and right edges, with the length of y they cover kept in a segment tree
+/// over their distinct y edges, in O(n log n).
+fn union_area(rects: &[Bounds]) -> f64 {
+    let rects: Vec<&Bounds> = rects
+        .iter()
+        .filter(|r| r.x1 > r.x0 && r.y1 > r.y0)
+        .collect();
+    let mut ys: Vec<f32> = rects.iter().flat_map(|r| [r.y0, r.y1]).collect();
+    ys.sort_by(f32::total_cmp);
+    ys.dedup();
+    let mut edges: Vec<(f32, i32, usize, usize)> = rects
+        .iter()
+        .flat_map(|r| {
+            let lo = ys.partition_point(|&y| y < r.y0);
+            let hi = ys.partition_point(|&y| y < r.y1);
+            [(r.x0, 1, lo, hi), (r.x1, -1, lo, hi)]
+        })
+        .collect();
+    edges.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut covered = CoveredLength::new(&ys);
     let mut area = 0.0f64;
-    for w in xs.windows(2) {
-        let (left, right) = (w[0], w[1]);
-        let mut spans: Vec<(f32, f32)> = rects
-            .iter()
-            .filter(|r| r.x0 <= left && r.x1 >= right)
-            .map(|r| (r.y0, r.y1))
-            .collect();
-        if spans.is_empty() {
-            continue;
+    let mut last = edges.first().map_or(0.0, |edge| edge.0);
+    for (x, step, lo, hi) in edges {
+        let length = covered.length();
+        if length > 0.0 && x > last {
+            area += length * f64::from(x - last);
         }
-        spans.sort_by(|a, b| a.0.total_cmp(&b.0));
-        let mut covered = 0.0f64;
-        let (mut lo, mut hi) = spans[0];
-        for &(y0, y1) in &spans[1..] {
-            if y0 > hi {
-                covered += f64::from(hi - lo);
-                (lo, hi) = (y0, y1);
-            } else {
-                hi = hi.max(y1);
-            }
-        }
-        covered += f64::from(hi - lo);
-        area += covered * f64::from(right - left);
+        covered.add(lo, hi, step);
+        last = x;
     }
-    area as f32
+    area
 }
 
-fn sampled_union_area(rects: &[Bounds]) -> f32 {
-    const N: usize = 400;
-    let x0 = rects.iter().map(|r| r.x0).fold(f32::MAX, f32::min);
-    let y0 = rects.iter().map(|r| r.y0).fold(f32::MAX, f32::min);
-    let x1 = rects.iter().map(|r| r.x1).fold(f32::MIN, f32::max);
-    let y1 = rects.iter().map(|r| r.y1).fold(f32::MIN, f32::max);
-    let (dx, dy) = ((x1 - x0) / N as f32, (y1 - y0) / N as f32);
-    if dx <= 0.0 || dy <= 0.0 {
-        return 0.0;
-    }
-    let mut hit = 0usize;
-    for row in 0..N {
-        let y = y0 + (row as f32 + 0.5) * dy;
-        let row_rects: Vec<&Bounds> = rects.iter().filter(|r| r.y0 <= y && y < r.y1).collect();
-        for col in 0..N {
-            let x = x0 + (col as f32 + 0.5) * dx;
-            if row_rects.iter().any(|r| r.x0 <= x && x < r.x1) {
-                hit += 1;
-            }
+/// The length of y covered by the rectangles open at a point of the sweep: a segment tree
+/// over the intervals between consecutive edges of `ys`, each node holding how many
+/// rectangles span all of its interval and how much of it is covered.
+struct CoveredLength<'a> {
+    ys: &'a [f32],
+    spanning: Vec<i32>,
+    covered: Vec<f64>,
+}
+
+impl<'a> CoveredLength<'a> {
+    fn new(ys: &'a [f32]) -> Self {
+        let nodes = 4 * ys.len();
+        Self {
+            ys,
+            spanning: vec![0; nodes],
+            covered: vec![0.0; nodes],
         }
     }
-    hit as f32 * dx * dy
+
+    fn length(&self) -> f64 {
+        self.covered[1]
+    }
+
+    /// Opens (`step` 1) or closes (`step` -1) a rectangle spanning `ys[lo]` to `ys[hi]`.
+    fn add(&mut self, lo: usize, hi: usize, step: i32) {
+        self.update(1, (0, self.ys.len() - 1), (lo, hi), step);
+    }
+
+    fn update(&mut self, node: usize, (l, r): (usize, usize), (lo, hi): (usize, usize), step: i32) {
+        if hi <= l || r <= lo {
+            return;
+        }
+        if lo <= l && r <= hi {
+            self.spanning[node] += step;
+        } else {
+            let mid = (l + r) / 2;
+            self.update(2 * node, (l, mid), (lo, hi), step);
+            self.update(2 * node + 1, (mid, r), (lo, hi), step);
+        }
+        self.covered[node] = if self.spanning[node] > 0 {
+            f64::from(self.ys[r] - self.ys[l])
+        } else if r - l > 1 {
+            self.covered[2 * node] + self.covered[2 * node + 1]
+        } else {
+            0.0
+        };
+    }
 }
 
 /// Whether text set with text matrix `tm` under `ctm` runs left to right along a
@@ -4529,19 +4547,43 @@ mod tests {
         assert_eq!(union_area(&[]), 0.0);
     }
 
-    /// Past the exact limit the area is sampled; it must agree with the exact answer.
     #[test]
-    fn sampled_union_area_agrees_with_the_exact_one() {
-        // 300 strips of a 600 x 800 page, each 2 wide, overlapping their neighbour by half.
+    fn union_area_of_hundreds_of_overlapping_strips_is_exact() {
         let strips: Vec<Bounds> = (0..300)
-            .map(|i| rect(i as f32 * 1.0, 0.0, i as f32 * 1.0 + 2.0, 800.0))
+            .map(|i| rect(i as f32, 0.0, i as f32 + 2.0, 800.0))
             .collect();
-        let exact = 301.0 * 800.0;
-        let sampled = union_area(&strips);
-        assert!(
-            (sampled - exact).abs() / exact < 0.01,
-            "{sampled} vs {exact}"
-        );
+        assert_eq!(union_area(&strips), 301.0 * 800.0);
+    }
+
+    #[test]
+    fn union_area_counts_strips_lying_between_any_grid_of_points() {
+        let mut strips: Vec<Bounds> = (0..300)
+            .map(|i| rect(i as f32 + 0.75, 0.0, i as f32 + 1.25, 400.0))
+            .collect();
+        strips.push(rect(0.0, 0.0, 0.25, 400.0));
+        strips.push(rect(399.75, 0.0, 400.0, 400.0));
+        assert_eq!(union_area(&strips), (300.0 * 0.5 + 2.0 * 0.25) * 400.0);
+    }
+
+    #[test]
+    fn union_area_of_nested_and_touching_rectangles_counts_each_point_once() {
+        let rects = [
+            rect(0.0, 0.0, 10.0, 10.0),
+            rect(2.0, 2.0, 4.0, 4.0),
+            rect(10.0, 0.0, 20.0, 5.0),
+            rect(0.0, 10.0, 5.0, 15.0),
+            rect(3.0, 3.0, 3.0, 9.0),
+        ];
+        assert_eq!(union_area(&rects), 100.0 + 50.0 + 25.0);
+    }
+
+    #[test]
+    fn union_area_of_a_page_too_small_for_an_f32_area_still_covers_it() {
+        let (width, low, high) = (2.335_497_3e-23_f32, -1.0e-23_f32, 2.0e-23_f32);
+        let halves = [rect(0.0, low, width, 0.0), rect(0.0, 0.0, width, high)];
+        let page = f64::from(width) * (f64::from(high) - f64::from(low));
+        assert!(rect(0.0, low, width, high).area() <= f32::from_bits(1));
+        assert!((union_area(&halves) / page - 1.0).abs() < 1e-6);
     }
 
     /// A piece of a run turned to read up the page: `width` along its own baseline.
