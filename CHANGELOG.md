@@ -48,6 +48,16 @@
   block under its own heading and a bibliography no longer carrying the page footer as its last row)
   and none of the 200 opendataloader-bench documents.
 
+- **`image_coverage` is exact on a page of any number of image paints.** Past 256 paints (a scan
+  tiled in strips, say) the union was measured on a grid of 400 by 400 points instead of exactly,
+  so strips lying between the points counted for nothing: 300 strips half a point wide, each
+  between two points of the grid, gave `image_coverage` 0 for a page they cover by more than a
+  third. The union is now measured exactly however many paints there are, by a sweep across the
+  page over the paints' left and right edges with the covered height kept in a segment tree, in
+  O(n log n) time, and its share of the page is taken in `f64`, so a page too small for an `f32`
+  area keeps its coverage. `bilevel_image_coverage` is measured the same way. Below 257 paints it
+  agrees with the exact method it replaces, up to rounding; no text output changes.
+
 ## 0.54.0 — 2026-11-04
 
 ### Added
