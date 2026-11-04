@@ -387,6 +387,18 @@ impl TableDetector {
                     continue;
                 }
 
+                // One column of the region is running text with something set beside it
+                // (a sidebar of short entries): the other column's complete cells hide it
+                // from the pairwise count above. A table whose cells wrap is one grid, and
+                // its wrapped cells fill their measure the same way.
+                if wrapped.is_none()
+                    && (0..table_columns.len())
+                        .any(|col| Self::column_is_a_text_flow(&table_rows, &table_columns, col))
+                {
+                    log::debug!("TableDetector: skipping region — a column is a flow of text");
+                    continue;
+                }
+
                 // Reject a table of contents: entries against page numbers that
                 // never go down.
                 if Self::is_table_of_contents(&cells) {
@@ -1013,6 +1025,74 @@ impl TableDetector {
             }
         }
         pairs >= 2 && run_on * 2 > pairs
+    }
+
+    /// Whether one column of the region, taken alone, is a flow of running text: eight lines
+    /// or more, each a sentence's worth of words (text columns average five to eleven words
+    /// a line, the cells of a grid one to three and a half), most of them wrapped at one
+    /// measure — their right edges stand within a sixth of the column's width of the widest
+    /// — and most of them left open, not closed by a stop. Text set beside the column falls
+    /// between its lines, so lines of this column are seldom on adjacent rows and the
+    /// pairs [`Self::columns_read_as_prose`] counts are few; a sidebar of short complete
+    /// entries would dilute them besides. Nothing here reads the next line's case, which
+    /// is no sign of a run-on in a language that capitalises its nouns.
+    fn column_is_a_text_flow(rows: &[TableRowData], columns: &[f32], col: usize) -> bool {
+        const MIN_LINES: usize = 8;
+        const MIN_WORDS_PER_LINE: usize = 6;
+        const MEASURE_BAND: f32 = 1.0 / 6.0;
+        let all_spans: Vec<&TextSpan> = rows.iter().flat_map(|r| r.spans.iter()).collect();
+        if all_spans
+            .iter()
+            .any(|s| has_cjk_text(std::slice::from_ref(s)))
+        {
+            return false;
+        }
+        // (words, right edge, closed by a stop) of each row's text in this column.
+        let mut lines: Vec<(usize, f32, bool)> = Vec::new();
+        for row in rows {
+            let mut words = 0usize;
+            let mut right = f32::MIN;
+            let mut closed = false;
+            for span in &row.spans {
+                let text = span.text.trim();
+                let column = columns
+                    .iter()
+                    .rposition(|&cs| span.x >= cs - 5.0)
+                    .unwrap_or(0);
+                if column != col || text.is_empty() {
+                    continue;
+                }
+                let width = if span.width > 0.0 {
+                    span.width
+                } else {
+                    text.chars().count() as f32 * span.font_size * 0.55
+                };
+                words += text.split_whitespace().count();
+                right = right.max(span.x + width);
+                closed = text.ends_with(['.', ':', ';', '!', '?', ')', ']']);
+            }
+            if words > 0 {
+                lines.push((words, right, closed));
+            }
+        }
+        if lines.len() < MIN_LINES {
+            return false;
+        }
+        let words: usize = lines.iter().map(|l| l.0).sum();
+        if words < lines.len() * MIN_WORDS_PER_LINE {
+            return false;
+        }
+        let widest = lines.iter().map(|l| l.1).fold(f32::MIN, f32::max);
+        let measure = widest - columns[col];
+        if measure <= 0.0 {
+            return false;
+        }
+        let at_measure = lines
+            .iter()
+            .filter(|l| l.1 >= widest - measure * MEASURE_BAND)
+            .count();
+        let open = lines.iter().filter(|l| !l.2).count();
+        at_measure * 2 > lines.len() && open * 2 > lines.len()
     }
 
     /// Whether the region is a table of contents: the last column holds page
@@ -2594,6 +2674,181 @@ mod tests {
             "prose columns must not become a table: {tables:?}"
         );
         assert_eq!(remaining.len(), 12);
+    }
+
+    const FLOW: [&str; 10] = [
+        "the market for coal and coke has changed a great deal over the",
+        "past years according to the plant manager who has watched the",
+        "former exporting countries turn into importers while the world",
+        "market price of coal keeps rising without any pause and with",
+        "the substitution of coal by plastics the carbon in them is no",
+        "longer burnt but used as a raw material for new products so",
+        "that the process ranks higher in the order of priorities than",
+        "the incineration of waste plastics as a substitute fuel for",
+        "the furnaces which is why a new project now sets out to find",
+        "a way of using the chlorine in the same way as the carbon",
+    ];
+    const ENTRIES: [&str; 8] = [
+        "Project organisation",
+        "Federal Ministry",
+        "Berlin",
+        "Project executing agency",
+        "Research centre",
+        "Reference number",
+        "Publisher",
+        "Author",
+    ];
+
+    /// A column of running text with a sidebar of short entries beside it: the sidebar's
+    /// lines fall between the text's, so the text's lines are never on adjacent rows, and
+    /// its complete entries must not dilute the count of lines that run on.
+    #[test]
+    fn a_text_column_beside_a_sidebar_of_short_entries_is_not_a_table() {
+        let detector = TableDetector::new();
+        let mut spans = Vec::new();
+        let mut line = 0;
+        for k in 0..14 {
+            let y = 700.0 - k as f32 * 12.0;
+            // The text breaks for a paragraph every third row; the sidebar goes on.
+            if k % 3 != 2 {
+                spans.push(measured(FLOW[line], 55.0, y, 340.0));
+                line += 1;
+            }
+            // One long entry sets the sidebar's width; the others fill about half of it.
+            let width = if k == 0 { 133.0 } else { 55.0 };
+            spans.push(measured(ENTRIES[k % ENTRIES.len()], 410.0, y, width));
+        }
+        let total = spans.len();
+        let (tables, remaining) = detector.detect(spans);
+        assert!(
+            tables.is_empty(),
+            "a text column and a sidebar must not become a table: {tables:?}"
+        );
+        assert_eq!(remaining.len(), total);
+    }
+
+    /// The rows a text column with a sidebar makes, as the detector sees them.
+    fn flow_rows(entry_width: impl Fn(usize) -> f32) -> Vec<TableRowData> {
+        let mut rows = Vec::new();
+        let mut line = 0;
+        for k in 0..14 {
+            let y = 700.0 - k as f32 * 12.0;
+            let mut spans = Vec::new();
+            if k % 3 != 2 {
+                // Lines wrapped at one measure, a little ragged.
+                spans.push(measured(
+                    FLOW[line],
+                    55.0,
+                    y,
+                    340.0 - (line % 3) as f32 * 8.0,
+                ));
+                line += 1;
+            }
+            spans.push(measured(
+                ENTRIES[k % ENTRIES.len()],
+                410.0,
+                y,
+                entry_width(k),
+            ));
+            rows.push(row_of(spans));
+        }
+        rows
+    }
+
+    #[test]
+    fn a_column_of_lines_wrapped_at_one_measure_is_a_text_flow() {
+        let rows = flow_rows(|_| 55.0);
+        let columns = [55.0, 410.0];
+        assert!(TableDetector::column_is_a_text_flow(&rows, &columns, 0));
+        // The sidebar's entries are two words and complete: cells.
+        assert!(!TableDetector::column_is_a_text_flow(&rows, &columns, 1));
+    }
+
+    #[test]
+    fn short_lowercase_terms_beside_their_descriptions_are_not_a_text_flow() {
+        // Units and their names: every cell starts in lowercase and none ends in
+        // punctuation, but a cell is two words at most — a grid, not a flow.
+        let terms = [
+            ("kg", "kilogram"),
+            ("m", "metre"),
+            ("s", "second"),
+            ("a", "ampere"),
+            ("k", "kelvin"),
+            ("mol", "mole"),
+            ("cd", "candela"),
+            ("hz", "hertz"),
+            ("pa", "pascal"),
+            ("j", "joule"),
+        ];
+        let rows: Vec<TableRowData> = terms
+            .iter()
+            .enumerate()
+            .map(|(i, (a, b))| {
+                let y = 700.0 - i as f32 * 14.0;
+                row_of(vec![
+                    measured(a, 72.0, y, 20.0),
+                    measured(b, 200.0, y, 50.0),
+                ])
+            })
+            .collect();
+        let columns = [72.0, 200.0];
+        assert!(!TableDetector::column_is_a_text_flow(&rows, &columns, 0));
+        assert!(!TableDetector::column_is_a_text_flow(&rows, &columns, 1));
+    }
+
+    #[test]
+    fn long_cells_that_are_each_complete_are_not_a_text_flow() {
+        // A column of full sentences of one length, each closed by its full stop: long
+        // cells at one measure, but none is left open.
+        let rows: Vec<TableRowData> = (0..10)
+            .map(|i| {
+                let y = 700.0 - i as f32 * 14.0;
+                row_of(vec![
+                    measured("Requirement", 72.0, y, 60.0),
+                    measured(
+                        "The component shall report every failure of its supply line within one second.",
+                        200.0,
+                        y,
+                        340.0,
+                    ),
+                ])
+            })
+            .collect();
+        assert!(!TableDetector::column_is_a_text_flow(
+            &rows,
+            &[72.0, 200.0],
+            1
+        ));
+    }
+
+    #[test]
+    fn long_open_cells_of_every_length_are_not_a_text_flow() {
+        // Phrases of seven words or more with no stop and no common measure: a column of
+        // descriptions, not lines wrapped at one width.
+        let widths = [
+            120.0, 340.0, 200.0, 90.0, 260.0, 150.0, 310.0, 110.0, 230.0, 170.0,
+        ];
+        let rows: Vec<TableRowData> = widths
+            .iter()
+            .enumerate()
+            .map(|(i, w)| {
+                let y = 700.0 - i as f32 * 14.0;
+                row_of(vec![
+                    measured("Item", 72.0, y, 30.0),
+                    measured(
+                        "reduced pressure drop across the cooling stage of the unit",
+                        200.0,
+                        y,
+                        *w,
+                    ),
+                ])
+            })
+            .collect();
+        assert!(!TableDetector::column_is_a_text_flow(
+            &rows,
+            &[72.0, 200.0],
+            1
+        ));
     }
 
     /// A table of contents lines entries up against page numbers, but it is a list of

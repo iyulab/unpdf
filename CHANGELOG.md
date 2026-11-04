@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Fixed
+
+- **A column of running text beside a sidebar of short entries is no longer read as a two-column
+  table.** A page with a text column and a narrow sidebar, set close together, was read as one
+  table whose rows paired a line of the text with an unrelated line of the sidebar, so the sentences
+  of the text were cut across rows and broken by the sidebar's entries. The check that tells text
+  columns from table cells counted only lines on adjacent rows that run on into the next, and the
+  sidebar's complete entries, and the text's own gaps between paragraphs, hid the text. A column is
+  now also judged on its own: eight lines or more, six words or more on average, most of them
+  wrapped at one measure (their right edges within a sixth of the column's width of the widest) and
+  most of them left open without a closing stop, is a flow of text, and the region is not a table.
+  Cells that wrap (one grid of whole rows) are exempt, and nothing reads the case of the next line,
+  which says nothing in a language that capitalises its nouns. On the 1,403 olmOCR-Bench pages this
+  alters 3 outputs (2 more tests passed, none fewer; the other two read as text, with an address
+  block under its own heading and a bibliography no longer carrying the page footer as its last row)
+  and none of the 200 opendataloader-bench documents.
+
 ## 0.54.0 — 2026-11-04
 
 ### Added
