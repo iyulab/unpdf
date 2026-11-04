@@ -29,6 +29,9 @@ internal sealed class ParseOptionsPayload
     [JsonPropertyName("suppress_low_confidence_ocr")]
     public bool? SuppressLowConfidenceOcr { get; init; }
 
+    [JsonPropertyName("omit_running_heads")]
+    public bool? OmitRunningHeads { get; init; }
+
     [JsonPropertyName("pages")]
     public PageListPayload? Pages { get; init; }
 

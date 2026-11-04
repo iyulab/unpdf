@@ -134,6 +134,7 @@ UnpdfDocument* unpdf_parse_bytes(const uint8_t* data, size_t len);
  *     "extract_resources": bool, "min_image_dimension": number, "parallel": bool,
  *     "pages": "all" | { "range": { "from": n, "to": n } } | { "pages": [n, ...] },
  *     "password": string, "suppress_low_confidence_ocr": bool,
+ *     "omit_running_heads": bool,
  *     "ai_base_url": string, "ai_api_key": string, "ai_model": string,
  *     "ai_image_scope": "all" | "low_confidence_pages_only" }
  *

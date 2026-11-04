@@ -217,6 +217,13 @@ public class ParseOptions
     public bool? SuppressLowConfidenceOcr { get; set; }
 
     /// <summary>
+    /// Omit a page's running heads and feet (the title, volume or date set in its top and
+    /// bottom margin), judged from that page's own layout; a footnote is kept. For a pipeline
+    /// that handles one page at a time. Default: <see langword="false"/>.
+    /// </summary>
+    public bool? OmitRunningHeads { get; set; }
+
+    /// <summary>
     /// The pages parsed (1-indexed), or <see langword="null"/> (the default) for every page.
     /// A page the document does not have throws <see cref="UnpdfException"/> with
     /// <see cref="UnpdfErrorKind.PageOutOfRange"/>.
@@ -247,7 +254,8 @@ public class ParseOptions
     {
         var set = Strict.HasValue || ExtractText.HasValue || ExtractResources.HasValue
             || MinImageDimension.HasValue || Parallel.HasValue || Password is not null
-            || SuppressLowConfidenceOcr.HasValue || Pages is not null || AiBaseUrl is not null
+            || SuppressLowConfidenceOcr.HasValue || OmitRunningHeads.HasValue
+            || Pages is not null || AiBaseUrl is not null
             || AiApiKey is not null || AiModel is not null || AiImageScope.HasValue;
         if (!set) return null;
 
@@ -260,6 +268,7 @@ public class ParseOptions
             Parallel = Parallel,
             Password = Password,
             SuppressLowConfidenceOcr = SuppressLowConfidenceOcr,
+            OmitRunningHeads = OmitRunningHeads,
             Pages = Pages is null ? null : new PageListPayload { Pages = Pages.ToArray() },
             AiBaseUrl = AiBaseUrl,
             AiApiKey = AiApiKey,

@@ -193,6 +193,7 @@ absent key keeps unpdf's own default:
 | `parallel` | `bool` | `True` | Multi-threaded page processing. |
 | `password` | `str` | — | Password for encrypted documents. |
 | `suppress_low_confidence_ocr` | `bool` | `True` | Drop an invisible OCR text layer whose recognized text is not readable. |
+| `omit_running_heads` | `bool` | `False` | Omit a page's running heads and feet (title, volume or date in the top and bottom margin), judged from that page's own layout; a footnote is kept. For a pipeline that handles one page at a time. |
 
 ```python
 info = unpdf.get_info("document.pdf", options={"extract_resources": True})

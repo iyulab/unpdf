@@ -53,6 +53,8 @@ pub struct PageStreamOptions {
     pub parallel: bool,
     /// 읽을 수 없는 OCR 텍스트 레이어를 버릴지 여부. `ParseOptions` 참고.
     pub suppress_low_confidence_ocr: bool,
+    /// Whether to omit a page's running heads and feet. See `ParseOptions::omit_running_heads`.
+    pub omit_running_heads: bool,
     /// How many pages may be parsing, or parsed and waiting for an earlier page, at once in a
     /// parallel run -- what bounds memory on a long document whose early page is slow. At least
     /// 1; default twice the worker threads.
@@ -71,6 +73,7 @@ impl Default for PageStreamOptions {
             password: None,
             parallel: true,
             suppress_low_confidence_ocr: true,
+            omit_running_heads: false,
             #[cfg(not(target_arch = "wasm32"))]
             window_size: rayon::current_num_threads().saturating_mul(2).max(2),
             #[cfg(target_arch = "wasm32")]
@@ -91,6 +94,7 @@ impl From<&ParseOptions> for PageStreamOptions {
             password: o.password.clone(),
             parallel: o.parallel,
             suppress_low_confidence_ocr: o.suppress_low_confidence_ocr,
+            omit_running_heads: o.omit_running_heads,
             ..Self::default()
         }
     }
@@ -384,6 +388,7 @@ where
         password: opts.password.clone(),
         parallel: opts.parallel,
         suppress_low_confidence_ocr: opts.suppress_low_confidence_ocr,
+        omit_running_heads: opts.omit_running_heads,
         // AI post-processing runs once over the assembled `Document` in
         // `PdfParser::parse` (see `ai_wiring`), not per-page here — `extract_resources`
         // above already carries whatever image-byte decoding it forced.

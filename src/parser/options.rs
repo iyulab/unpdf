@@ -46,6 +46,16 @@ pub struct ParseOptions {
     /// no text at all. Default `true`; set `false` to keep the raw layer.
     pub suppress_low_confidence_ocr: bool,
 
+    /// Whether to omit a page's running heads and feet: the title, volume or date set in its top
+    /// and bottom margin, no larger than the body and standing clear of it.
+    ///
+    /// `false` by default. The judgement is the page's own layout -- where a line is, how it is
+    /// set against the body, how long it is -- because one page shows no repetition; a footnote
+    /// (a line that opens with a number or a mark at the foot) is kept. It is meant for a
+    /// pipeline that handles one page at a time. What is omitted is counted in
+    /// `PageFacts::omitted_page_number_chars`, with the page numbers that are always dropped.
+    pub omit_running_heads: bool,
+
     /// VLM-based image understanding — text/table scans get structured extraction,
     /// other images get a context-aware description filled into `alt_text`.
     /// `None` (the default) leaves parsing unchanged; the AI endpoint is only
@@ -67,6 +77,12 @@ impl ParseOptions {
     /// Keep or drop unreadable OCR text layers (default: drop).
     pub fn with_ocr_suppression(mut self, enabled: bool) -> Self {
         self.suppress_low_confidence_ocr = enabled;
+        self
+    }
+
+    /// Omit or keep a page's running heads and feet (default: keep).
+    pub fn with_omit_running_heads(mut self, enabled: bool) -> Self {
+        self.omit_running_heads = enabled;
         self
     }
 
@@ -158,6 +174,7 @@ impl Default for ParseOptions {
             pages: PageSelection::All,
             password: None,
             suppress_low_confidence_ocr: true,
+            omit_running_heads: false,
             #[cfg(feature = "ai")]
             ai: None,
         }

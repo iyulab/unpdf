@@ -749,6 +749,7 @@ pub struct LayoutAnalyzer<'a> {
     font_stats: FontStatistics,
     /// Whether to drop an invisible OCR text layer that decodes to nothing meaningful.
     suppress_low_confidence_ocr: bool,
+    omit_running_heads: bool,
     /// Set when a page's text layer was dropped by that gate.
     ocr_text_suppressed: Cell<bool>,
     /// 마지막으로 분석한 페이지의 텍스트 쇼잉 오퍼레이터(Tj/TJ/'/") 수.
@@ -1223,6 +1224,7 @@ impl<'a> LayoutAnalyzer<'a> {
             backend,
             font_stats: FontStatistics::default(),
             suppress_low_confidence_ocr: true,
+            omit_running_heads: false,
             ocr_text_suppressed: Cell::new(false),
             text_op_count: Cell::new(0),
             image_op_count: Cell::new(0),
@@ -1238,6 +1240,12 @@ impl<'a> LayoutAnalyzer<'a> {
     /// Enable or disable dropping of low-confidence OCR text layers.
     pub fn with_ocr_suppression(mut self, enabled: bool) -> Self {
         self.suppress_low_confidence_ocr = enabled;
+        self
+    }
+
+    /// Omit or keep the running heads and feet of a page (default: keep).
+    pub fn with_running_head_omission(mut self, enabled: bool) -> Self {
+        self.omit_running_heads = enabled;
         self
     }
 
@@ -1460,7 +1468,11 @@ impl<'a> LayoutAnalyzer<'a> {
     pub fn filter_spans_for_page(&self, spans: &mut Vec<TextSpan>, page_num: u32) {
         let pages = self.backend.pages();
         if let Some(&page_id) = pages.get(&page_num) {
-            let omitted = filter_header_footer_spans(spans, self.page_turn(page_id).shown);
+            let page_box = self.page_turn(page_id).shown;
+            let mut omitted = filter_header_footer_spans(spans, page_box);
+            if self.omit_running_heads {
+                omitted = omitted.saturating_add(remove_running_lines(spans, page_box));
+            }
             let mut facts = self.page_facts.get();
             facts.omitted_page_number_chars =
                 facts.omitted_page_number_chars.saturating_add(omitted);
@@ -2851,6 +2863,123 @@ fn filter_header_footer_spans(spans: &mut Vec<TextSpan>, page_box: super::backen
     remove_folio_lines(spans, page_box);
     remove_side_margin_numbers(spans, page_box);
     u32::try_from(before - chars(spans)).unwrap_or(u32::MAX)
+}
+
+/// How far, as a share of the page height, a running head or a running foot may sit from the
+/// top and the bottom edge.
+const RUNNING_BAND_SHARE: f32 = 0.08;
+
+/// How far, in lines of its own size, a running head stands clear of the body under it.
+const RUNNING_GAP_EM: f32 = 1.8;
+
+/// A running head set this much smaller than the body is one whatever its distance.
+const RUNNING_SMALLER: f32 = 0.92;
+
+/// A running head set at the body's size stands this many lines of its own size clear of it.
+const RUNNING_CLEAR_EM: f32 = 2.6;
+
+/// ... and, either way, at most this share of the width of the body's text.
+const RUNNING_SHORT_SHARE: f32 = 0.6;
+
+/// Remove a page's running heads and feet -- the lines set in the top or the bottom band of the
+/// page, no larger than the body and standing clear of it -- and return how many characters went.
+///
+/// One page shows no repetition, so the judgement is its own layout: where the line is, how it is
+/// set against the body, how long it is. A line is kept when it could be content: larger than the
+/// body (a title), not clear of the body (a table's first row at the top, text on a page of narrow
+/// margins), as long as a line of the body (the first line of a paragraph that starts the page), or
+/// a footnote at the foot (it opens with a number or a mark). Measured on a page-at-a-time
+/// benchmark this is right far more often than wrong, and on documents whose reference keeps the
+/// running heads it is wrong often enough that it is an option, not a default.
+fn remove_running_lines(spans: &mut Vec<TextSpan>, page_box: super::backend::PageBox) -> u32 {
+    let height = page_box.height();
+    if spans.len() < 6 || height <= 0.0 {
+        return 0;
+    }
+    let chars = |spans: &[TextSpan]| {
+        spans
+            .iter()
+            .flat_map(|span| span.text.chars())
+            .filter(|c| !c.is_whitespace())
+            .count()
+    };
+    let before = chars(spans);
+    if before == 0 {
+        return 0;
+    }
+    let mut sized: Vec<(f32, usize)> = spans
+        .iter()
+        .map(|s| {
+            (
+                s.font_size,
+                s.text.chars().filter(|c| !c.is_whitespace()).count(),
+            )
+        })
+        .collect();
+    sized.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut seen = 0;
+    let mut body = sized[0].0;
+    for (size, n) in &sized {
+        seen += n;
+        if seen * 2 >= before {
+            body = *size;
+            break;
+        }
+    }
+    let top = page_box.ury - height * RUNNING_BAND_SHARE;
+    let bottom = page_box.lly + height * RUNNING_BAND_SHARE;
+    let content: Vec<&TextSpan> = spans.iter().filter(|s| s.y < top && s.y > bottom).collect();
+    if content.len() < 4 {
+        return 0;
+    }
+    let highest = content.iter().map(|s| s.y).fold(f32::MIN, f32::max);
+    let lowest = content.iter().map(|s| s.y).fold(f32::MAX, f32::min);
+    let left = content
+        .iter()
+        .map(|s| s.ink_extent().0)
+        .fold(f32::MAX, f32::min);
+    let right = content
+        .iter()
+        .map(|s| s.ink_extent().1)
+        .fold(f32::MIN, f32::max);
+    let furniture = |s: &TextSpan| {
+        if s.direction != TextSpan::LEFT_TO_RIGHT
+            || s.font_size > body * 1.1
+            || s.text.trim().is_empty()
+        {
+            return false;
+        }
+        let (gap, foot) = if s.y >= top {
+            (s.y - highest, false)
+        } else if s.y <= bottom {
+            (lowest - s.y, true)
+        } else {
+            return false;
+        };
+        if foot && opens_like_a_footnote(&s.text) {
+            return false;
+        }
+        let (x0, x1) = s.ink_extent();
+        gap >= s.font_size * RUNNING_GAP_EM
+            && x1 - x0 <= (right - left) * RUNNING_SHORT_SHARE
+            && (s.font_size <= body * RUNNING_SMALLER || gap >= s.font_size * RUNNING_CLEAR_EM)
+    };
+    spans.retain(|s| !furniture(s));
+    u32::try_from(before - chars(spans)).unwrap_or(u32::MAX)
+}
+
+/// Whether a line opens as a footnote does: a number or a mark, then its text.
+fn opens_like_a_footnote(text: &str) -> bool {
+    let text = text.trim_start();
+    let mark: String = text
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || matches!(c, '*' | '†' | '‡' | '§' | '¹' | '²' | '³'))
+        .collect();
+    !mark.is_empty()
+        && text[mark.len()..]
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_whitespace() || c == '.' || c == ')')
 }
 
 /// How far, as a share of the page height, a page number may sit from the bottom and the top

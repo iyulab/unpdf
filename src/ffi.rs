@@ -523,6 +523,7 @@ pub unsafe extern "C" fn unpdf_parse_bytes(data: *const u8, len: usize) -> *mut 
 ///   "pages": "all" | { "range": { "from": number, "to": number } } | { "pages": [number, ...] },
 ///   "password": string,
 ///   "suppress_low_confidence_ocr": bool,
+///   "omit_running_heads": bool,
 ///   "ai_base_url": string,
 ///   "ai_api_key": string,
 ///   "ai_model": string,
@@ -549,6 +550,7 @@ struct FfiParseOptions {
     pages: Option<FfiPageSelection>,
     password: Option<String>,
     suppress_low_confidence_ocr: Option<bool>,
+    omit_running_heads: Option<bool>,
     ai_base_url: Option<String>,
     ai_api_key: Option<String>,
     ai_model: Option<String>,
@@ -623,6 +625,9 @@ impl TryFrom<FfiParseOptions> for ParseOptions {
         }
         if let Some(v) = ffi.suppress_low_confidence_ocr {
             options.suppress_low_confidence_ocr = v;
+        }
+        if let Some(v) = ffi.omit_running_heads {
+            options.omit_running_heads = v;
         }
 
         #[cfg(feature = "ai")]

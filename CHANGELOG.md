@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Added
+
+- **`omit_running_heads`: leave a page's running heads and feet out.** An option of `ParseOptions`
+  (`with_omit_running_heads`), of the C ABI's options JSON, of the C# `ParseOptions`, of the Python
+  `options` dict and of the CLI (`--omit-running-heads`), off by default. A page shows no
+  repetition to a reader of one page, so the judgement is its own layout: a line in the top or
+  bottom eighth of the page, no larger than the body and standing clear of it by more than a blank
+  line (or set smaller than it), at most three fifths of the body's width. A title, a table's first
+  row at the top, a line as long as a body line and a footnote at the foot (it opens with a number
+  or a mark) are kept. What is omitted is counted in `omitted_page_number_chars`. It is for a
+  pipeline that handles one page at a time: on the 1,403 olmOCR-Bench pages it passes 205 more
+  tests and 24 fewer, while on documents whose reference keeps the running heads it costs
+  accuracy (ODL overall 0.9016 to about 0.89), which is why it is an option and not the default.
+  With the option off every output is byte for byte the same.
+
 ### Fixed
 
 - **Text set at an absurd size or position no longer allocates gigabytes.** The column and

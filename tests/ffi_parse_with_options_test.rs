@@ -109,6 +109,25 @@ fn extract_resources_opt_in_populates_the_resource_inventory() {
 }
 
 #[test]
+fn omit_running_heads_is_a_known_option_and_a_misspelling_of_it_is_not() {
+    let bytes = jpeg_pdf(100, 100);
+    unsafe {
+        let options = cstr(r#"{"omit_running_heads":true}"#);
+        let doc = unpdf_parse_bytes_with_options(bytes.as_ptr(), bytes.len(), options.as_ptr());
+        assert!(!doc.is_null());
+        unpdf_free_document(doc);
+
+        let misspelt = cstr(r#"{"omit_running_head":true}"#);
+        let doc = unpdf_parse_bytes_with_options(bytes.as_ptr(), bytes.len(), misspelt.as_ptr());
+        assert!(
+            doc.is_null(),
+            "a misspelled option must fail, not keep the default"
+        );
+        assert_eq!(unpdf_last_error_kind(), UNPDF_ERROR_INVALID_ARGUMENT);
+    }
+}
+
+#[test]
 fn raw_undecoded_image_formats_are_never_surfaced_even_with_extract_resources() {
     // `parse()`'s resource collection must apply the same raw/bin exclusion
     // `parse_single_page`'s does, or this silently reappears whenever the two collection

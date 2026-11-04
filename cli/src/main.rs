@@ -144,6 +144,10 @@ pub struct ConvertArgs {
     #[arg(long)]
     pub keep_ocr_text: bool,
 
+    /// Omit each page's running heads and feet (judged from the page's own layout)
+    #[arg(long)]
+    pub omit_running_heads: bool,
+
     /// Directory for extracted images (defaults to `<out>/images`)
     #[arg(long, value_name = "DIR")]
     pub image_dir: Option<PathBuf>,
@@ -548,6 +552,7 @@ fn main() {
                     all: false,
                     no_images: false,
                     keep_ocr_text: false,
+                    omit_running_heads: false,
                     image_dir: None,
                     min_image_size: 64,
                     window: None,
@@ -662,7 +667,8 @@ fn cmd_convert(args: &ConvertArgs) -> Result<bool, Box<dyn std::error::Error>> {
     // Open parser
     let mut parse_options = ParseOptions::new()
         .lenient()
-        .with_ocr_suppression(!args.keep_ocr_text);
+        .with_ocr_suppression(!args.keep_ocr_text)
+        .with_omit_running_heads(args.omit_running_heads);
     if image_dir.is_some() {
         parse_options = parse_options.with_resources(true);
     }
@@ -695,6 +701,7 @@ fn cmd_convert(args: &ConvertArgs) -> Result<bool, Box<dyn std::error::Error>> {
         extract_resources: image_dir.is_some(),
         min_image_dimension: args.min_image_size,
         suppress_low_confidence_ocr: !args.keep_ocr_text,
+        omit_running_heads: args.omit_running_heads,
         ..PageStreamOptions::default()
     };
     if let Some(w) = args.window {

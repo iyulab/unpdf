@@ -279,7 +279,8 @@ pub(crate) fn parse_single_page(
         // One analyzer per page: the text paths below share its font statistics and
         // its record of whether an unreadable OCR layer was dropped.
         let mut analyzer = super::layout::LayoutAnalyzer::new(backend)
-            .with_ocr_suppression(options.suppress_low_confidence_ocr);
+            .with_ocr_suppression(options.suppress_low_confidence_ocr)
+            .with_running_head_omission(options.omit_running_heads);
 
         match extract_page_with_tables_fn(&mut analyzer, page_num) {
             Ok(blocks) if !blocks.is_empty() => {

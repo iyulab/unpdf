@@ -17,6 +17,17 @@ public class ParseOptionsTests
     }
 
     [Fact]
+    public void ParseBytes_OmitRunningHeads_ReachesTheNativeOptionsJson()
+    {
+        // Accepted by the native side (an unknown key would fail the parse); off by default.
+        using var doc = UnpdfDocument.ParseBytes(
+            PdfFixtures.JpegPdf(100, 100),
+            new ParseOptions { OmitRunningHeads = true });
+
+        Assert.Equal(1, doc.PageCount);
+    }
+
+    [Fact]
     public void ParseBytes_ExtractResources_PopulatesResourceInventory()
     {
         using var doc = UnpdfDocument.ParseBytes(

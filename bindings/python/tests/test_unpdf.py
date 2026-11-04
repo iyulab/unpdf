@@ -304,6 +304,14 @@ class TestParseOptions:
         assert raised.value.kind == unpdf.ErrorKind.INVALID_ARGUMENT
         assert "extract_resource" in str(raised.value)
 
+    def test_omit_running_heads_is_a_known_option(self):
+        # Accepted (a misspelling of it raises, as above), and off by default.
+        pdf = _jpeg_pdf(10, 10)
+        assert unpdf.to_markdown(pdf, options={"omit_running_heads": True}) == unpdf.to_markdown(pdf)
+        with pytest.raises(unpdf.UnpdfError) as raised:
+            unpdf.to_markdown(pdf, options={"omit_running_head": True})
+        assert raised.value.kind == unpdf.ErrorKind.INVALID_ARGUMENT
+
     def test_a_page_the_document_does_not_have_raises_page_out_of_range(self):
         # Parsed quietly, the selection would read as a document with no text.
         with pytest.raises(unpdf.UnpdfError) as raised:
