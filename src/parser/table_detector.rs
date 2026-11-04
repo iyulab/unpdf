@@ -651,10 +651,21 @@ impl TableDetector {
         };
         let body = &rows[header_rows..];
         let allowed = (body.len() / 10).max(1);
+        // The name of a group of rows, set over the columns it heads, crosses them as a
+        // header does; between two rows of the same columns it is no sign of running text.
+        let is_group_name = |at: usize| {
+            at > 0 && at + 1 < rows.len() && labels_a_group(&rows[at], &rows[at - 1], &rows[at + 1])
+        };
         edges
             .iter()
             .copied()
-            .filter(|&edge| body.iter().filter(|row| crosses(row, edge)).count() <= allowed)
+            .filter(|&edge| {
+                body.iter()
+                    .enumerate()
+                    .filter(|(k, row)| crosses(row, edge) && !is_group_name(header_rows + k))
+                    .count()
+                    <= allowed
+            })
             .collect()
     }
 
@@ -712,13 +723,20 @@ impl TableDetector {
     }
 
     /// Runs of at least `min_rows` consecutive rows that each hold two or more spans —
-    /// the rows a table occupies, whatever the rest of the page looks like.
+    /// the rows a table occupies, whatever the rest of the page looks like. A row that
+    /// only labels a group ([`labels_a_group`]) does not end a run: the groups beneath
+    /// such labels are one table.
     fn find_multi_span_runs(&self, rows: &[TableRowData]) -> Vec<(usize, usize)> {
         let mut runs = Vec::new();
         let mut start: Option<usize> = None;
         for (i, row) in rows.iter().enumerate() {
             if separated_runs(row) >= self.config.min_columns {
                 start.get_or_insert(i);
+            } else if start.is_some()
+                && i + 1 < rows.len()
+                && labels_a_group(row, &rows[i - 1], &rows[i + 1])
+            {
+                continue;
             } else if let Some(s) = start.take() {
                 if i - s >= self.config.min_rows {
                     runs.push((s, i - 1));
@@ -989,9 +1007,25 @@ impl TableDetector {
     /// runs of multi-span rows average five to eleven, or leave a third of their cells
     /// empty.
     fn reads_as_grid(cells: &[Vec<String>]) -> bool {
-        let total = cells.iter().map(Vec::len).sum::<usize>();
-        let filled: Vec<&String> = cells.iter().flatten().filter(|c| !c.is_empty()).collect();
-        if cells.len() < 3 || total == 0 || filled.len() * 4 < total * 3 {
+        // A row that fills only its first cell, with a group's name, heads the rows below
+        // it: it is no short row of the grid, and its empty cells say nothing against the
+        // grid. Two rows in five at most — a column of names with a few rows of cells is
+        // a list.
+        let is_name =
+            |row: &Vec<String>| row.iter().skip(1).all(|c| c.is_empty()) && names_a_group(&row[0]);
+        let names = cells.iter().filter(|row| is_name(row)).count();
+        let rows: Vec<&Vec<String>> = if names * 5 <= cells.len() * 2 {
+            cells.iter().filter(|row| !is_name(row)).collect()
+        } else {
+            cells.iter().collect()
+        };
+        let total = rows.iter().map(|row| row.len()).sum::<usize>();
+        let filled: Vec<&String> = rows
+            .iter()
+            .flat_map(|row| row.iter())
+            .filter(|c| !c.is_empty())
+            .collect();
+        if rows.len() < 3 || total == 0 || filled.len() * 4 < total * 3 {
             return false;
         }
         let words: usize = filled.iter().map(|c| c.split_whitespace().count()).sum();
@@ -1322,6 +1356,72 @@ impl TableDetector {
 
         false
     }
+}
+
+/// Whether `text` could name a group of rows: four words at most, one of them a word of
+/// four letters or more. A fragment of a formula («n», «k=1») or a leader of dots is not a
+/// name, and neither is a line of running text.
+fn names_a_group(text: &str) -> bool {
+    text.split_whitespace().count() <= 4
+        && text
+            .split_whitespace()
+            .any(|word| word.chars().filter(|c| c.is_alphabetic()).count() >= 4)
+}
+
+/// Whether `label` is the row of a group's name between two groups of one table: a single
+/// short run of text (a name of four words at most, drawn in as many spans as it likes) set at or left of the first column,
+/// between a row `before` and a row `after` whose runs fall in the same columns — each
+/// column's runs share a left or a right edge, since figures are set either way. A table of
+/// earnings keeps «Revenue:», «Adjusted EPS:» and «Reported EPS» between its pairs of rows;
+/// without the bridge each pair is two rows, too few to read as a grid.
+fn labels_a_group(label: &TableRowData, before: &TableRowData, after: &TableRowData) -> bool {
+    const SAME_EDGE: f32 = 5.0;
+    let (Some(name), Some(before_first), Some(after_first)) = (
+        label.spans.first(),
+        before.spans.first(),
+        after.spans.first(),
+    ) else {
+        return false;
+    };
+    let text = label
+        .spans
+        .iter()
+        .map(|s| s.text.trim())
+        .collect::<Vec<_>>()
+        .join(" ");
+    // The neighbours' cells hold something: a row of leader dots between entries is no row
+    // of cells.
+    let cells_hold_text = |row: &TableRowData| {
+        row.spans
+            .iter()
+            .all(|s| s.text.chars().any(char::is_alphanumeric))
+    };
+    if separated_runs(label) != 1
+        || !names_a_group(&text)
+        || before.spans.len() < 2
+        || after.spans.len() < 2
+        || !cells_hold_text(before)
+        || !cells_hold_text(after)
+        || name.x > before_first.x.min(after_first.x) + SAME_EDGE
+    {
+        return false;
+    }
+    let same_edge = |a: &TextSpan, b: &TextSpan| {
+        (a.x - b.x).abs() <= SAME_EDGE
+            || (a.width > 0.0
+                && b.width > 0.0
+                && ((a.x + a.width) - (b.x + b.width)).abs() <= SAME_EDGE)
+    };
+    // The columns after the first, counted from the right: a row's name may be drawn in
+    // pieces, which shifts its own span count but none of the columns beyond it.
+    let columns = before.spans.len().min(after.spans.len()) - 1;
+    before
+        .spans
+        .iter()
+        .rev()
+        .zip(after.spans.iter().rev())
+        .take(columns)
+        .all(|(a, b)| same_edge(a, b))
 }
 
 /// Whether `dash`, a run of its own, is the minus sign of the number drawn right after it
@@ -2849,6 +2949,120 @@ mod tests {
             &[72.0, 200.0],
             1
         ));
+    }
+
+    /// Rows of figures in groups of two under a name each: «Revenue:», «Adjusted EPS*:»,
+    /// «Reported EPS». Each pair alone is too few rows to be a grid; the names between
+    /// them do not end the run of rows. `shift` moves the middle group's figures sideways.
+    fn grouped_figures(shift: f32) -> Vec<TableRowData> {
+        let mut rows = Vec::new();
+        let mut y = 700.0;
+        for (group, name) in ["Revenue:", "Adjusted EPS*:", "Reported EPS"]
+            .iter()
+            .enumerate()
+        {
+            let shift = if group == 1 { shift } else { 0.0 };
+            rows.push(row_of(vec![measured(name, 40.0, y, 60.0)]));
+            y -= 14.0;
+            for row in ["Q3", "9 Months"] {
+                let mut spans = vec![measured(row, 60.0, y, 40.0)];
+                for (c, value) in ["$448", "$427", "7%", "5%"].iter().enumerate() {
+                    spans.push(measured(value, 140.0 + shift + c as f32 * 60.0, y, 30.0));
+                }
+                rows.push(row_of(spans));
+                y -= 14.0;
+            }
+        }
+        rows
+    }
+
+    #[test]
+    fn groups_of_figure_rows_under_their_names_are_one_run_of_rows() {
+        let runs = TableDetector::new().find_multi_span_runs(&grouped_figures(0.0));
+        assert_eq!(runs, vec![(1, 8)]);
+    }
+
+    #[test]
+    fn a_name_between_rows_of_other_columns_does_not_join_them() {
+        // The middle group's figures stand in other columns: three unrelated pairs.
+        let runs = TableDetector::new().find_multi_span_runs(&grouped_figures(25.0));
+        assert_eq!(runs, vec![(1, 2), (4, 5), (7, 8)]);
+    }
+
+    #[test]
+    fn only_a_short_line_with_a_word_in_it_is_a_group_name() {
+        let figures = |y: f32| {
+            row_of(vec![
+                measured("Q3", 60.0, y, 40.0),
+                measured("$448", 140.0, y, 30.0),
+                measured("$427", 200.0, y, 30.0),
+            ])
+        };
+        let label = |text: &str| row_of(vec![measured(text, 40.0, 686.0, 200.0)]);
+        let (before, after) = (figures(700.0), figures(672.0));
+        assert!(labels_a_group(&label("Revenue:"), &before, &after));
+        assert!(labels_a_group(&label("Reported EPS"), &before, &after));
+        // A line of running text, a fragment of a formula, a leader of dots.
+        for text in [
+            "the quarter ended on the last day of the month",
+            "n",
+            "k = 1",
+            ". . . . .",
+        ] {
+            assert!(!labels_a_group(&label(text), &before, &after), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_name_between_two_rows_of_dotted_leaders_is_not_a_group_name() {
+        let leaders = |y: f32| {
+            row_of(vec![
+                measured("Seeders", 60.0, y, 40.0),
+                measured(". . . .", 140.0, y, 30.0),
+                measured(". . .", 200.0, y, 30.0),
+            ])
+        };
+        let label = row_of(vec![measured("Harrows", 40.0, 686.0, 50.0)]);
+        assert!(!labels_a_group(&label, &leaders(700.0), &leaders(672.0)));
+    }
+
+    #[test]
+    fn the_names_of_groups_do_not_close_the_channels_between_columns() {
+        // Each name stands over the first column and its figures: three rows crossing the
+        // edge at 60 would be too many for a table of nine rows, were they counted.
+        let rows = grouped_figures(0.0);
+        let edges = vec![60.0, 140.0, 200.0, 260.0, 320.0];
+        let kept = TableDetector::keep_whitespace_channels(&rows[1..], edges.clone());
+        assert_eq!(kept, edges);
+        // With the names among the rows the edge at 60 survives; fewer rows would not decide.
+        let with_names = TableDetector::keep_whitespace_channels(&rows, edges.clone());
+        assert_eq!(with_names, edges);
+    }
+
+    #[test]
+    fn rows_of_figures_under_group_names_read_as_a_grid() {
+        let named = |name: &str| {
+            let mut row = vec![name.to_string()];
+            row.resize(5, String::new());
+            row
+        };
+        let figures = |a: &str| {
+            let mut row = vec![a.to_string()];
+            row.extend(["$448", "$427", "7%", "5%"].map(String::from));
+            row
+        };
+        let cells = vec![
+            named("Revenue:"),
+            figures("Q3"),
+            figures("9 Months"),
+            named("Reported EPS"),
+            figures("Q3"),
+            figures("9 Months"),
+        ];
+        assert!(TableDetector::reads_as_grid(&cells));
+        // Two names in three rows are no group names but a column of entries with few cells.
+        let list = vec![named("Revenue:"), named("Expenses"), figures("Q3")];
+        assert!(!TableDetector::reads_as_grid(&list));
     }
 
     /// A table of contents lines entries up against page numbers, but it is a list of

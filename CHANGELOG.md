@@ -4,6 +4,22 @@
 
 ### Fixed
 
+- **A table whose groups of rows have a name each is one table.** Figures set in pairs of rows
+  under group names («Revenue:», «Adjusted EPS:», «Reported EPS»; «Domestic Applicants»,
+  «International Applicants»; a course list under «Foundation Courses») came out as lines of
+  text: each pair is two rows, too few to read as a grid, and the single-line name between two
+  pairs ended the run of rows. A line that is only a short name (four words at most, one of
+  them of four letters or more, set at or left of the first column) between two rows whose
+  runs fall in the same columns, left or right edges alike, now continues the run; the name is
+  a row of the table, it does not count as text crossing a column channel, and, when no more
+  than two rows in five are names, its empty cells do not count against the grid. Fragments of
+  a formula, lines of running text and leaders of dots are not names. On the 1,403
+  olmOCR-Bench pages 11 more table tests pass and none fewer, and none of the 200
+  opendataloader-bench documents changes; of the 9 outputs that differ, 3 are tables that were
+  not tables (a dictionary page, a page of formula fragments, a sidebar), 1 is a form read as
+  a label/value table, and 1 is a scanned page of mathematics whose garbled lines now form a
+  table.
+
 - **A column of running text beside a sidebar of short entries is no longer read as a two-column
   table.** A page with a text column and a narrow sidebar, set close together, was read as one
   table whose rows paired a line of the text with an unrelated line of the sidebar, so the sentences
