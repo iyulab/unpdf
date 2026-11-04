@@ -56,7 +56,7 @@
   page over the paints' left and right edges with the covered height kept in a segment tree, in
   O(n log n) time, and its share of the page is taken in `f64`, so a page too small for an `f32`
   area keeps its coverage. `bilevel_image_coverage` is measured the same way. Below 257 paints it
-  agrees with the exact method it replaces, up to rounding; no text output changes.
+  agrees with the exact method it replaces, up to rounding; no text output changes. (#42, @erkurtharun)
 
 ## 0.54.0 — 2026-11-04
 
