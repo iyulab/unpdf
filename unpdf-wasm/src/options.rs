@@ -42,6 +42,16 @@ impl ParseOptions {
         self
     }
 
+    /// Leave a page's running heads and feet (a title, volume or date in the top and bottom
+    /// margin) out of the text, judged from that page's own layout; a footnote is kept. Off by
+    /// default. It is for a pipeline that handles one page at a time, and costs accuracy on
+    /// documents whose reference keeps the running heads.
+    #[wasm_bindgen(js_name = withOmitRunningHeads)]
+    pub fn with_omit_running_heads(mut self, enabled: bool) -> Self {
+        self.inner = self.inner.with_omit_running_heads(enabled);
+        self
+    }
+
     /// Minimum pixel width/height for an extracted image to be kept — images
     /// below this on either axis are dropped as decorative (logos, rule lines,
     /// tracking pixels). Default 64; `0` keeps every image regardless of size.
@@ -81,6 +91,13 @@ mod tests {
             opts.inner.pages,
             unpdf::render::PageSelection::Range(_)
         ));
+    }
+
+    #[wasm_bindgen_test]
+    fn test_parse_options_with_omit_running_heads() {
+        assert!(!ParseOptions::new().inner.omit_running_heads);
+        let opts = ParseOptions::new().with_omit_running_heads(true);
+        assert!(opts.inner.omit_running_heads);
     }
 
     #[wasm_bindgen_test]

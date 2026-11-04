@@ -16,6 +16,7 @@
   tests and 24 fewer, while on documents whose reference keeps the running heads it costs
   accuracy (ODL overall 0.9016 to about 0.89), which is why it is an option and not the default.
   With the option off every output is byte for byte the same.
+  The wasm package has it as `ParseOptions.withOmitRunningHeads(enabled)`.
 
 ### Fixed
 
