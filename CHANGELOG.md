@@ -19,6 +19,15 @@
 
 ### Fixed
 
+- **A page of text in two columns with a figure's caption across both is not read as a table.**
+  Between a running head's rule and a foot's, two columns of sentences are the page's text, but
+  the lines of a caption set across the gutter stretched the left column over the right, the two
+  overlapped, and the page came out as a table whose rows interleave the columns. A few lines
+  across the gutter, each of six words or more, are now left out of the columns' widths when the
+  columns do not fit without that; a heading of a few words, a tick label that overhangs the
+  gutter and many lines across are not, and a page the old check took for text is still text.
+  On the olmOCR-Bench pages this alters 1 output, scores +2 / −0 tests (both in the multi-column
+  set), and leaves all 200 ODL outputs unchanged.
 - **Text set at an absurd size or position no longer allocates gigabytes.** The column and
   table-cell gap searches profiled the width their text spans in bins of two points (half a
   point for table cells), so a run at a 90-million-point font size, or text placed at 1e30,

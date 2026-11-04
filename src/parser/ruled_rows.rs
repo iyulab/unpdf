@@ -603,45 +603,70 @@ fn set_in_page_columns(rows: &[&TableRowData], col_bounds: &[f32], left: f32, ri
     if rows.len() < PAGE_COLUMN_LINES || col_bounds.len() < 3 {
         return false;
     }
-    let width = (right - left).max(1.0);
-    let mut ink = vec![(f32::MAX, f32::MIN); col_bounds.len() - 1];
-    let (mut words, mut runs) = (0usize, 0usize);
-    for span in rows.iter().flat_map(|r| r.spans.iter()) {
-        let column = col_bounds
-            .iter()
-            .skip(1)
-            .take_while(|&&b| span.x >= b)
-            .count()
-            .min(col_bounds.len() - 2);
-        let (a, b) = span.ink_extent();
-        ink[column] = (ink[column].0.min(a), ink[column].1.max(b));
-        words += span.text.split_whitespace().count();
-        runs += 1;
-    }
+    let spans = || rows.iter().flat_map(|r| r.spans.iter());
+    let (words, runs) = spans().fold((0usize, 0usize), |(w, r), s| {
+        (w + s.text.split_whitespace().count(), r + 1)
+    });
     if (words as f32) < runs as f32 * PAGE_COLUMN_WORDS {
         return false;
     }
-    let shares: Vec<f32> = ink
-        .iter()
-        .map(|&(a, b)| if b > a { (b - a) / width } else { 0.0 })
-        .collect();
-    let mut wide: Vec<f32> = shares
-        .iter()
-        .copied()
-        .filter(|&s| s >= PAGE_COLUMN_SHARE)
-        .collect();
-    wide.sort_by(|a, b| b.total_cmp(a));
-    let side_by_side = wide.len() >= 2 && wide[0] + wide[1] <= PAGE_COLUMN_FIT;
-    let rest_narrow = shares
-        .iter()
-        .all(|&s| s >= PAGE_COLUMN_SHARE || s < PAGE_COLUMN_STRIP);
-    if side_by_side && rest_narrow {
+    let width = (right - left).max(1.0);
+    // Whether the columns' ink, leaving out the spans `skip` names, is two columns side by side
+    // and nothing else but strips.
+    let in_columns = |skip: &dyn Fn(&TextSpan) -> bool| {
+        let mut ink = vec![(f32::MAX, f32::MIN); col_bounds.len() - 1];
+        for span in spans().filter(|s| !skip(s)) {
+            let column = col_bounds
+                .iter()
+                .skip(1)
+                .take_while(|&&b| span.x >= b)
+                .count()
+                .min(col_bounds.len() - 2);
+            let (a, b) = span.ink_extent();
+            ink[column] = (ink[column].0.min(a), ink[column].1.max(b));
+        }
+        let shares: Vec<f32> = ink
+            .iter()
+            .map(|&(a, b)| if b > a { (b - a) / width } else { 0.0 })
+            .collect();
+        let mut wide: Vec<f32> = shares
+            .iter()
+            .copied()
+            .filter(|&s| s >= PAGE_COLUMN_SHARE)
+            .collect();
+        wide.sort_by(|a, b| b.total_cmp(a));
+        let side_by_side = wide.len() >= 2 && wide[0] + wide[1] <= PAGE_COLUMN_FIT;
+        let rest_narrow = shares
+            .iter()
+            .all(|&s| s >= PAGE_COLUMN_SHARE || s < PAGE_COLUMN_STRIP);
+        side_by_side && rest_narrow
+    };
+    // A line set across the gutter -- a figure's caption, a note over the columns -- is the
+    // page's own flow, not a column, yet it stretches the column it starts in over the other and
+    // makes the two overlap. So when the columns do not fit as they stand, a few such lines, each
+    // a sentence long, are left out and the columns are looked at again. A heading of a word or
+    // two across a table's columns, a tick label that overhangs the gutter, and many lines across
+    // are not that. Looking again only ever turns a table into text, never the reverse: a bullet
+    // line that runs from a narrow marker strip across the first boundary is no caption.
+    let flow_line = |span: &TextSpan| {
+        let end = span.x + span.width;
+        span.text.split_whitespace().count() >= PAGE_FLOW_LINE_WORDS
+            && col_bounds[1..col_bounds.len() - 1]
+                .iter()
+                .any(|&b| span.x < b && b < end)
+    };
+    let flow_lines = spans().filter(|s| flow_line(s)).count();
+    let text = in_columns(&|_| false)
+        || (flow_lines > 0
+            && flow_lines * PAGE_FLOW_LINES_ONE_IN <= rows.len()
+            && in_columns(&flow_line));
+    if text {
         log::debug!(
             "ruled rows: {} lines set in page columns, not a table",
             rows.len()
         );
     }
-    side_by_side && rest_narrow
+    text
 }
 
 /// A column that runs across this share of the table's width is a column of the page's text.
@@ -655,6 +680,13 @@ const PAGE_COLUMN_STRIP: f32 = 0.15;
 
 /// Words per run, at least, of lines of sentences; a table's cells are a word or two.
 const PAGE_COLUMN_WORDS: f32 = 2.5;
+
+/// A line across the gutter is the page's flow, not a column, when it holds at least this many
+/// words (a caption's line is a sentence; a table's title across its columns is shorter)...
+const PAGE_FLOW_LINE_WORDS: usize = 6;
+
+/// ...and there are at most one such line in this many rows.
+const PAGE_FLOW_LINES_ONE_IN: usize = 6;
 
 /// The grid of one ruled table: columns at the body's gaps, a row per line of text.
 fn grid_of(
@@ -1067,6 +1099,80 @@ mod tests {
             spans.push(span(right, 355.0, y));
         }
         assert!(grids(&rule_stacks(&rules), &spans, &[]).is_empty());
+    }
+
+    /// The page's two columns with `lines` of text across the gutter under them: sixteen rows,
+    /// then the lines of a caption.
+    fn page_columns_with_lines_across(lines: &[&str]) -> Vec<TextSpan> {
+        let words = [
+            "the committee reviewed the proposal",
+            "while members asked several questions",
+            "and the chair summarised the points",
+        ];
+        let mut spans = Vec::new();
+        for i in 0..16 {
+            let y = 720.0 - i as f32 * 12.0;
+            spans.push(span(words[i % 3], 105.0, y));
+            spans.push(span(words[(i + 1) % 3], 355.0, y));
+        }
+        for (i, line) in lines.iter().enumerate() {
+            spans.push(span(line, 105.0, 520.0 - i as f32 * 12.0));
+        }
+        spans
+    }
+
+    /// A caption set across both columns, a sentence a line, is the page's flow: it must not
+    /// stretch the left column over the right and make the page a table.
+    #[test]
+    fn a_caption_across_the_gutter_does_not_make_a_page_of_columns_a_table() {
+        let rules = vec![h(740.0, 103.0, 545.0), h(60.0, 103.0, 545.0)];
+        let spans = page_columns_with_lines_across(&[
+            "Figure 3 Cells were stained according to the protocol and then analysed",
+            "on a flow cytometer with two bandpass filters for each of the dyes",
+        ]);
+        assert!(grids(&rule_stacks(&rules), &spans, &[]).is_empty());
+    }
+
+    /// `set_in_page_columns` over the page's columns with `lines` across the gutter.
+    fn page_columns_read_as_text(lines: &[&str]) -> bool {
+        spans_read_as_text(page_columns_with_lines_across(lines))
+    }
+
+    fn spans_read_as_text(spans: Vec<TextSpan>) -> bool {
+        // A row per line of text: the spans at one height.
+        let mut rows: Vec<TableRowData> = Vec::new();
+        for s in spans {
+            match rows.iter_mut().find(|r| r.y == s.y) {
+                Some(row) => row.spans.push(s),
+                None => rows.push(TableRowData {
+                    y: s.y,
+                    spans: vec![s],
+                    sources: Vec::new(),
+                }),
+            }
+        }
+        let refs: Vec<&TableRowData> = rows.iter().collect();
+        // The gutter between the columns sits at 317.5.
+        set_in_page_columns(&refs, &[100.0, 317.5, 560.0], 100.0, 560.0)
+    }
+
+    /// Only a few lines a sentence long are the page's flow. A heading of a few words across the
+    /// columns, or many lines across, still stretch the column they start in.
+    #[test]
+    fn only_a_few_sentence_lines_across_the_gutter_are_the_pages_flow() {
+        let caption = "Figure 3 Cells were stained according to the protocol and then analysed";
+        assert!(page_columns_read_as_text(&[]));
+        assert!(page_columns_read_as_text(&[caption, caption]));
+        // Three words, but long ones, set over the whole width of the columns.
+        assert!(!page_columns_read_as_text(&[
+            "Internationalization-and-localization Considerations-for-documentation Specifications-and-guidelines"
+        ]));
+        assert!(!page_columns_read_as_text(&[caption; 6]));
+        // A tick label of a figure that overhangs the gutter by a few points is no caption line,
+        // and does not keep the captions' lines from being left out.
+        let mut spans = page_columns_with_lines_across(&[caption, caption]);
+        spans.push(span("262,144", 290.0, 530.0));
+        assert!(spans_read_as_text(spans));
     }
 
     /// Two wide columns of words beside narrow figures, a word or two a cell, stay a table.
