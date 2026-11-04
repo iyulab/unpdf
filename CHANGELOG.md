@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.54.0 — 2026-11-04
+
 ### Added
 
 - **`omit_running_heads`: leave a page's running heads and feet out.** An option of `ParseOptions`
