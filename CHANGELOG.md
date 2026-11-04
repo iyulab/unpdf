@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.53.1 — 2026-11-04
+
 ### Fixed
 
 - **A page's body set in two columns between its running head's rule and its foot's is not read
