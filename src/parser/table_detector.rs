@@ -438,6 +438,11 @@ impl TableDetector {
                     rows: table_rows,
                     confidence,
                 });
+            } else {
+                log::debug!(
+                    "TableDetector: skipping region [{start_row}..{end_row}] — {} column(s) survive the whitespace channels",
+                    table_columns.len()
+                );
             }
         }
 
@@ -635,16 +640,35 @@ impl TableDetector {
         // either side of it; only a run clearly through the edge counts as crossing.
         const MARGIN: f32 = 3.0;
         const MAX_HEADER_ROWS: usize = 4;
-        let crosses = |row: &TableRowData, edge: f32| {
-            row.spans
-                .iter()
-                .any(|s| s.width > 0.0 && s.x < edge - MARGIN && s.x + s.width > edge + MARGIN)
+        // The longest run of words that is a header's label rather than running text.
+        const HEADER_LABEL_WORDS: usize = 4;
+        let span_crosses = |s: &TextSpan, edge: f32| {
+            s.width > 0.0 && s.x < edge - MARGIN && s.x + s.width > edge + MARGIN
         };
+        let crosses =
+            |row: &TableRowData, edge: f32| row.spans.iter().any(|s| span_crosses(s, edge));
         let header_rows = rows
             .iter()
             .take_while(|row| edges.iter().any(|&edge| crosses(row, edge)))
             .count();
-        let header_rows = if header_rows <= MAX_HEADER_ROWS && header_rows * 2 < rows.len() {
+        // Fewer than half the rows are a header. Exactly half — a header of two lines over
+        // two rows of cells — is one only when what crosses the channels is a label (a
+        // few words centred over its column), not a line of text or a leader of dots running
+        // on through them.
+        let labels_cross = || {
+            rows[..header_rows].iter().all(|row| {
+                row.spans
+                    .iter()
+                    .filter(|s| edges.iter().any(|&edge| span_crosses(s, edge)))
+                    .all(|s| {
+                        s.text.split_whitespace().count() <= HEADER_LABEL_WORDS
+                            && s.text.chars().any(char::is_alphanumeric)
+                    })
+            })
+        };
+        let header_rows = if header_rows <= MAX_HEADER_ROWS
+            && (header_rows * 2 < rows.len() || (header_rows * 2 == rows.len() && labels_cross()))
+        {
             header_rows
         } else {
             0
@@ -3063,6 +3087,107 @@ mod tests {
         // Two names in three rows are no group names but a column of entries with few cells.
         let list = vec![named("Revenue:"), named("Expenses"), figures("Q3")];
         assert!(!TableDetector::reads_as_grid(&list));
+    }
+
+    #[test]
+    fn a_two_line_label_header_over_two_rows_keeps_its_channels() {
+        // Labels centred over their columns cross the channel at 300 on both header lines;
+        // two rows of cells under them keep it.
+        let row = |y: f32, a: &str, wa: f32, b: &str, c: &str| {
+            row_of(vec![
+                measured(a, 154.0, y, wa),
+                measured(b, 273.0, y, 89.0),
+                measured(c, 392.0, y, 63.0),
+            ])
+        };
+        let mut rows = vec![
+            row(
+                220.0,
+                "In the case of an eligible",
+                104.0,
+                "The earned income",
+                "The phaseout",
+            ),
+            row(230.0, "individual with:", 92.0, "amount is:", "amount is:"),
+        ];
+        for (k, (a, b, c)) in [
+            ("1 qualifying child", "$6,330", "$11,610"),
+            ("2 qualifying children", "$8,890", "$11,610"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let y = 252.0 + k as f32 * 12.0;
+            rows.push(row_of(vec![
+                measured(a, 154.0, y, 80.0),
+                measured(b, 302.0, y, 30.0),
+                measured(c, 392.0, y, 35.0),
+            ]));
+        }
+        let kept = TableDetector::keep_whitespace_channels(&rows, vec![155.0, 300.0, 395.0]);
+        assert_eq!(kept, vec![155.0, 300.0, 395.0]);
+    }
+
+    #[test]
+    fn two_lines_of_text_over_two_rows_do_not_pass_for_a_header() {
+        // The same count of rows, but what crosses the channel is a sentence running on.
+        let rows = vec![
+            row_of(vec![
+                measured(
+                    "amendments to directly ameliorate adverse spoil",
+                    154.0,
+                    220.0,
+                    300.0,
+                ),
+                measured("attributes", 460.0, 220.0, 40.0),
+            ]),
+            row_of(vec![
+                measured(
+                    "attributes of the soil and sedbrook et al",
+                    154.0,
+                    232.0,
+                    300.0,
+                ),
+                measured("later", 460.0, 232.0, 30.0),
+            ]),
+            row_of(vec![
+                measured("one", 154.0, 244.0, 20.0),
+                measured("two", 300.0, 244.0, 20.0),
+            ]),
+            row_of(vec![
+                measured("three", 154.0, 256.0, 20.0),
+                measured("four", 300.0, 256.0, 20.0),
+            ]),
+        ];
+        let kept = TableDetector::keep_whitespace_channels(&rows, vec![155.0, 300.0]);
+        assert!(!kept.contains(&300.0), "{kept:?}");
+    }
+
+    #[test]
+    fn leaders_of_dots_over_two_rows_do_not_pass_for_a_header() {
+        // An index: an entry, then a leader of dots across the channel, then more.
+        let rows = vec![
+            row_of(vec![
+                measured("Seeders", 154.0, 220.0, 60.0),
+                measured(". . . .", 220.0, 220.0, 120.0),
+                measured("12", 400.0, 220.0, 10.0),
+            ]),
+            row_of(vec![
+                measured("Harrows", 154.0, 232.0, 60.0),
+                measured(". . . .", 220.0, 232.0, 120.0),
+                measured("14", 400.0, 232.0, 10.0),
+            ]),
+            row_of(vec![
+                measured("Ploughs", 154.0, 244.0, 50.0),
+                measured("16", 400.0, 244.0, 10.0),
+            ]),
+            row_of(vec![
+                measured("Rollers", 154.0, 256.0, 50.0),
+                measured("18", 400.0, 256.0, 10.0),
+            ]),
+        ];
+        let kept = TableDetector::keep_whitespace_channels(&rows, vec![155.0, 300.0, 400.0]);
+        assert!(!kept.contains(&300.0), "{kept:?}");
     }
 
     /// A table of contents lines entries up against page numbers, but it is a list of

@@ -4,6 +4,19 @@
 
 ### Fixed
 
+- **A small table with a two-line header keeps its columns.** The whitespace reader drops a column
+  boundary that more than a tenth of a region's rows run across, except for a header at the top
+  (fewer than half the rows, up to four). A table of two header lines over two rows of cells is
+  exactly half, so the labels centred over their columns (`The earned income`, `The phaseout`)
+  counted as text running through the boundaries and every column was lost: a statute's
+  three-column amount table came out as a line of text. Exactly half is now a header when what
+  crosses the boundaries is a label (four words at most, with a letter or a digit in it), not a
+  sentence or a leader of dots. When a region is skipped for having fewer than two columns left
+  the debug log now says so (it was silent). On the 1,403 olmOCR-Bench pages 2 more table tests
+  pass and none fewer, and 2 outputs change (that table, and a clinical table of fits whose
+  caption row and two lines of the text above it now join it); none of the 200
+  opendataloader-bench documents changes.
+
 - **A table whose groups of rows have a name each is one table.** Figures set in pairs of rows
   under group names («Revenue:», «Adjusted EPS:», «Reported EPS»; «Domestic Applicants»,
   «International Applicants»; a course list under «Foundation Courses») came out as lines of
