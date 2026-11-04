@@ -19,6 +19,13 @@
 
 ### Fixed
 
+- **Two columns of text under a table, in the same frame, no longer give the table their columns.**
+  A table ruled off at the top and the foot of a page, with the page's text in two columns under it
+  between the same rules, was read as one run of bands, and its columns were taken from the last
+  band: the text's single gutter. A table of six columns came out as two, with its rows run
+  together and the text below it inside the last of them. A band that is itself a page's text in
+  columns now ends the table above it. On the olmOCR-Bench pages this alters 1 output, scores
+  +2 / −0 tests, and leaves all 200 ODL outputs unchanged.
 - **A page of text in two columns with a figure's caption across both is not read as a table.**
   Between a running head's rule and a foot's, two columns of sentences are the page's text, but
   the lines of a caption set across the gutter stretched the left column over the right, the two

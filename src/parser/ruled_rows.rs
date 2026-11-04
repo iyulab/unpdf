@@ -191,6 +191,16 @@ pub(crate) fn grids(
             }
             let mut j = i;
             while j + 1 < bands.len() && is_tabular(&bands[j + 1].2) {
+                // Two columns of text ruled under a table in the same frame are not the table's
+                // last band: their one gutter would give the whole table its columns.
+                if is_page_columns(&bands[j + 1].2) {
+                    log::debug!(
+                        "ruled rows: band y {:.0}..{:.0} is a page's text in columns, not part of the table above it",
+                        bands[j + 1].0,
+                        bands[j + 1].1
+                    );
+                    break;
+                }
                 j += 1;
             }
             // The band right above the run may be its header, even when it does not line up
@@ -244,6 +254,23 @@ pub(crate) fn grids(
     }
     out.sort_by(|a, b| b.top_y.total_cmp(&a.top_y));
     out
+}
+
+/// Whether a band is a page's text set in columns (see [`set_in_page_columns`]) rather than rows
+/// of a table.
+fn is_page_columns(rows: &[TableRowData]) -> bool {
+    let refs: Vec<&TableRowData> = rows.iter().collect();
+    let gaps = column_gaps(&refs);
+    if gaps.is_empty() {
+        return false;
+    }
+    let spans = || refs.iter().flat_map(|r| r.spans.iter());
+    let left = spans().map(|s| s.x).fold(f32::MAX, f32::min);
+    let right = spans().map(|s| s.x + s.width).fold(f32::MIN, f32::max);
+    let mut col_bounds = vec![left - 1.0];
+    col_bounds.extend(gaps.iter().map(|(a, b)| (a + b) / 2.0));
+    col_bounds.push(right + 1.0);
+    set_in_page_columns(&refs, &col_bounds, left, right)
 }
 
 /// The most words a record's key holds: a name, an option, a reference, not a sentence.
@@ -1173,6 +1200,52 @@ mod tests {
         let mut spans = page_columns_with_lines_across(&[caption, caption]);
         spans.push(span("262,144", 290.0, 530.0));
         assert!(spans_read_as_text(spans));
+    }
+
+    /// A table of three columns with two columns of text ruled under it in the same frame: the
+    /// text is not the table's last band, so its single gutter does not give the table its
+    /// columns.
+    #[test]
+    fn two_columns_of_text_under_a_table_do_not_give_it_their_columns() {
+        let rules = vec![
+            h(500.0, 100.0, 545.0),
+            h(484.0, 100.0, 545.0),
+            h(380.0, 100.0, 545.0),
+            h(180.0, 100.0, 545.0),
+        ];
+        let mut spans = vec![
+            span("Feature", 105.0, 488.0),
+            span("Alpha", 255.0, 488.0),
+            span("Beta", 405.0, 488.0),
+        ];
+        for (i, row) in [("Pain", "Nil", "Yes"), ("Fields", "Scotoma", "Normal")]
+            .iter()
+            .enumerate()
+        {
+            let y = 470.0 - i as f32 * 36.0;
+            spans.push(span(row.0, 105.0, y));
+            spans.push(span(row.1, 255.0, y));
+            spans.push(span(row.2, 405.0, y));
+            spans.push(span("later", 105.0, y - 12.0));
+            spans.push(span("on", 255.0, y - 12.0));
+        }
+        let lines = [
+            "the committee reviewed the proposal",
+            "while members asked several questions",
+            "and the chair summarised the points",
+        ];
+        for i in 0..12 {
+            let y = 360.0 - i as f32 * 12.0;
+            spans.push(span(lines[i % 3], 105.0, y));
+            spans.push(span(lines[(i + 1) % 3], 355.0, y));
+        }
+        let found = grids(&rule_stacks(&rules), &spans, &[]);
+        let table = found
+            .iter()
+            .find(|g| g.top_y >= 484.0)
+            .expect("the table above");
+        assert_eq!(table.column_count(), 3, "{table:?}");
+        assert!(table.bottom_y >= 380.0, "{table:?}");
     }
 
     /// Two wide columns of words beside narrow figures, a word or two a cell, stay a table.
