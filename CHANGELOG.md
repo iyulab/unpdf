@@ -4,6 +4,20 @@
 
 ### Fixed
 
+- **Text drawn again on top of itself is read once.** A producer can make a word bold, or give
+  it a shadow, by showing the same string a second time in the same place (exactly, or a
+  fraction of a point off). The page shows one word; the content stream holds two runs, and
+  both were read — `CollectionCollection`, `Page Page 22`, a heading repeated five times, a
+  table cell whose text could not be found. A run that repeats an earlier run — same text,
+  same font and size and direction, within a tenth of an em — is now dropped, and the run the
+  stream draws first stays (Apache PDFBox does the same by default,
+  `suppressDuplicateOverlappingText`; pdfplumber offers it as `dedupe_chars`). Equal words
+  anywhere else on the page — a column of `0`, the same label on two lines — are different
+  marks and stay. On the 1,403 olmOCR-Bench pages 4 more table tests pass and none fewer, 20
+  outputs change (every one a doubled word or heading read once; a page number that was
+  doubled into `0606` is now a page number and is left out), and none of the 200
+  opendataloader-bench documents changes in any score.
+
 - **Rules that frame text are not a table.** A box drawn round a page of typewritten text — a
   report printed with `|` and `=`, a form's instructions — gives a ruled grid whose cells are
   empty but one or two. It was kept as a table that holds hardly any text and written as one

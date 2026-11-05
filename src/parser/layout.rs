@@ -1518,6 +1518,7 @@ impl<'a> LayoutAnalyzer<'a> {
         self.form_op_count.set(painted.forms_painted);
         let (mut spans, signals, grids) = self.parse_operations(&painted.ops, *page_id)?;
         settle_page_pitch(&mut spans);
+        super::overprint::drop_overprinted_runs(&mut spans);
 
         if self.suppress_low_confidence_ocr && signals.is_ocr_layer_over_scan() {
             let text = spans
