@@ -313,27 +313,13 @@ impl TableDetector {
                 continue;
             }
 
-            // Calculate table boundaries
-            let top_y = table_rows.first().map(|r| r.y).unwrap_or(0.0);
-            let bottom_y = table_rows.last().map(|r| r.y).unwrap_or(0.0);
-            let left_x = table_rows
-                .iter()
-                .flat_map(|r| r.spans.iter())
-                .map(|s| s.x)
-                .min_by(|a, b| a.partial_cmp(b).unwrap())
-                .unwrap_or(0.0);
-            let right_x = table_rows
-                .iter()
-                .flat_map(|r| r.spans.iter())
-                .map(|s| s.x + s.width)
-                .max_by(|a, b| a.partial_cmp(b).unwrap())
-                .unwrap_or(0.0);
-
             // The rows of wrapped cells, each one table row rather than one line.
             let table_rows = match &wrapped {
                 Some(starts) => join_wrapped_rows(table_rows, starts),
                 None => table_rows,
             };
+
+            let (_, _, _, right_x) = region_bounds(&table_rows);
 
             if table_columns.len() >= self.config.min_columns {
                 // Reject tables with too many columns (likely word-level splitting)
@@ -415,6 +401,13 @@ impl TableDetector {
                     continue;
                 }
 
+                // A region that passed as a table may have caught lines of text above it: the
+                // tail of the paragraph before, a caption, a running head. They are not its
+                // rows; the table is what is left, with its own columns.
+                let (table_rows, table_columns) =
+                    self.set_aside_text_head(table_rows, table_columns);
+                let (top_y, bottom_y, left_x, right_x) = region_bounds(&table_rows);
+
                 // Compute confidence before marking spans as used
                 let confidence = Self::table_confidence(&table_rows, table_columns.len());
                 log::debug!(
@@ -455,6 +448,48 @@ impl TableDetector {
             .collect();
 
         (detected_tables, unused_spans)
+    }
+
+    /// `rows` without the lines of running text at their head (see
+    /// [`without_running_text_head`]), and the columns of what is left. Left whole when the rest
+    /// would no longer be a table: its columns too few or too many, or too few rows holding
+    /// two cells.
+    fn set_aside_text_head(
+        &self,
+        rows: Vec<TableRowData>,
+        columns: Vec<f32>,
+    ) -> (Vec<TableRowData>, Vec<f32>) {
+        let mut head = without_running_text_head(&rows, self.config.min_rows);
+        if head == 0 {
+            return (rows, columns);
+        }
+        // A row of labels reads as running text too — its cells are as close together as
+        // words — but it stands over the table's columns, which a line of text does not: the
+        // rows just above the body that begin at its columns are its header, and stay.
+        let body_columns = self.detect_columns(&rows[head..]);
+        while head > 0
+            && separated_runs(&rows[head - 1]) >= 2
+            && self.calculate_alignment_score(&rows[head - 1], &body_columns)
+                >= HEAD_ROW_ALIGNED_AT_COLUMNS
+        {
+            head -= 1;
+        }
+        if head == 0 {
+            return (rows, columns);
+        }
+        let trimmed = &rows[head..];
+        let trimmed_columns = self.detect_columns(trimmed);
+        let still_a_table = (self.config.min_columns..=self.config.max_columns)
+            .contains(&trimmed_columns.len())
+            && Self::rows_with_several_cells(&Self::column_texts(trimmed, &trimmed_columns))
+                >= self.config.min_rows;
+        if !still_a_table {
+            return (rows, columns);
+        }
+        log::debug!(
+            "TableDetector: {head} line(s) of running text at the head of a table set aside"
+        );
+        (trimmed.to_vec(), trimmed_columns)
     }
 
     /// Whether most of `rows` that hold the region's main text are lines of running text —
@@ -1916,6 +1951,45 @@ pub(crate) fn without_heading_ends(rows: &[TableRowData]) -> std::ops::Range<usi
     start..end
 }
 
+/// The top, bottom, left and right of a table's rows.
+fn region_bounds(rows: &[TableRowData]) -> (f32, f32, f32, f32) {
+    let top_y = rows.first().map(|r| r.y).unwrap_or(0.0);
+    let bottom_y = rows.last().map(|r| r.y).unwrap_or(0.0);
+    let left_x = rows
+        .iter()
+        .flat_map(|r| r.spans.iter())
+        .map(|s| s.x)
+        .min_by(|a, b| a.partial_cmp(b).unwrap())
+        .unwrap_or(0.0);
+    let right_x = rows
+        .iter()
+        .flat_map(|r| r.spans.iter())
+        .map(|s| s.x + s.width)
+        .max_by(|a, b| a.partial_cmp(b).unwrap())
+        .unwrap_or(0.0);
+    (top_y, bottom_y, left_x, right_x)
+}
+
+/// The share of a row's spans that begin at the columns of the rows under it, from which it is
+/// their header rather than a line of text that happens to lie above them (a header holds two
+/// cells at least: a single line that begins where the first column does is a title).
+const HEAD_ROW_ALIGNED_AT_COLUMNS: f32 = 0.6;
+
+/// How many rows at the head of a table region are lines of running text (see
+/// [`is_running_text_row`]): what a region reaches back into above the table — the last lines
+/// of the paragraph before it, its caption, the running head over it — lines up with the table's
+/// columns only by where its words fall. Never so many that fewer than `min_rows` remain:
+/// whether that is a table at all is for the checks that follow to say. The foot of a region
+/// is not trimmed the same way: notes below a table are a separate matter, and measured on the
+/// benchmark pages the same rule at the foot moved a dozen more outputs for one lost test.
+pub(crate) fn without_running_text_head(rows: &[TableRowData], min_rows: usize) -> usize {
+    let mut head = 0;
+    while rows.len() - head > min_rows && is_running_text_row(&rows[head]) {
+        head += 1;
+    }
+    head
+}
+
 /// The gap, in multiples of the font size, beyond which two spans are separate cells.
 const CELL_GAP_EM: f32 = 0.5;
 
@@ -3161,6 +3235,98 @@ mod tests {
         ];
         let kept = TableDetector::keep_whitespace_channels(&rows, vec![155.0, 300.0]);
         assert!(!kept.contains(&300.0), "{kept:?}");
+    }
+
+    /// Three lines of cells under the tail of a paragraph and a caption: the region a page's
+    /// columns reach back over the text above the table.
+    fn rows_under_a_paragraph_tail() -> Vec<TableRowData> {
+        let sentence = |text: &str, y: f32| row_of(vec![measured(text, 37.0, y, 220.0)]);
+        let cells = |a: &str, b: &str, c: &str, y: f32| {
+            row_of(vec![
+                measured(a, 40.0, y, 40.0),
+                measured(b, 150.0, y, 40.0),
+                measured(c, 260.0, y, 40.0),
+            ])
+        };
+        vec![
+            sentence("to administration of an anticonvulsant but other", 526.0),
+            sentence(
+                "Table 4 Duration of fits and number of infants given",
+                561.0,
+            ),
+            cells("Duration", "Phenytoin", "Calcium", 576.0),
+            cells("<12", "15", "3", 588.0),
+            cells("12-24", "20", "7", 600.0),
+        ]
+    }
+
+    #[test]
+    fn lines_of_text_at_the_top_of_a_region_are_not_its_rows() {
+        let rows = rows_under_a_paragraph_tail();
+        assert_eq!(without_running_text_head(&rows, 3), 2);
+    }
+
+    #[test]
+    fn lines_of_text_at_the_bottom_of_a_region_stay_in_it() {
+        let mut rows = rows_under_a_paragraph_tail();
+        rows.drain(0..2);
+        rows.push(row_of(vec![measured(
+            "Values are numbers of infants given each drug",
+            37.0,
+            612.0,
+            220.0,
+        )]));
+        assert_eq!(without_running_text_head(&rows, 3), 0);
+    }
+
+    #[test]
+    fn a_line_of_text_between_rows_of_cells_stays_in_the_region() {
+        let mut rows = rows_under_a_paragraph_tail();
+        rows.drain(0..2);
+        rows.insert(
+            1,
+            row_of(vec![measured(
+                "Values are numbers of infants given each drug",
+                37.0,
+                582.0,
+                220.0,
+            )]),
+        );
+        assert_eq!(without_running_text_head(&rows, 3), 0);
+    }
+
+    #[test]
+    fn the_text_above_a_table_is_set_aside_with_the_table_left_as_it_was() {
+        let detector = TableDetector::new();
+        let rows = rows_under_a_paragraph_tail();
+        let columns = vec![40.0, 150.0, 260.0];
+        let (kept, kept_columns) = detector.set_aside_text_head(rows, columns);
+        assert_eq!(kept.len(), 3);
+        assert_eq!(kept_columns, vec![40.0, 150.0, 260.0]);
+    }
+
+    #[test]
+    fn a_row_of_labels_over_the_columns_is_the_tables_header_not_text_above_it() {
+        // Labels set as close as words, a few words each — a line of text by its spacing, a
+        // header by standing over the columns the rows below it begin at.
+        let detector = TableDetector::new();
+        let mut rows = vec![row_of(vec![
+            measured("Terrace Interval", 40.0, 540.0, 100.0),
+            measured("Underground Outlets", 150.0, 540.0, 100.0),
+            measured("Waterways with percent grade of:", 260.0, 540.0, 100.0),
+        ])];
+        rows.extend(rows_under_a_paragraph_tail().split_off(2));
+        let columns = vec![40.0, 150.0, 260.0];
+        let (kept, _) = detector.set_aside_text_head(rows, columns);
+        assert_eq!(kept.len(), 4);
+    }
+
+    #[test]
+    fn a_region_is_not_trimmed_below_the_rows_a_table_needs() {
+        // Three rows of which the first two read as text: trimming would leave one row, so
+        // the region is left to the checks that follow.
+        let rows = rows_under_a_paragraph_tail()[..3].to_vec();
+        assert_eq!(without_running_text_head(&rows, 3), 0);
     }
 
     #[test]

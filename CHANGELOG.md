@@ -4,6 +4,20 @@
 
 ### Fixed
 
+- **Lines of text above a table are no longer taken into it.** A region that passed as a table
+  could begin with the last lines of the paragraph before it, its caption, or a running head: their
+  words fall where the table's columns do, so each word became a cell (`to | administration | of an
+  | anticonvulsant but | other` above a table's caption and header). The rows at the head of a
+  region that are lines of running text (even word spaces, words rather than figures) are now set
+  aside and go back to the page's text, and the table's columns are read again from what is left.
+  A row of labels over the columns, which spaces like a line of text, stays: a row holding two cells
+  at least, at least 0.6 of whose spans begin at the columns of the rows under it, is the header.
+  The foot of a region is not trimmed: measured, the same rule there moved a dozen more outputs
+  for a lost test. On the 1,403 olmOCR-Bench pages 2 more tests pass and none fewer, and 15 outputs
+  change (page headers, titles and paragraph tails leaving tables; formula-fragment tables of
+  mathematics pages and a dictionary's two columns shift by a row); one of the 200
+  opendataloader-bench documents changes, with no score moving.
+
 - **A small table with a two-line header keeps its columns.** The whitespace reader drops a column
   boundary that more than a tenth of a region's rows run across, except for a header at the top
   (fewer than half the rows, up to four). A table of two header lines over two rows of cells is
