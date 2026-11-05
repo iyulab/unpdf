@@ -803,13 +803,53 @@ fn agl_component_to_unicode(name: &str) -> Option<char> {
         }
     }
 
-    // The Adobe Glyph List.
+    // The Adobe Glyph List, except the pieces of a stacked delimiter it puts in Adobe's own
+    // private-use area.
+    if let Some(piece) = stacked_delimiter_piece(name) {
+        return Some(piece);
+    }
     super::agl_data::AGL
         .binary_search_by(|(n, _)| n.as_bytes().cmp(name.as_bytes()))
         .ok()
         .map(|i| super::agl_data::AGL[i].1)
         .or_else(|| decimal_glyph_name(name))
         .or_else(|| tex_math_extension_glyph(name))
+}
+
+/// One piece of a delimiter drawn tall by stacking (`parenlefttp`, `braceex`, …) as the Unicode
+/// character made for it.
+///
+/// The Adobe Glyph List maps these names to Adobe's corporate-use code points
+/// (`U+F8EB`–`U+F8FE`), which mean nothing to a reader of the text; Unicode has the pieces as
+/// characters of their own (U+239B–U+23AE, "Miscellaneous Technical"), and TeX's glyph list
+/// maps them there. The vertical and horizontal arrow extenders map to the line-extension
+/// characters of the same block.
+fn stacked_delimiter_piece(name: &str) -> Option<char> {
+    Some(match name {
+        "parenlefttp" => '\u{239B}',
+        "parenleftex" => '\u{239C}',
+        "parenleftbt" => '\u{239D}',
+        "parenrighttp" => '\u{239E}',
+        "parenrightex" => '\u{239F}',
+        "parenrightbt" => '\u{23A0}',
+        "bracketlefttp" => '\u{23A1}',
+        "bracketleftex" => '\u{23A2}',
+        "bracketleftbt" => '\u{23A3}',
+        "bracketrighttp" => '\u{23A4}',
+        "bracketrightex" => '\u{23A5}',
+        "bracketrightbt" => '\u{23A6}',
+        "bracelefttp" => '\u{23A7}',
+        "braceleftmid" => '\u{23A8}',
+        "braceleftbt" => '\u{23A9}',
+        "braceex" => '\u{23AA}',
+        "bracerighttp" => '\u{23AB}',
+        "bracerightmid" => '\u{23AC}',
+        "bracerightbt" => '\u{23AD}',
+        "integralex" => '\u{23AE}',
+        "arrowhorizex" => '\u{23AF}',
+        "arrowvertex" => '\u{23D0}',
+        _ => return None,
+    })
 }
 
 /// A glyph of TeX's math extension fonts (`CMEX10`, `CMEX8`, …) named after the character it
@@ -1005,12 +1045,52 @@ mod tests {
         assert_eq!(glyph_name_to_unicode("hatwidest"), Some('\u{02C6}'));
         assert_eq!(glyph_name_to_unicode("tildewide"), Some('\u{02DC}'));
         // The Adobe Glyph List's own names keep their meaning, and a suffix alone names nothing.
-        assert_eq!(glyph_name_to_unicode("bracelefttp"), Some('\u{F8F1}'));
+        assert_eq!(glyph_name_to_unicode("bracelefttp"), Some('\u{23A7}'));
         assert_eq!(glyph_name_to_unicode("big"), None);
         assert_eq!(glyph_name_to_unicode("text"), None);
         assert_eq!(glyph_name_to_unicode("xbig"), None);
         assert_eq!(glyph_name_to_unicode("vextendsingle"), None);
         assert_eq!(glyph_name_to_unicode("bracehtipdownleft"), None);
+    }
+
+    /// The pieces of a stacked delimiter are the Unicode characters made for them, not the
+    /// Adobe Glyph List's private-use values — and none of the list's other names moves.
+    #[test]
+    fn the_pieces_of_a_stacked_delimiter_are_unicode_characters() {
+        assert_eq!(glyph_name_to_unicode("parenlefttp"), Some('\u{239B}'));
+        assert_eq!(glyph_name_to_unicode("parenrightbt"), Some('\u{23A0}'));
+        assert_eq!(glyph_name_to_unicode("bracketrightex"), Some('\u{23A5}'));
+        assert_eq!(glyph_name_to_unicode("braceex"), Some('\u{23AA}'));
+        assert_eq!(glyph_name_to_unicode("bracerightmid"), Some('\u{23AC}'));
+        assert_eq!(glyph_name_to_unicode("integralex"), Some('\u{23AE}'));
+        // No piece name still reads as a private-use code point.
+        for name in [
+            "parenlefttp",
+            "parenleftex",
+            "parenleftbt",
+            "parenrighttp",
+            "parenrightex",
+            "parenrightbt",
+            "bracketlefttp",
+            "bracketleftex",
+            "bracketleftbt",
+            "bracketrighttp",
+            "bracketrightex",
+            "bracketrightbt",
+            "bracelefttp",
+            "braceleftmid",
+            "braceleftbt",
+            "braceex",
+            "bracerighttp",
+            "bracerightmid",
+            "bracerightbt",
+            "integralex",
+        ] {
+            let c = glyph_name_to_unicode(name).unwrap();
+            assert!(('\u{2320}'..='\u{23FF}').contains(&c), "{name} -> {c:?}");
+        }
+        assert_eq!(glyph_name_to_unicode("integraltp"), Some('\u{2320}'));
+        assert_eq!(glyph_name_to_unicode("parenleft"), Some('('));
     }
 
     /// A name of only decimal digits is the character of that value (MuPDF's reading);

@@ -4,6 +4,12 @@
 
 ### Fixed
 
+- **The pieces of a tall delimiter are Unicode characters, not private-use code points.** A
+  parenthesis, bracket or brace drawn by stacking pieces (`parenlefttp`, `braceex`, …) gave the
+  Adobe Glyph List's corporate-use values (`U+F8EB`–`U+F8FE`), which mean nothing to a reader of
+  the text; they now give the characters Unicode made for them (`⎛ ⎜ ⎝ ⎧ ⎨ ⎩ ⎪ ⎡ ⎢ …`,
+  U+239B–U+23AE). On the math benchmark pages that carry them (46 of about 1,400), the
+  replacement is the only change.
 - **The big delimiters, operators and accents of TeX's math extension font are read.** The
   font's own glyph names (`parenleftbig` … `parenleftBigg` for four sizes of a parenthesis,
   `summationtext` / `summationdisplay`, `integraldisplay`, `radicalbig`, `hatwide`, …) are in no
