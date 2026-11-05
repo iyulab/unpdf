@@ -808,6 +808,21 @@ fn agl_component_to_unicode(name: &str) -> Option<char> {
         .binary_search_by(|(n, _)| n.as_bytes().cmp(name.as_bytes()))
         .ok()
         .map(|i| super::agl_data::AGL[i].1)
+        .or_else(|| decimal_glyph_name(name))
+}
+
+/// A glyph named by a bare decimal number (`/72`) stands for the character of that value.
+///
+/// No standard defines the name, but producers that turn bitmap fonts into Type 3 fonts name
+/// each glyph after its character code, and MuPDF reads it so
+/// (`fz_unicode_from_glyph_name`: a name of only decimal digits is the code point). Control
+/// characters stay unnamed, as a `uni` name of one does (`agl_component_to_text`), so a
+/// producer that numbers glyphs by index does not put control codes into the text.
+fn decimal_glyph_name(name: &str) -> Option<char> {
+    if name.is_empty() || name.len() > 7 || !name.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    char::from_u32(name.parse().ok()?).filter(|c| !c.is_control())
 }
 
 #[cfg(test)]
@@ -896,6 +911,24 @@ mod tests {
         assert_eq!(glyph_name_to_unicode("u20AC"), Some('\u{20AC}'));
         // Unknown name
         assert_eq!(glyph_name_to_unicode("nonexistentglyph"), None);
+    }
+
+    /// A name of only decimal digits is the character of that value (MuPDF's reading);
+    /// control characters, values past Unicode and mixed names are not.
+    #[test]
+    fn a_bare_decimal_glyph_name_is_the_character_of_that_value() {
+        assert_eq!(glyph_name_to_unicode("72"), Some('H'));
+        assert_eq!(glyph_name_to_unicode("32"), Some(' '));
+        assert_eq!(glyph_name_to_unicode("12354"), Some('\u{3042}'));
+        assert_eq!(glyph_name_to_unicode("72.alt"), Some('H'));
+        assert_eq!(glyph_name_to_unicode("0"), None);
+        assert_eq!(glyph_name_to_unicode("7"), None);
+        assert_eq!(glyph_name_to_unicode("127"), None);
+        assert_eq!(glyph_name_to_unicode("1114112"), None);
+        assert_eq!(glyph_name_to_unicode("55296"), None); // a surrogate
+        assert_eq!(glyph_name_to_unicode("99999999"), None);
+        assert_eq!(glyph_name_to_unicode("72a"), None);
+        assert_eq!(glyph_name_to_unicode("-72"), None);
     }
 
     /// AGL spec step 1: a variant suffix after the first period does not change

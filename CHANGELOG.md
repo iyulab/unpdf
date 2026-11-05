@@ -4,6 +4,16 @@
 
 ### Fixed
 
+- **A glyph named by a bare decimal number is read as the character of that value.** Tools
+  that convert bitmap fonts into Type 3 fonts name each glyph after its character code
+  (`/72` for `H`), and no standard glyph list has such a name, so a font without a ToUnicode
+  map came out as its codes (control characters and punctuation) instead of its text. Control
+  characters and values beyond Unicode stay unnamed. MuPDF reads these names the same way
+  (`fz_unicode_from_glyph_name`: a name of only decimal digits is the code point). A
+  reference-list page set in such a font went from 987 characters of punctuation to its full
+  text (99 % character agreement with MuPDF); in the roughly 4,700 documents of the public
+  benchmarks and corpora we measure, no other output changes except one page whose font
+  encodes private glyph codes, unreadable before and after.
 - **Hangul fonts that name the `KSCpc-EUC-H` CMap are read.** The PC variant of the EUC-KR
   CMap (ISO 32000-1, Table 118) is what Korean authoring tools of the 1990s wrote for their
   Hangul fonts, usually without a ToUnicode map. Only `KSC-EUC` and `KSCms-UHC` had a table, so
