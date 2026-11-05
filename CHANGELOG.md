@@ -4,6 +4,17 @@
 
 ### Fixed
 
+- **Text set in the Symbol font by a word processor is read.** Word writes bullets, minus
+  signs, Greek letters and math symbols in the Adobe Symbol font as a composite font with no
+  ToUnicode map, whose embedded TrueType program has only the Windows symbol cmap
+  (platform 3, encoding 0). That subtable was never selected, so every such character was
+  dropped: a `lm W⁻¹` or `cd m⁻²` came out with its exponent's minus sign missing, bulleted
+  items lost their bullets, `σ ∂ ∑ Δ` vanished from formulas. For a font named Symbol, the
+  subtable's codes (`0xF000` + a code of the font's own encoding, ISO 32000-1 §9.6.6.4) now read
+  through the Adobe Symbol encoding. Another symbolic font's codes mean something else and are
+  still left unread. Of the 4,700 documents of the public benchmarks and corpora we measure,
+  149 carried such a font; the page statistics now report 19, and of the Symbol-font characters
+  MuPDF reads in them unpdf reads 76 %.
 - **The relation and operator symbols of the AMS symbol fonts are read.** A page set in
   `MSAM`/`MSBM` without a ToUnicode map read `⩽` as `6`, `⩾` as `>` and `ℏ` as `~`, because the
   fonts' own glyph names (`lessorequalslant`, `greaterorequalslant`, `lessorsimilar`,

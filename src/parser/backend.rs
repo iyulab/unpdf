@@ -3331,6 +3331,23 @@ impl<'d> FontRef<'d> {
     }
 }
 
+/// Whether a `/BaseFont` names the Adobe Symbol font (`Symbol`, `SymbolMT`, `Symbol,Bold`, with or
+/// without a subset prefix).
+fn names_adobe_symbol(base_font: &[u8]) -> bool {
+    let name = match base_font {
+        [a, b, c, d, e, f, b'+', rest @ ..]
+            if [a, b, c, d, e, f].iter().all(|c| c.is_ascii_uppercase()) =>
+        {
+            rest
+        }
+        whole => whole,
+    };
+    name == b"Symbol"
+        || name.starts_with(b"SymbolMT")
+        || name.starts_with(b"Symbol,")
+        || name.starts_with(b"Symbol-")
+}
+
 struct RawFontResolver {
     cmap_cache: RwLock<HashMap<FontKey, Option<Arc<ToUnicodeMap>>>>,
     /// The `cmap` table of a composite font's embedded TrueType program, by the Type 0
@@ -4037,7 +4054,10 @@ impl RawFontResolver {
 
         let font_data =
             raw_stream::decompress(font_stream).unwrap_or_else(|_| font_stream.raw_data.clone());
-        parse_truetype_cmap_table(&font_data)
+        // The Adobe Symbol font's symbol cmap holds the codes of its own encoding; no other
+        // symbolic font's do (see `parse_truetype_cmap_table`).
+        let adobe_symbol = font.base_font(doc).is_some_and(names_adobe_symbol);
+        parse_truetype_cmap_table(&font_data, adobe_symbol)
     }
 
     /// The embedded program of a font, and how its codes select glyphs.
@@ -4496,6 +4516,36 @@ fn raw_get_string(doc: &RawDocument, dict: &RawPdfDict, key: &[u8]) -> Option<St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_adobe_symbol_font_is_named_symbol() {
+        for name in [
+            &b"Symbol"[..],
+            b"SymbolMT",
+            b"Symbol,Bold",
+            b"Symbol-Italic",
+            b"ABCDEF+SymbolMT",
+        ] {
+            assert!(
+                names_adobe_symbol(name),
+                "{}",
+                String::from_utf8_lossy(name)
+            );
+        }
+        for name in [
+            &b"Wingdings-Regular"[..],
+            b"SymbolSet",
+            b"MathematicalPi-One",
+            b"ABCDEF+Wingdings",
+            b"",
+        ] {
+            assert!(
+                !names_adobe_symbol(name),
+                "{}",
+                String::from_utf8_lossy(name)
+            );
+        }
+    }
 
     #[test]
     fn test_get_number_from_value() {

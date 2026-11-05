@@ -366,7 +366,14 @@ pub(crate) fn parse_to_unicode_cmap(data: &[u8]) -> Option<ToUnicodeMap> {
 /// For Identity-H CID fonts, the character codes in the content stream are 2-byte
 /// glyph IDs (GIDs). The TrueType cmap table maps Unicode code points → GIDs.
 /// We reverse this to get GID → Unicode.
-pub(crate) fn parse_truetype_cmap_table(data: &[u8]) -> Option<ToUnicodeMap> {
+///
+/// With `adobe_symbol` set (the font is the Adobe Symbol font) and no Unicode subtable, the
+/// Windows symbol subtable (platform 3, encoding 0) is read too: its codes stand at
+/// `0xF000 + code` of the font's built-in encoding (ISO 32000-1 §9.6.6.4 for TrueType symbolic
+/// fonts; the OpenType `cmap` notes), which for Symbol is the Adobe Symbol encoding. Another
+/// symbolic font's codes mean something else, so the subtable is read only for a font that
+/// says it is Symbol.
+pub(crate) fn parse_truetype_cmap_table(data: &[u8], adobe_symbol: bool) -> Option<ToUnicodeMap> {
     if data.len() < 12 {
         return None;
     }
@@ -420,6 +427,7 @@ pub(crate) fn parse_truetype_cmap_table(data: &[u8]) -> Option<ToUnicodeMap> {
     // character above U+FFFF even when a format-12 subtable is right there.
     let mut best_offset: Option<u32> = None;
     let mut best_priority = 0u8;
+    let mut best_is_symbol_subtable = false;
 
     for i in 0..num_subtables {
         let rec = 4 + i * 8;
@@ -439,12 +447,14 @@ pub(crate) fn parse_truetype_cmap_table(data: &[u8]) -> Option<ToUnicodeMap> {
             (0, 4) => 2,  // Unicode full repertoire
             (0, 3) => 2,  // Unicode BMP
             (0, _) => 1,  // Any Unicode
+            (3, 0) if adobe_symbol => 1, // Windows symbol: the font's own codes, last resort
             _ => 0,
         };
 
         if priority > best_priority {
             best_priority = priority;
             best_offset = Some(offset);
+            best_is_symbol_subtable = (platform_id, encoding_id) == (3, 0);
         }
     }
 
@@ -464,6 +474,25 @@ pub(crate) fn parse_truetype_cmap_table(data: &[u8]) -> Option<ToUnicodeMap> {
             log::debug!("Unsupported cmap subtable format {}", format);
             return None;
         }
+    };
+
+    // A symbol subtable's codes are the Symbol font's own: `0xF000 + code` (or `code`) is a place
+    // in the Adobe Symbol encoding, whose characters the table below names.
+    let unicode_to_gid: HashMap<u32, u16> = if best_is_symbol_subtable {
+        unicode_to_gid
+            .into_iter()
+            .filter_map(|(cp, gid)| {
+                let code = match cp {
+                    0xF000..=0xF0FF => cp - 0xF000,
+                    0..=0xFF => cp,
+                    _ => return None,
+                };
+                let mapped = super::core14_data::SYMBOL_UNICODE[code as usize];
+                (mapped != 0).then_some((mapped, gid))
+            })
+            .collect()
+    } else {
+        unicode_to_gid
     };
 
     // Reverse: GID → Unicode using BTreeMap so iteration over unicode_to_gid
@@ -1059,7 +1088,7 @@ endbfchar";
     #[test]
     fn test_parse_truetype_cmap_table_reverses_format4_segments() {
         let font = minimal_truetype_font_with_format4_cmap();
-        let map = parse_truetype_cmap_table(&font).expect("must parse the synthetic font");
+        let map = parse_truetype_cmap_table(&font, false).expect("must parse the synthetic font");
         assert_eq!(map.mappings.get(&5), Some(&"A".to_string()));
         assert_eq!(map.mappings.get(&6), Some(&"B".to_string()));
         assert_eq!(map.mappings.get(&7), Some(&"C".to_string()));
@@ -1072,12 +1101,66 @@ endbfchar";
         // surface in the reversed table — the PUA source codepoint is filtered by
         // sanitize_unicode before the GID->Unicode entry is ever inserted.
         let font = minimal_truetype_font_with_format4_cmap();
-        let map = parse_truetype_cmap_table(&font).expect("must parse the synthetic font");
+        let map = parse_truetype_cmap_table(&font, false).expect("must parse the synthetic font");
         assert_eq!(
             map.mappings.get(&9),
             None,
             "PUA-sourced GID must be dropped, not surfaced as tofu"
         );
+    }
+
+    /// A format-4 body of the Windows symbol subtable the way a Word-made Symbol font writes it:
+    /// each code of the font's own encoding at `0xF000 + code` — `+` (0x2B), `=` (0x3D),
+    /// `≤` (0xA3) — to GIDs 3, 4, 5.
+    fn format4_symbol_subtable() -> Vec<u8> {
+        let codes = [0xF02Bu16, 0xF03D, 0xF0A3, 0xFFFF];
+        let gids = [3u16, 4, 5, 0];
+        let mut subtable = Vec::new();
+        subtable.extend_from_slice(&4u16.to_be_bytes());
+        subtable.extend_from_slice(&0u16.to_be_bytes());
+        subtable.extend_from_slice(&0u16.to_be_bytes());
+        subtable.extend_from_slice(&8u16.to_be_bytes()); // segCountX2
+        subtable.extend_from_slice(&[0; 6]); // searchRange, entrySelector, rangeShift
+        for end in codes {
+            subtable.extend_from_slice(&end.to_be_bytes());
+        }
+        subtable.extend_from_slice(&0u16.to_be_bytes()); // reservedPad
+        for start in codes {
+            subtable.extend_from_slice(&start.to_be_bytes());
+        }
+        for (code, gid) in codes.iter().zip(gids) {
+            let delta = (i32::from(gid) - i32::from(*code)) as i16;
+            subtable.extend_from_slice(&delta.to_be_bytes());
+        }
+        subtable.extend_from_slice(&[0; 8]); // idRangeOffset
+        subtable
+    }
+
+    #[test]
+    fn a_symbol_font_with_only_a_symbol_cmap_reads_through_the_symbol_encoding() {
+        let font = wrap_cmap_subtables(&[(3, 0, format4_symbol_subtable())]);
+        let map = parse_truetype_cmap_table(&font, true).expect("a symbol cmap is read");
+        assert_eq!(map.mappings.get(&3), Some(&"+".to_string()));
+        assert_eq!(map.mappings.get(&4), Some(&"=".to_string()));
+        assert_eq!(map.mappings.get(&5), Some(&"\u{2264}".to_string()));
+    }
+
+    #[test]
+    fn another_symbolic_font_keeps_its_symbol_cmap_unread() {
+        // The codes of a Wingdings-like font are not the Symbol encoding's.
+        let font = wrap_cmap_subtables(&[(3, 0, format4_symbol_subtable())]);
+        assert!(parse_truetype_cmap_table(&font, false).is_none());
+    }
+
+    #[test]
+    fn a_unicode_subtable_is_preferred_over_the_symbol_one() {
+        let font = wrap_cmap_subtables(&[
+            (3, 0, format4_symbol_subtable()),
+            (3, 1, format4_subtable_ascii_and_pua()),
+        ]);
+        let map = parse_truetype_cmap_table(&font, true).expect("the Unicode subtable is read");
+        assert_eq!(map.mappings.get(&5), Some(&"A".to_string()));
+        assert_eq!(map.mappings.get(&4), None);
     }
 
     #[test]
@@ -1086,7 +1169,7 @@ endbfchar";
         // subtable (Windows Unicode full repertoire, BMP + supplementary planes) — a
         // font is free to carry only this one subtable, with no (3,1)/(0,x) sibling.
         let font = wrap_cmap_subtables(&[(3, 10, format12_subtable_ascii_and_supplementary_pua())]);
-        let map = parse_truetype_cmap_table(&font)
+        let map = parse_truetype_cmap_table(&font, false)
             .expect("a sole (3,10) format-12 subtable must be selectable, not skipped");
         assert_eq!(map.mappings.get(&5), Some(&"A".to_string()));
         assert_eq!(map.mappings.get(&6), Some(&"B".to_string()));
@@ -1098,7 +1181,7 @@ endbfchar";
         // (0,4) is the non-Windows pairing for the same full-repertoire format-12
         // subtable — the (3,10)-only fix must not have been platform-3-specific.
         let font = wrap_cmap_subtables(&[(0, 4, format12_subtable_ascii_and_supplementary_pua())]);
-        let map = parse_truetype_cmap_table(&font)
+        let map = parse_truetype_cmap_table(&font, false)
             .expect("a sole (0,4) format-12 subtable must be selectable, not skipped");
         assert_eq!(map.mappings.get(&5), Some(&"A".to_string()));
     }
@@ -1109,7 +1192,7 @@ endbfchar";
         // only format-12's 32-bit groups reach it. GID 9 must still be dropped by
         // sanitize_unicode's plane-specific PUA filter, same as the BMP PUA case.
         let font = wrap_cmap_subtables(&[(3, 10, format12_subtable_ascii_and_supplementary_pua())]);
-        let map = parse_truetype_cmap_table(&font).expect("must parse the synthetic font");
+        let map = parse_truetype_cmap_table(&font, false).expect("must parse the synthetic font");
         assert_eq!(map.mappings.get(&9), None);
     }
 
@@ -1124,7 +1207,7 @@ endbfchar";
             (3, 1, format4_subtable_ascii_and_pua()),
             (3, 10, format12_subtable_ascii_and_supplementary_pua()),
         ]);
-        let map = parse_truetype_cmap_table(&font).expect("must parse the synthetic font");
+        let map = parse_truetype_cmap_table(&font, false).expect("must parse the synthetic font");
         assert_eq!(map.mappings.get(&5), Some(&"A".to_string()));
         assert_eq!(
             map.mappings.get(&10),
@@ -1139,7 +1222,7 @@ endbfchar";
         let cmap_at = 12 + 16;
         for cut in cmap_at + 4..cmap_at + 14 {
             assert!(
-                parse_truetype_cmap_table(&font[..cut]).is_none(),
+                parse_truetype_cmap_table(&font[..cut], false).is_none(),
                 "cut at {cut}"
             );
         }
