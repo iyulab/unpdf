@@ -4,6 +4,17 @@
 
 ### Fixed
 
+- **The big delimiters, operators and accents of TeX's math extension font are read.** The
+  font's own glyph names (`parenleftbig` … `parenleftBigg` for four sizes of a parenthesis,
+  `summationtext` / `summationdisplay`, `integraldisplay`, `radicalbig`, `hatwide`, …) are in no
+  glyph list, so a formula's sum, product and integral signs came out as the letters of their
+  character codes (`X`, `Q`, `Z`) and its big brackets and radicals as other characters. Each
+  name now reads as the character it draws (`∑ ∏ ∫ √ ( ) [ ] { } ⟨ ⟩ ⌊ ⌋ ⌈ ⌉`, the n-ary
+  union, intersection, `⨁ ⨂ ⨀` and the wide accents `ˆ ˜`); the pieces that stack up a tall
+  delimiter keep the glyph list's reading. A line holding only such an operator (the sum sign
+  above its limits) is no longer dropped as a layout fragment. On a benchmark of about 1,400
+  pages, 327 read differently — 319 of them mathematics papers — all through these names and
+  this rule, with no score changing.
 - **A glyph named by a bare decimal number is read as the character of that value.** Tools
   that convert bitmap fonts into Type 3 fonts name each glyph after its character code
   (`/72` for `H`), and no standard glyph list has such a name, so a font without a ToUnicode

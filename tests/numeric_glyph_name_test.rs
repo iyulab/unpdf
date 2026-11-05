@@ -73,3 +73,14 @@ fn a_number_that_is_a_control_code_is_not_a_character() {
     assert!(out.contains('H') && out.contains('i'), "{out:?}");
     assert!(!out.contains('\u{7}'), "{out:?}");
 }
+
+#[test]
+fn the_glyphs_of_a_math_extension_font_read_as_their_characters() {
+    // TeX's CMEX fonts name their glyphs after the character at a larger size; no glyph
+    // list has these names, so big delimiters and operators were dropped from formulas.
+    let out = text_of(&type3_page(
+        &["summationdisplay", "parenleftbigg", "x", "parenrightbigg"],
+        &[0, 1, 2, 3],
+    ));
+    assert!(out.contains("\u{2211}(x)"), "{out:?}");
+}

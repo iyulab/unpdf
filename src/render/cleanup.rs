@@ -433,7 +433,7 @@ impl CleanupPipeline {
                 .iter()
                 .fold(trimmed.to_string(), |line, tag| line.replace(tag, ""))
                 .chars()
-                .any(|c| c.is_alphanumeric());
+                .any(|c| c.is_alphanumeric() || is_big_math_operator(c));
             if has_word {
                 out.push_str(line);
             }
@@ -630,6 +630,19 @@ impl Default for CleanupPipeline {
     }
 }
 
+/// A sum, product, integral, radical or n-ary set operator: a line made of one is a part of a
+/// display equation (the operator stands alone above or beside its limits), not a layout
+/// fragment like an orphan `-`.
+fn is_big_math_operator(c: char) -> bool {
+    matches!(c,
+        '\u{220F}'..='\u{2211}' // ∏ ∐ ∑
+        | '\u{221A}'..='\u{221C}' // √ ∛ ∜
+        | '\u{222B}'..='\u{2233}' // ∫ ∬ ∭ ∮ ∯ ∰ ∱ ∲ ∳
+        | '\u{22C0}'..='\u{22C3}' // ⋀ ⋁ ⋂ ⋃
+        | '\u{2A00}'..='\u{2A1C}' // ⨀ … ⨜: n-ary operators and integrals
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -640,6 +653,18 @@ mod tests {
         let text = "café"; // With combining characters
         let result = pipeline.process(text);
         assert!(result.contains("café"));
+    }
+
+    /// A big operator alone on its line is an equation's part, not a fragment: the sum sign
+    /// above its limits, an integral sign before its integrand.
+    #[test]
+    fn standard_cleanup_keeps_a_big_operator_standing_alone() {
+        let pipeline = CleanupPipeline::from_preset(CleanupPreset::Standard);
+        let text = "Before.\n\n\u{2211}\n\nk,l\u{2208}L\n\n\u{222B}\n\n\u{221A}\n\nAfter.";
+        assert_eq!(pipeline.process(text), text);
+        // …while the fragments the filter exists for are still dropped.
+        let fragments = "Before.\n\n-\n\n\u{2027}\n\nAfter.";
+        assert_eq!(pipeline.process(fragments), "Before.\n\nAfter.");
     }
 
     /// The delimiter row is what makes pipe lines a table; it has no word in it, so the

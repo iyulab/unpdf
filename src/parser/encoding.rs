@@ -809,6 +809,69 @@ fn agl_component_to_unicode(name: &str) -> Option<char> {
         .ok()
         .map(|i| super::agl_data::AGL[i].1)
         .or_else(|| decimal_glyph_name(name))
+        .or_else(|| tex_math_extension_glyph(name))
+}
+
+/// A glyph of TeX's math extension fonts (`CMEX10`, `CMEX8`, …) named after the character it
+/// draws in a larger size.
+///
+/// The fonts' own glyph names — `parenleftbig` … `parenleftBigg` for four sizes of a
+/// parenthesis, `summationtext` / `summationdisplay` for the two sizes of a sum sign,
+/// `hatwide` for an accent over a long base — appear in no glyph list, so a formula's big
+/// delimiters and operators were dropped from the text (on twenty benchmark pages the
+/// extension font carried 189 of the 197 dropped runs). The pieces that stack up a tall
+/// delimiter (`parenlefttp`, `braceex`) are in the Adobe Glyph List already and are not
+/// handled here. The n-ary operators map to their n-ary Unicode forms (U+22C0–U+22C3,
+/// U+2A00–U+2A06) except the sum, product and integral, which have only one.
+fn tex_math_extension_glyph(name: &str) -> Option<char> {
+    for size in ["bigg", "Bigg", "big", "Big"] {
+        if let Some(base) = name.strip_suffix(size) {
+            return match base {
+                "parenleft" => Some('('),
+                "parenright" => Some(')'),
+                "bracketleft" => Some('['),
+                "bracketright" => Some(']'),
+                "braceleft" => Some('{'),
+                "braceright" => Some('}'),
+                "angbracketleft" => Some('\u{27E8}'),
+                "angbracketright" => Some('\u{27E9}'),
+                "floorleft" => Some('\u{230A}'),
+                "floorright" => Some('\u{230B}'),
+                "ceilingleft" => Some('\u{2308}'),
+                "ceilingright" => Some('\u{2309}'),
+                "slash" => Some('/'),
+                "backslash" => Some('\\'),
+                "radical" => Some('\u{221A}'),
+                _ => None,
+            };
+        }
+    }
+    for size in ["display", "text"] {
+        if let Some(base) = name.strip_suffix(size) {
+            return match base {
+                "summation" => Some('\u{2211}'),
+                "product" => Some('\u{220F}'),
+                "coproduct" => Some('\u{2210}'),
+                "integral" => Some('\u{222B}'),
+                "contintegral" => Some('\u{222E}'),
+                "union" => Some('\u{22C3}'),
+                "intersection" => Some('\u{22C2}'),
+                "unionsq" => Some('\u{2A06}'),
+                "unionmulti" => Some('\u{2A04}'),
+                "logicaland" => Some('\u{22C0}'),
+                "logicalor" => Some('\u{22C1}'),
+                "circleplus" => Some('\u{2A01}'),
+                "circlemultiply" => Some('\u{2A02}'),
+                "circledot" => Some('\u{2A00}'),
+                _ => None,
+            };
+        }
+    }
+    match name {
+        "hatwide" | "hatwider" | "hatwidest" => Some('\u{02C6}'),
+        "tildewide" | "tildewider" | "tildewidest" => Some('\u{02DC}'),
+        _ => None,
+    }
 }
 
 /// A glyph named by a bare decimal number (`/72`) stands for the character of that value.
@@ -911,6 +974,43 @@ mod tests {
         assert_eq!(glyph_name_to_unicode("u20AC"), Some('\u{20AC}'));
         // Unknown name
         assert_eq!(glyph_name_to_unicode("nonexistentglyph"), None);
+    }
+
+    /// The glyph names of TeX's math extension fonts, which no glyph list has.
+    #[test]
+    fn the_names_of_the_math_extension_fonts_are_their_characters() {
+        for size in ["big", "Big", "bigg", "Bigg"] {
+            assert_eq!(
+                glyph_name_to_unicode(&format!("parenleft{size}")),
+                Some('(')
+            );
+            assert_eq!(
+                glyph_name_to_unicode(&format!("braceright{size}")),
+                Some('}')
+            );
+            assert_eq!(
+                glyph_name_to_unicode(&format!("angbracketleft{size}")),
+                Some('\u{27E8}')
+            );
+            assert_eq!(
+                glyph_name_to_unicode(&format!("radical{size}")),
+                Some('\u{221A}')
+            );
+        }
+        assert_eq!(glyph_name_to_unicode("summationtext"), Some('\u{2211}'));
+        assert_eq!(glyph_name_to_unicode("summationdisplay"), Some('\u{2211}'));
+        assert_eq!(glyph_name_to_unicode("integraldisplay"), Some('\u{222B}'));
+        assert_eq!(glyph_name_to_unicode("uniondisplay"), Some('\u{22C3}'));
+        assert_eq!(glyph_name_to_unicode("circleplustext"), Some('\u{2A01}'));
+        assert_eq!(glyph_name_to_unicode("hatwidest"), Some('\u{02C6}'));
+        assert_eq!(glyph_name_to_unicode("tildewide"), Some('\u{02DC}'));
+        // The Adobe Glyph List's own names keep their meaning, and a suffix alone names nothing.
+        assert_eq!(glyph_name_to_unicode("bracelefttp"), Some('\u{F8F1}'));
+        assert_eq!(glyph_name_to_unicode("big"), None);
+        assert_eq!(glyph_name_to_unicode("text"), None);
+        assert_eq!(glyph_name_to_unicode("xbig"), None);
+        assert_eq!(glyph_name_to_unicode("vextendsingle"), None);
+        assert_eq!(glyph_name_to_unicode("bracehtipdownleft"), None);
     }
 
     /// A name of only decimal digits is the character of that value (MuPDF's reading);
