@@ -4,6 +4,17 @@
 
 ### Fixed
 
+- **A table's caption between its rules is not a row of it.** In a table ruled across but not
+  down, a caption drawn inside the first band (`Table 4. Top wheat cultivars planted in Kansas by
+  district and percent of seeded acreage.`) is one run across the whole width: it crosses every
+  gap between the columns, and being a sentence rather than a label it was not excused, so the
+  table lost the columns that its header cells span (three groups of a name and a share came
+  out as two columns, then four). A first row that is one run beginning `Table` or `Figure`
+  and a number, with at least three words after it, is now left out of the table and stays text
+  above it. On the 1,403 olmOCR-Bench pages 9 more table tests pass and none fewer, and 3
+  outputs change — that table (now six columns) and two more whose caption left the first
+  row; none of the 200 opendataloader-bench documents changes.
+
 - **Cells spread across a row by character spacing are cells.** A producer can set a table row's
   cells apart with `Tc` instead of moving the text position: `4.089 Tc (\)D) Tj` puts four ems
   after every glyph, so two glyphs stand 41 pt apart. Read as the letters of one word, they

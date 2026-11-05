@@ -215,8 +215,12 @@ pub(crate) fn grids(
                 .iter()
                 .flat_map(|b| b.2.iter().cloned())
                 .collect();
-            // A section's heading under the rule its section draws is not the table's row.
-            let kept = without_heading_ends(&all);
+            // A section's heading under the rule its section draws is not the table's row, nor
+            // is the table's own caption, drawn between its rules.
+            let mut kept = without_heading_ends(&all);
+            while kept.len() > 1 && is_caption_row(&all[kept.start]) {
+                kept.start += 1;
+            }
             let rows: Vec<&TableRowData> = all[kept.clone()].iter().collect();
             // The grid stops halfway to a heading it leaves out, so the heading is not binned
             // into the table's first or last row.
@@ -255,6 +259,43 @@ pub(crate) fn grids(
     out.sort_by(|a, b| b.top_y.total_cmp(&a.top_y));
     out
 }
+
+/// Whether a row is a table's caption — one run of text that begins `Table 4.`, `Figure S2:`
+/// and the like: what a caption says is a sentence, so it must not weigh on where the columns
+/// of the table under it are.
+fn is_caption_row(row: &TableRowData) -> bool {
+    if row.spans.is_empty() || row.spans.iter().any(|s| s.text.trim().is_empty()) {
+        return false;
+    }
+    let text: String = row
+        .spans
+        .iter()
+        .map(|s| s.text.trim())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut words = text.split_whitespace();
+    let (Some(label), Some(number)) = (words.next(), words.next()) else {
+        return false;
+    };
+    let label = label.trim_end_matches(['.', ':']);
+    let is_label = ["table", "tab", "figure", "fig"]
+        .iter()
+        .any(|l| label.eq_ignore_ascii_case(l));
+    let number = number.trim_end_matches(['.', ':', ')']);
+    let is_number = !number.is_empty()
+        && number.len() <= 4
+        && number.chars().all(|c| c.is_ascii_alphanumeric())
+        && number
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_digit() || c.is_ascii_uppercase());
+    // A caption has a title after its number: a row of cells that happens to begin `Table 3`
+    // does not run on.
+    is_label && is_number && words.count() >= LABEL_WORDS_MIN
+}
+
+/// The words a caption holds after its number, at least.
+const LABEL_WORDS_MIN: usize = 3;
 
 /// Whether a band is a page's text set in columns (see [`set_in_page_columns`]) rather than rows
 /// of a table.
@@ -1346,6 +1387,80 @@ mod tests {
         spans.push(span("Table 1", 105.0, 520.0));
         let grids = grids(&rule_stacks(&rules), &spans, &[]);
         assert!(grids.iter().all(|g| g.top_y <= 500.0), "{grids:?}");
+    }
+
+    /// Cultivars at the left of a group and their shares at its right, with a header that
+    /// stands across both: a caption of eleven words in the first band crosses every gap of
+    /// the table under it, and is not a label, so it closed them.
+    fn grouped_shares(caption: &str) -> (Vec<GraphicsLine>, Vec<TextSpan>) {
+        let rules = vec![
+            h(520.0, 100.0, 500.0),
+            h(484.0, 100.0, 500.0),
+            h(380.0, 100.0, 500.0),
+        ];
+        let mut spans = vec![span(caption, 105.0, 506.0)];
+        for (k, group) in [
+            ("DISTRICT 10 (NORTHWEST)", 105.0),
+            ("DISTRICT 40 (NORTH CENTRAL)", 300.0),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let _ = k;
+            spans.push(span(group.0, group.1, 488.0));
+        }
+        for (r, (a, b, c, d)) in [
+            ("Jagger", "23.0", "Jagger", "23.6"),
+            ("TAM 107", "13.5", "2137", "16.0"),
+            ("2137", "12.9", "Karl/Karl 92", "12.2"),
+            ("Trego-HWWW", "7.5", "Dominator", "6.5"),
+            ("AgriPro Thunderbolt", "4.3", "2163", "1.5"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let y = 470.0 - r as f32 * 12.0;
+            spans.push(span(a, 105.0, y));
+            spans.push(span(b, 190.0, y));
+            spans.push(span(c, 300.0, y));
+            spans.push(span(d, 390.0, y));
+        }
+        (rules, spans)
+    }
+
+    #[test]
+    fn a_caption_inside_the_first_band_does_not_close_the_columns_under_it() {
+        let (rules, spans) = grouped_shares(
+            "Table 4. Top wheat cultivars planted in Kansas by district and percent of acreage.",
+        );
+        let grids = grids(&rule_stacks(&rules), &spans, &[]);
+        assert_eq!(grids.len(), 1, "{grids:?}");
+        // The cultivar and its share are cells of their own in each group: four columns.
+        assert_eq!(grids[0].column_count(), 4, "{:?}", grids[0].col_bounds);
+        // The caption stays out of the grid.
+        assert!(grids[0].top_y < 506.0, "{:?}", grids[0].top_y);
+    }
+
+    #[test]
+    fn a_row_that_begins_like_a_caption_but_holds_cells_is_a_row() {
+        let caption = |text: &str| TableRowData {
+            y: 500.0,
+            spans: vec![span(text, 105.0, 500.0)],
+            sources: vec![0],
+        };
+        assert!(is_caption_row(&caption(
+            "Table 4. Top wheat cultivars planted in Kansas"
+        )));
+        assert!(is_caption_row(&caption(
+            "Figure S2: Sample composition by age and gender"
+        )));
+        assert!(!is_caption_row(&caption("Table 3")));
+        assert!(!is_caption_row(&caption(
+            "Tables of figures and data in the report body"
+        )));
+        assert!(!is_caption_row(&caption(
+            "Mineral content of the soil in ten samples"
+        )));
     }
 
     /// Rules with a real gap between them are two rules: two tables side by side, not one.
