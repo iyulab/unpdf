@@ -4,6 +4,17 @@
 
 ### Fixed
 
+- **Hangul fonts that name the `KSCpc-EUC-H` CMap are read.** The PC variant of the EUC-KR
+  CMap (ISO 32000-1, Table 118) is what Korean authoring tools of the 1990s wrote for their
+  Hangul fonts, usually without a ToUnicode map. Only `KSC-EUC` and `KSCms-UHC` had a table, so
+  a font naming `KSCpc-EUC-H` gave no text at all: a five-page journal article lost the
+  body of three of its pages (about 60 % of its characters) without a trace in the output.
+  Its character codes now resolve through the Adobe-Korea1 collection like the other Korean
+  CMaps, and the article reads the same text as MuPDF on every page. The other legacy
+  CMaps of Table 118 that still have no table (seventeen, about 176,000 code points in all) are
+  now listed in a test with their status, so a gap is a choice that is written down; none of
+  the roughly 4,700 documents of the public benchmarks and corpora we measure uses one.
+
 - **Text drawn again on top of itself is read once.** A producer can make a word bold, or give
   it a shadow, by showing the same string a second time in the same place (exactly, or a
   fraction of a point off). The page shows one word; the content stream holds two runs, and

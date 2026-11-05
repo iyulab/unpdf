@@ -290,6 +290,63 @@ mod tests {
         assert_eq!(base_cmap_name("Identity-H"), "Identity");
     }
 
+    /// The legacy (non-Unicode) predefined CMaps of ISO 32000-1 Table 118, by character
+    /// collection, with whether this crate ships a table for each. A font naming one that is
+    /// not shipped yields no text (see the module docs), so the list says so out loud: shipping
+    /// one more means a line in `build.rs` and the flag flipped here. A CMap is added when a
+    /// real file needs it — each is 30–90 KB of table in every build, wasm included.
+    const LEGACY_CMAPS: &[(&str, &str, bool)] = &[
+        ("Korea1", "KSC", false),
+        ("Korea1", "KSC-EUC", true),
+        ("Korea1", "KSCms-UHC", true),
+        ("Korea1", "KSCms-UHC-HW", false),
+        ("Korea1", "KSCpc-EUC", true),
+        ("Japan1", "83pv-RKSJ", false),
+        ("Japan1", "90ms-RKSJ", true),
+        ("Japan1", "90msp-RKSJ", false),
+        ("Japan1", "90pv-RKSJ", false),
+        ("Japan1", "Add-RKSJ", false),
+        ("Japan1", "EUC", false),
+        ("Japan1", "Ext-RKSJ", false),
+        ("Japan1", "H", false),
+        ("GB1", "GB-EUC", false),
+        ("GB1", "GBpc-EUC", false),
+        ("GB1", "GBK-EUC", true),
+        ("GB1", "GBKp-EUC", false),
+        ("GB1", "GBK2K", false),
+        ("CNS1", "B5pc", false),
+        ("CNS1", "HKscs-B5", false),
+        ("CNS1", "ETen-B5", true),
+        ("CNS1", "ETenms-B5", false),
+        ("CNS1", "CNS-EUC", false),
+    ];
+
+    #[test]
+    fn the_legacy_cmaps_of_the_spec_are_shipped_or_listed_as_not() {
+        for &(ordering, name, shipped) in LEGACY_CMAPS {
+            // `H` is a whole name (ISO-2022-JP), the others take a writing-mode suffix.
+            let encodings: Vec<String> = if name == "H" {
+                vec!["H".into(), "V".into()]
+            } else {
+                vec![format!("{name}-H"), format!("{name}-V")]
+            };
+            for encoding in encodings {
+                assert_eq!(
+                    resolves_cids(&encoding, ordering),
+                    shipped,
+                    "{encoding} ({ordering}): table shipped = {shipped}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn decodes_euc_kr_through_the_pc_variant() {
+        // The same KS X 1001 syllables, with the PC variant's own code space.
+        let decoded = decode("KSCpc-EUC-H", "Adobe", "Korea1", &[0xC7, 0xD1, 0xB1, 0xDB]);
+        assert_eq!(decoded.as_deref(), Some("한글"));
+    }
+
     #[test]
     fn decodes_euc_kr() {
         // C7D1 B1DB = "한글" in EUC-KR

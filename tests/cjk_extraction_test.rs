@@ -67,6 +67,14 @@ fn test_type0_ksc_euc_h_decodes_korean() {
     assert_eq!(doc.plain_text().trim(), "검야ㅓ");
 }
 
+/// `KSCpc-EUC-H` — what Korean authoring tools of the 1990s wrote for their Hangul fonts —
+/// reads the same EUC-KR bytes. A font naming it without a ToUnicode used to give no text.
+#[test]
+fn test_type0_kscpc_euc_h_decodes_korean() {
+    let doc = unpdf::parse_bytes(&predefined_cmap_pdf("KSCpc-EUC-H")).unwrap();
+    assert_eq!(doc.plain_text().trim(), "검야ㅓ");
+}
+
 /// A predefined CMap outside the supported set must not fall back to byte-wise
 /// Latin-1 decoding — that produced mojibake like `°Ë ,¥õ ²ô`. Emitting nothing is
 /// the correct behaviour for a composite font with no usable CMap.

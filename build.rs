@@ -14,6 +14,7 @@ use std::path::Path;
 const PREDEFINED_CMAPS: &[(&str, &str, &str)] = &[
     ("KOREA1", "KSC-EUC", "KOREA1_KSC_EUC"),
     ("KOREA1", "KSCms-UHC", "KOREA1_KSCMS_UHC"),
+    ("KOREA1", "KSCpc-EUC", "KOREA1_KSCPC_EUC"),
     ("JAPAN1", "90ms-RKSJ", "JAPAN1_90MS_RKSJ"),
     ("GB1", "GBK-EUC", "GB1_GBK_EUC"),
     ("CNS1", "ETen-B5", "CNS1_ETEN_B5"),
