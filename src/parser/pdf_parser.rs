@@ -989,6 +989,16 @@ fn extract_page_with_tables_fn(
         let grid = &super::lattice::with_header_above(grid, &spans);
         let grid = &super::lattice::with_unruled_rows(grid, &spans);
         if let Some((table, consumed)) = super::lattice::build_table(grid, &spans) {
+            // Rules that hold hardly any cell of text are a frame round text, not a table: the
+            // text is the page's own and is read as such, lines as printed -- not as the one
+            // run a cell makes of its lines.
+            if is_mostly_empty(&table) {
+                log::debug!(
+                    "Ruled grid at y={} holds hardly any cell of text -- left to the page's text",
+                    grid.top_y
+                );
+                continue;
+            }
             let extent = Extent {
                 top: grid.top_y,
                 left: grid.left_x,

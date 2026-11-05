@@ -4,6 +4,18 @@
 
 ### Fixed
 
+- **Rules that frame text are not a table.** A box drawn round a page of typewritten text — a
+  report printed with `|` and `=`, a form's instructions — gives a ruled grid whose cells are
+  empty but one or two. It was kept as a table that holds hardly any text and written as one
+  paragraph per row, so the cell's sixty-odd lines became a single run (4,698 characters, no
+  line break). A ruled grid with that little text in it (the test a stream-detected table
+  already passed: two rows and two columns at least, fewer than a quarter of the cells filled,
+  a top row that names no column) is now left to the page's text, which keeps the lines as
+  printed (a fixed-pitch listing is a code block). On the 1,403 olmOCR-Bench pages no test
+  changes, 15 outputs change — that page (65 lines instead of 1), and chart and diagram pages
+  whose axis numbers and labels were a double-spaced row of a frame (now their own lines) —
+  and none of the 200 opendataloader-bench documents does.
+
 - **A table's caption between its rules is not a row of it.** In a table ruled across but not
   down, a caption drawn inside the first band (`Table 4. Top wheat cultivars planted in Kansas by
   district and percent of seeded acreage.`) is one run across the whole width: it crosses every
