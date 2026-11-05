@@ -1739,10 +1739,9 @@ impl<'a> LayoutAnalyzer<'a> {
                     // each part placed where the array draws it — the adjustment becomes the
                     // next part's lead. Only when every string's glyph widths are known, since
                     // the next part starts where the previous one's advance ends.
-                    let splittable = op.operator == "TJ"
-                        && !self
-                            .backend
-                            .is_vertical_font(op.scope(page_id), &text_state.font_resource)
+                    let measured = !self
+                        .backend
+                        .is_vertical_font(op.scope(page_id), &text_state.font_resource)
                         && items.iter().all(|item| match item {
                             PdfValue::Str(bytes) => self
                                 .backend
@@ -1750,7 +1749,25 @@ impl<'a> LayoutAnalyzer<'a> {
                                 .is_some(),
                             _ => true,
                         });
-                    let parts = if splittable {
+                    let splittable = op.operator == "TJ" && measured;
+                    // Character spacing wide enough to be a cell gap does the same by `Tc`: a
+                    // row's cells spread across it by the spacing after each glyph, which is
+                    // room between cells and not between letters. Each glyph is then a part
+                    // of its own, drawn where the spacing leaves it.
+                    let spread = measured
+                        && matches!(op.operator.as_str(), "Tj" | "TJ")
+                        && text_state.params.size > 0.0
+                        && text_state.params.char_spacing / text_state.params.size * 1000.0
+                            >= TC_CELL_GAP;
+                    let glyph_strings;
+                    let parts = if spread {
+                        glyph_strings = one_glyph_strings(items, |bytes| {
+                            self.backend
+                                .glyph_advances(op.scope(page_id), &text_state.font_resource, bytes)
+                                .is_some_and(|glyphs| glyphs.len() == bytes.len())
+                        });
+                        split_before_each_string(&glyph_strings)
+                    } else if splittable {
                         split_at_cell_gaps(items)
                     } else {
                         vec![items]
@@ -1944,8 +1961,19 @@ impl<'a> LayoutAnalyzer<'a> {
                             * ctm_y_scale(&ctm);
                         // The run's extent in device space, from its first glyph to where it
                         // left the text position.
+                        // Spread by `Tc`, a glyph's own extent stops where it does: the spacing
+                        // after it is room to the next one, not part of the glyph's run.
+                        let trailing = if spread {
+                            text_state.params.char_spacing * text_state.params.horizontal_scale
+                        } else {
+                            0.0
+                        };
                         let end = advance.map(|run| {
                             let end = run + origin;
+                            let end = Shift {
+                                tx: end.tx - trailing,
+                                ..end
+                            };
                             let (ex, ey) = text_matrix.point(end.tx, rise + end.ty);
                             apply_ctm(&ctm, ex, ey)
                         });
@@ -1962,6 +1990,10 @@ impl<'a> LayoutAnalyzer<'a> {
                             })
                             .map(|_| {
                                 let end = ink_advance + origin;
+                                let end = Shift {
+                                    tx: end.tx - trailing,
+                                    ..end
+                                };
                                 let (ex, ey) = text_matrix.point(end.tx, rise + end.ty);
                                 let (ex, ey) = apply_ctm(&ctm, ex, ey);
                                 (ex - x).hypot(ey - y)
@@ -2011,7 +2043,13 @@ impl<'a> LayoutAnalyzer<'a> {
                             let mut span =
                                 TextSpan::new(text, x, y, effective_size, text_state.font.clone());
                             span.links = text_links;
-                            span.letter_spacing = if spacing_proven { letter_room } else { 0.0 };
+                            // Spread by `Tc` the glyphs are parts of their own: the room between
+                            // them is between spans now, not between letters.
+                            span.letter_spacing = if spacing_proven && !spread {
+                                letter_room
+                            } else {
+                                0.0
+                            };
                             // A vertical font writes down the page by design and is read as it
                             // always was; any other run not read left to right carries its
                             // direction, to be joined along it.
@@ -3550,6 +3588,46 @@ fn split_at_cell_gaps(items: &[PdfValue]) -> Vec<&[PdfValue]> {
                 }
             }
             _ => {}
+        }
+    }
+    parts.push(&items[start..]);
+    parts
+}
+
+/// Character spacing at least this wide (thousandths of the font size after every glyph) is
+/// room between cells, not letters: three ems is far beyond any tracking, and a row's cells
+/// spread across a table by it stand that far apart.
+const TC_CELL_GAP: f32 = 3000.0;
+
+/// `items` with each string of several single-byte glyphs (`one_byte_glyphs` says so of its
+/// bytes) cut into one string per glyph; anything else is kept as it is.
+fn one_glyph_strings(items: &[PdfValue], one_byte_glyphs: impl Fn(&[u8]) -> bool) -> Vec<PdfValue> {
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        match item {
+            PdfValue::Str(bytes) if bytes.len() > 1 && one_byte_glyphs(bytes) => {
+                out.extend(bytes.iter().map(|&b| PdfValue::Str(vec![b])));
+            }
+            other => out.push(other.clone()),
+        }
+    }
+    out
+}
+
+/// The parts of `items` that begin at each string after the first. The adjustments between two
+/// strings go to the part of the string after them, as [`split_at_cell_gaps`] does.
+fn split_before_each_string(items: &[PdfValue]) -> Vec<&[PdfValue]> {
+    let mut parts = Vec::new();
+    let mut start = 0;
+    // Just after the last string seen: where the next part starts.
+    let mut after_string: Option<usize> = None;
+    for (i, item) in items.iter().enumerate() {
+        if matches!(item, PdfValue::Str(_)) {
+            if let Some(boundary) = after_string {
+                parts.push(&items[start..boundary]);
+                start = boundary;
+            }
+            after_string = Some(i + 1);
         }
     }
     parts.push(&items[start..]);

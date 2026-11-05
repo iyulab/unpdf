@@ -110,3 +110,21 @@ fn small_capitals_after_a_larger_initial_stay_one_word() {
     let text = text_of("0 Tc (D) Tj 8 0 0 8 45 300 Tm .25 Tc (EFINITIONS) Tj");
     assert!(!text.contains("E F"), "{text}");
 }
+
+/// Character spacing of several ems is room between cells: `4 Tc` puts four ems after every
+/// glyph, so the two glyphs of `(ab)` stand 40 pt apart and read as two pieces of text.
+#[test]
+fn character_spacing_of_several_ems_separates_what_it_spreads() {
+    assert_eq!(text_of("4 Tc (ab) Tj").trim(), "a b");
+    assert_eq!(text_of("4 Tc [(a)(b)] TJ").trim(), "a b");
+    // The glyphs of one string and the strings of one array are each placed where the
+    // spacing leaves them: three pieces in all, in order.
+    assert_eq!(text_of("4 Tc [(ab)(c)] TJ").trim(), "a b c");
+}
+
+/// Tracked type — spacing up to an em or two — is letters of one word, however wide.
+#[test]
+fn character_spacing_of_an_em_or_two_keeps_letters_together() {
+    assert_eq!(text_of(".5 Tc (ab) Tj").trim(), "ab");
+    assert_eq!(text_of("2 Tc (ab) Tj").trim(), "ab");
+}

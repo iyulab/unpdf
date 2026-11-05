@@ -4,6 +4,22 @@
 
 ### Fixed
 
+- **Cells spread across a row by character spacing are cells.** A producer can set a table row's
+  cells apart with `Tc` instead of moving the text position: `4.089 Tc (\)D) Tj` puts four ems
+  after every glyph, so two glyphs stand 41 pt apart. Read as the letters of one word, they
+  became one run that crossed every gap between the columns (`(NORTHWEST)DISTRICT 40`), and a
+  ruled table lost its columns. Character spacing of three ems or more after a glyph is now room
+  between cells, as a `TJ` adjustment of that size already was: each glyph of a measured
+  single-byte font is its own run, placed where the spacing leaves it, and its extent stops
+  where the glyph does. Tracking up to two ems is still the letters of one word. On the 1,403
+  olmOCR-Bench pages 5 more table tests pass and none fewer (a three-district table of cultivars
+  goes from 2 columns to 4, its header cells no longer run into each other) and 23 outputs change:
+  a timetable's stop numbers at both margins (`44` → `4 … 4`), digits of a table's figures set in
+  their own columns (`84` → `8 | 4`), words that `Tc` had glued around a formula's symbols, and a
+  chart axis whose labels were joined (`01234567` → `0 1 2 3 4 5 6 7`); one table of marks
+  across regions loses three of its seven columns where its figures were spread by `Tc`.
+  None of the 200 opendataloader-bench documents moves in score (3 outputs change, in formulas).
+
 - **Lines of text above a table are no longer taken into it.** A region that passed as a table
   could begin with the last lines of the paragraph before it, its caption, or a running head: their
   words fall where the table's columns do, so each word became a cell (`to | administration | of an
