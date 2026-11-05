@@ -814,6 +814,7 @@ fn agl_component_to_unicode(name: &str) -> Option<char> {
         .map(|i| super::agl_data::AGL[i].1)
         .or_else(|| decimal_glyph_name(name))
         .or_else(|| tex_math_extension_glyph(name))
+        .or_else(|| ams_math_symbol(name))
 }
 
 /// One piece of a delimiter drawn tall by stacking (`parenlefttp`, `braceex`, …) as the Unicode
@@ -848,6 +849,41 @@ fn stacked_delimiter_piece(name: &str) -> Option<char> {
         "integralex" => '\u{23AE}',
         "arrowhorizex" => '\u{23AF}',
         "arrowvertex" => '\u{23D0}',
+        _ => return None,
+    })
+}
+
+/// A symbol of the AMS symbol fonts (`MSAM`, `MSBM`) by the name the font gives its glyph.
+///
+/// Those names (`lessorequalslant`, `lessorsimilar`, `triangleleftsld`, …) are in no glyph
+/// list, so a page set with them and carrying no `ToUnicode` map read as the letter of the
+/// glyph's code (`6` for `⩽`, `>` for `⩾`). Only names that are in use in the benchmark
+/// papers and whose character is not in doubt are listed. The end-of-proof box (`square`) is
+/// left out: the render stage reads a box as a list bullet, which turns a proof's last mark
+/// into a bullet at the head of the next paragraph.
+fn ams_math_symbol(name: &str) -> Option<char> {
+    Some(match name {
+        "lessorsimilar" => '\u{2272}',
+        "greaterorsimilar" => '\u{2273}',
+        "lessorequalslant" => '\u{2A7D}',
+        "greaterorequalslant" => '\u{2A7E}',
+        "defines" => '\u{225C}',
+        "triangleleftsld" => '\u{25C0}',
+        "trianglerightsld" => '\u{25B6}',
+        "triangleleft" => '\u{25C1}',
+        "triangleright" => '\u{25B7}',
+        "triangleinv" => '\u{25BD}',
+        "intercal" => '\u{22BA}',
+        "circleasterisk" => '\u{229B}',
+        "squaremultiply" => '\u{22A0}',
+        "measuredangle" => '\u{2221}',
+        "subsetnoteql" => '\u{2288}',
+        "notbar" => '\u{2224}',
+        "multicloseright" => '\u{22CA}',
+        "multicloseleft" => '\u{22C9}',
+        "planckover2pi1" => '\u{210F}',
+        "notarrowright" => '\u{219B}',
+        "notlessequal" => '\u{2270}',
         _ => return None,
     })
 }
@@ -1051,6 +1087,20 @@ mod tests {
         assert_eq!(glyph_name_to_unicode("xbig"), None);
         assert_eq!(glyph_name_to_unicode("vextendsingle"), None);
         assert_eq!(glyph_name_to_unicode("bracehtipdownleft"), None);
+    }
+
+    /// The names of the AMS symbol fonts' glyphs, which no glyph list has.
+    #[test]
+    fn the_names_of_the_ams_symbol_fonts_are_their_characters() {
+        // The end-of-proof box stays unread: the render stage turns a box into a list bullet.
+        assert_eq!(glyph_name_to_unicode("square"), None);
+        assert_eq!(glyph_name_to_unicode("lessorequalslant"), Some('\u{2A7D}'));
+        assert_eq!(glyph_name_to_unicode("greaterorsimilar"), Some('\u{2273}'));
+        assert_eq!(glyph_name_to_unicode("trianglerightsld"), Some('\u{25B6}'));
+        assert_eq!(glyph_name_to_unicode("planckover2pi1"), Some('\u{210F}'));
+        // The list's own names keep their reading.
+        assert_eq!(glyph_name_to_unicode("lessequal"), Some('\u{2264}'));
+        assert_eq!(glyph_name_to_unicode("squared"), None);
     }
 
     /// The pieces of a stacked delimiter are the Unicode characters made for them, not the

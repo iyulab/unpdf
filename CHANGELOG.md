@@ -4,6 +4,13 @@
 
 ### Fixed
 
+- **The relation and operator symbols of the AMS symbol fonts are read.** A page set in
+  `MSAM`/`MSBM` without a ToUnicode map read `⩽` as `6`, `⩾` as `>` and `ℏ` as `~`, because the
+  fonts' own glyph names (`lessorequalslant`, `greaterorequalslant`, `lessorsimilar`,
+  `greaterorsimilar`, `defines`, `planckover2pi1`, `subsetnoteql`, …) are in no glyph list. Twenty-one
+  of them now read as their characters (`⩽ ⩾ ≲ ≳ ≜ ℏ ⊈ ◀ ▶ ⊺ ⊛ ⊠ ∡ ∤ ⋊ ⋉ ↛ ≰ …`). The end-of-proof
+  box is left out, as the output turns a box into a list bullet. On the math benchmark pages that
+  carry them (25 of about 1,400), the symbols are the only change.
 - **The pieces of a tall delimiter are Unicode characters, not private-use code points.** A
   parenthesis, bracket or brace drawn by stacking pieces (`parenlefttp`, `braceex`, …) gave the
   Adobe Glyph List's corporate-use values (`U+F8EB`–`U+F8FE`), which mean nothing to a reader of
