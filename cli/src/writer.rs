@@ -78,19 +78,19 @@ impl MultiFormatWriter {
         let has = |f: OutputFormat| formats.contains(&f);
         let md_path = has(OutputFormat::Markdown).then(|| out_dir.join("extract.md"));
         let md = if let Some(ref p) = md_path {
-            Some(BufWriter::new(File::create(p)?))
+            Some(BufWriter::new(crate::output::create(p)?))
         } else {
             None
         };
         let txt_path = has(OutputFormat::Text).then(|| out_dir.join("extract.txt"));
         let txt = if let Some(ref p) = txt_path {
-            Some(BufWriter::new(File::create(p)?))
+            Some(BufWriter::new(crate::output::create(p)?))
         } else {
             None
         };
         let json_path = has(OutputFormat::Json).then(|| out_dir.join("content.json"));
         let json = if let Some(ref p) = json_path {
-            Some(BufWriter::new(File::create(p)?))
+            Some(BufWriter::new(crate::output::create(p)?))
         } else {
             None
         };
@@ -125,7 +125,7 @@ impl MultiFormatWriter {
             return Ok(());
         }
         if !self.images_created {
-            std::fs::create_dir_all(&dir)?;
+            crate::output::create_dir_all(&dir)?;
             self.images_created = true;
         }
 
@@ -139,7 +139,7 @@ impl MultiFormatWriter {
                     redirects.insert(id.clone(), e.get().clone());
                 }
                 std::collections::hash_map::Entry::Vacant(e) => {
-                    std::fs::write(dir.join(id), &resource.data)?;
+                    crate::output::write(dir.join(id), &resource.data)?;
                     self.image_count += 1;
                     e.insert(id.clone());
                 }
@@ -251,7 +251,7 @@ impl MultiFormatWriter {
             {
                 let raw = std::fs::read_to_string(path)?;
                 let cleaned = CleanupPipeline::new(cleanup_opts.clone()).process(&raw);
-                std::fs::write(path, cleaned)?;
+                crate::output::write(path, cleaned)?;
             }
             // Same reasoning for refine: its passes (table shape, section
             // anchors, frontmatter) need whole-document scope a single
@@ -261,7 +261,7 @@ impl MultiFormatWriter {
             {
                 let raw = std::fs::read_to_string(path)?;
                 let refined = unpdf::render::refine(&raw, refine_opts);
-                std::fs::write(path, refined)?;
+                crate::output::write(path, refined)?;
             }
         }
         if let Some(mut w) = self.txt.take() {

@@ -4,6 +4,16 @@
 
 ### Fixed
 
+- **A file that cannot be read says which file.** The error for an input that does not exist or cannot be opened
+  named only the operating-system text ("No such file or directory"), so a caller handing in several paths could
+  not tell which one failed. It now reads `I/O error: cannot read '<path>': <os text>`; the `io::ErrorKind` is kept,
+  the original error stays reachable as its source, and the classification is still `ErrorKind::Io`.
+
+- **The CLI names the file or folder it could not create or write.** An output folder that cannot be created, or a
+  file that cannot be written, was reported with the operating-system text alone; it now says `cannot create output
+  directory '<path>'` / `cannot write output file '<path>'`, so a command with both an input file and an output
+  folder shows which one is at fault. Exit codes and successful output are unchanged.
+
 - **Text set in the Symbol font by a word processor is read.** Word writes bullets, minus
   signs, Greek letters and math symbols in the Adobe Symbol font as a composite font with no
   ToUnicode map, whose embedded TrueType program has only the Windows symbol cmap

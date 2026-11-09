@@ -1298,7 +1298,8 @@ impl RawBackend {
         path: P,
         password: Option<&str>,
     ) -> Result<Self> {
-        let data = std::fs::read(path).map_err(Error::Io)?;
+        let path = path.as_ref();
+        let data = std::fs::read(path).map_err(|e| Error::read_file(path, e))?;
         Self::load_bytes_with_password(&data, password)
     }
 

@@ -1,8 +1,8 @@
 //! unpdf CLI - PDF content extraction tool
 
+mod output;
 mod writer;
 
-use std::fs;
 use std::path::{Path, PathBuf};
 use unparser_shared::cli_update::{self, Tool, UpdateCheck};
 
@@ -593,7 +593,7 @@ fn cmd_convert(args: &ConvertArgs) -> Result<bool, Box<dyn std::error::Error>> {
         .output
         .clone()
         .unwrap_or_else(|| default_output_dir(&args.input));
-    fs::create_dir_all(&out_dir)?;
+    output::create_dir_all(&out_dir)?;
 
     // Determine output formats
     let formats: Vec<writer::OutputFormat> = if args.all {
@@ -921,7 +921,7 @@ fn cmd_markdown(
     let markdown = unpdf::render::to_markdown(&doc, &render_options)?;
 
     if let Some(path) = output {
-        fs::write(path, &markdown)?;
+        output::write(path, &markdown)?;
         println!("{} {}", "Saved to".green(), path.display());
     } else {
         println!("{}", markdown);
@@ -960,7 +960,7 @@ fn cmd_text(
     let text = unpdf::render::to_text(&doc, &render_options)?;
 
     if let Some(path) = output {
-        fs::write(path, &text)?;
+        output::write(path, &text)?;
         println!("{} {}", "Saved to".green(), path.display());
     } else {
         println!("{}", text);
@@ -993,7 +993,7 @@ fn cmd_json(
     let json = unpdf::render::to_json(&doc, format)?;
 
     if let Some(path) = output {
-        fs::write(path, &json)?;
+        output::write(path, &json)?;
         println!("{} {}", "Saved to".green(), path.display());
     } else {
         println!("{}", json);
@@ -1121,7 +1121,7 @@ fn cmd_extract(
     let output_dir = output
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| PathBuf::from("."));
-    fs::create_dir_all(&output_dir)?;
+    output::create_dir_all(&output_dir)?;
 
     let mut count = 0;
     for (id, resource) in doc.resources() {
@@ -1129,7 +1129,7 @@ fn cmd_extract(
             // The id already is the file name -- the one the rendered output references.
             let filename = resource.filename.as_deref().unwrap_or(id);
             let path = output_dir.join(filename);
-            fs::write(&path, &resource.data)?;
+            output::write(&path, &resource.data)?;
             println!("{} {}", "Extracted".green(), filename);
             count += 1;
         }
@@ -1171,10 +1171,10 @@ fn cmd_tables(
             print!("{}", text.join("\r\n"));
         }
         Some(dir) => {
-            fs::create_dir_all(dir)?;
+            output::create_dir_all(dir)?;
             for (page, n, text) in &tables {
                 let name = format!("p{page}-t{n}.{extension}");
-                fs::write(dir.join(&name), text)?;
+                output::write(dir.join(&name), text)?;
                 println!("{} {}", "Extracted".green(), name);
             }
             println!(
