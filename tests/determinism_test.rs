@@ -6,6 +6,7 @@
 //! image dedup (first occurrence wins) even wrote the same picture under a
 //! different filename each time.
 
+use unpdf::render::{JsonFormat, RenderOptions};
 use unpdf::{parse_bytes_with_options, Block, ParseOptions};
 
 /// Enough images that a shuffled traversal cannot plausibly come out sorted.
@@ -140,4 +141,102 @@ fn assemble(objects: Vec<Vec<u8>>) -> Vec<u8> {
             .as_bytes(),
     );
     pdf
+}
+
+// ---- The text, not only the resources: the same file reads the same on every run ----
+
+/// Fixtures that hold text; each is read many times and must come out the same every time.
+const FIXTURES: &[(&str, &[u8])] = &[
+    ("latex_resume", include_bytes!("fixtures/latex_resume.pdf")),
+    (
+        "inline-font-two-pages",
+        include_bytes!("fixtures/inline-font-two-pages.pdf"),
+    ),
+    (
+        "inline-font-type0",
+        include_bytes!("fixtures/inline-font-type0.pdf"),
+    ),
+    (
+        "signed-number-lines",
+        include_bytes!("fixtures/signed-number-lines.pdf"),
+    ),
+    (
+        "cid-korea1-ucs2-h",
+        include_bytes!("fixtures/cid-korea1-ucs2-h.pdf"),
+    ),
+];
+
+#[test]
+fn the_same_pdf_gives_the_same_markdown_and_json_every_time() {
+    for (name, pdf) in FIXTURES {
+        let read = || {
+            let doc = unpdf::parse_bytes(pdf).unwrap_or_else(|e| panic!("{name}: {e}"));
+            (
+                unpdf::render::to_markdown(&doc, &RenderOptions::default()).expect("renders"),
+                unpdf::render::to_json(&doc, JsonFormat::Pretty).expect("serializes"),
+            )
+        };
+        let first = read();
+        assert!(!first.0.trim().is_empty(), "{name}: no text to compare");
+        for run in 1..16 {
+            assert_eq!(read(), first, "{name}: run {run} differs from the first");
+        }
+    }
+}
+
+/// A one-page PDF whose lines are set in four sizes, each used for the same number of
+/// characters: the most frequent size — which decides what counts as a heading — is a tie.
+fn pdf_with_tied_sizes() -> Vec<u8> {
+    let mut content = String::new();
+    for (i, size) in [10, 12, 14, 18].iter().enumerate() {
+        content.push_str(&format!(
+            "BT /F1 {size} Tf 72 {} Td (TIE{size}TIE{size}) Tj ET\n",
+            700 - 40 * i
+        ));
+    }
+    let objects = [
+        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R \
+         /Resources << /Font << /F1 5 0 R >> >> >>"
+            .to_string(),
+        format!(
+            "<< /Length {} >>\nstream\n{content}endstream",
+            content.len()
+        ),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
+    ];
+    let mut out = b"%PDF-1.4\n".to_vec();
+    let mut offsets = Vec::new();
+    for (i, body) in objects.iter().enumerate() {
+        offsets.push(out.len());
+        out.extend(format!("{} 0 obj\n{body}\nendobj\n", i + 1).bytes());
+    }
+    let xref_at = out.len();
+    out.extend(format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).bytes());
+    for offset in &offsets {
+        out.extend(format!("{offset:010} 00000 n \n").bytes());
+    }
+    out.extend(
+        format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref_at}\n%%EOF\n",
+            objects.len() + 1
+        )
+        .bytes(),
+    );
+    out
+}
+
+#[test]
+fn sizes_used_equally_often_are_decided_the_same_way_every_time() {
+    let pdf = pdf_with_tied_sizes();
+    let read = || {
+        let doc = unpdf::parse_bytes(&pdf).expect("the PDF reads");
+        unpdf::render::to_markdown(&doc, &RenderOptions::default()).expect("renders")
+    };
+    let first = read();
+    assert!(first.contains("TIE18"), "the text is read: {first:?}");
+    for run in 1..32 {
+        assert_eq!(read(), first, "run {run} differs from the first");
+    }
 }
