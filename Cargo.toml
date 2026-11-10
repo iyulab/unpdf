@@ -99,7 +99,7 @@ tokio = { version = "1.42", features = ["rt", "fs"], optional = true }
 tiny-skia = { version = "0.12", default-features = false, features = ["std", "simd"], optional = true }
 zune-jpeg = { version = "0.5", optional = true }
 # TrueType/OpenType outlines, and bare CFF programs through its `raw` (read-fonts) reader.
-skrifa = { version = "0.48", optional = true }
+skrifa = { version = "0.49", optional = true }
 # JPEG 2000 images (`JPXDecode`) for the `raster` feature; the resource inventory hands them on
 # as `image/jp2` undecoded. 0.4 needs rustc 1.92, past the declared MSRV; it moves with the MSRV.
 hayro-jpeg2000 = { version = "0.3", default-features = false, features = ["std", "simd"], optional = true }
