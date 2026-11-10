@@ -2941,7 +2941,7 @@ fn resolve_color_space_name(doc: &RawDocument, cs: &RawPdfObject) -> Option<Stri
                 if let Some(profile) = arr.get(1).map(|second| doc.resolve(second)) {
                     if let Some(stream) = profile.as_stream() {
                         if let Some(components) =
-                            raw_dict_get(&stream.dict, b"N").and_then(|n| n.as_i64())
+                            raw_dict_get(&stream.dict, b"N").and_then(|n| doc.resolve(n).as_i64())
                         {
                             return Some(
                                 match components {
@@ -3977,12 +3977,13 @@ impl RawFontResolver {
             _ => return None,
         };
 
+        // Both are strings that may stand as indirect objects (ISO 32000-1 §7.3.10).
         let registry = raw_dict_get(csi_dict, b"Registry")
-            .and_then(|o| o.as_str_bytes())
+            .and_then(|o| doc.resolve(o).as_str_bytes())
             .map(|s| String::from_utf8_lossy(s).to_string())?;
 
         let ordering = raw_dict_get(csi_dict, b"Ordering")
-            .and_then(|o| o.as_str_bytes())
+            .and_then(|o| doc.resolve(o).as_str_bytes())
             .map(|s| String::from_utf8_lossy(s).to_string())?;
 
         Some((registry, ordering))
@@ -4832,6 +4833,60 @@ mod raw_backend_tests {
         assert!(raw.font_resolver.standard_font(&raw.doc, &simple).is_some());
         let composite = raw.font_resolver.find_font(&raw.doc, scope, b"F2").unwrap();
         assert!(composite.is_composite(&raw.doc));
+    }
+
+    #[test]
+    fn a_cid_fonts_registry_and_ordering_may_be_indirect_objects() {
+        use crate::parser::test_pdf::pdf;
+        let bytes = pdf(
+            vec![
+                b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+                b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+                b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]\
+                  /Resources<</Font<</F1 4 0 R>>>>>>"
+                    .to_vec(),
+                b"<</Type/Font/Subtype/Type0/BaseFont/Composite/Encoding/Identity-H\
+                  /DescendantFonts[5 0 R]>>"
+                    .to_vec(),
+                b"<</Type/Font/Subtype/CIDFontType2/BaseFont/Composite\
+                  /CIDSystemInfo<</Registry 6 0 R/Ordering 7 0 R/Supplement 0>>>>"
+                    .to_vec(),
+                b"(Adobe)".to_vec(),
+                b"(Japan1)".to_vec(),
+            ],
+            1,
+        );
+        let raw = RawBackend::load_bytes(&bytes).unwrap();
+        let scope = ResourceScope::page(raw.pages()[&1]);
+        let font = raw.font_resolver.find_font(&raw.doc, scope, b"F1").unwrap();
+        assert_eq!(
+            raw.font_resolver.get_cid_system_info(&raw.doc, &font),
+            Some(("Adobe".to_string(), "Japan1".to_string()))
+        );
+    }
+
+    #[test]
+    fn an_icc_profiles_component_count_may_be_an_indirect_object() {
+        use crate::parser::test_pdf::{pdf, stream};
+        let bytes = pdf(
+            vec![
+                b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+                b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+                b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]>>".to_vec(),
+                stream("<</N 5 0 R/Length 1>>", b"x"),
+                b"3".to_vec(),
+            ],
+            1,
+        );
+        let raw = RawBackend::load_bytes(&bytes).unwrap();
+        let space = RawPdfObject::Array(vec![
+            RawPdfObject::Name(b"ICCBased".to_vec()),
+            RawPdfObject::Reference(4, 0),
+        ]);
+        assert_eq!(
+            resolve_color_space_name(&raw.doc, &space).as_deref(),
+            Some("DeviceRGB")
+        );
     }
 
     #[test]

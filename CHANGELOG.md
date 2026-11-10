@@ -4,6 +4,13 @@
 
 ### Fixed
 
+- **A CID font's registry and ordering, and an ICC profile's component count, may be indirect objects.**
+  The `Registry` and `Ordering` strings of a `CIDSystemInfo` and the `/N` of an `ICCBased` profile were
+  read only when written in place, so a file that stores them as references (valid under ISO 32000-1
+  7.3.10, and followed by PDFium's and pdf.js's dictionary readers) lost the font's character collection
+  -- and with it the predefined CMap lookup -- or fell back to the profile's name instead of its device
+  color space. Both are now followed through the reference; every other number, name and string entry of
+  the same readers already was.
 - **A TrueType font under `Identity-H` with a `/CIDToGIDMap` stream is read through the map.** The text
   of such a font with no `/ToUnicode` was recovered from the font's own `cmap`, which is keyed by glyph
   index, but the codes in the page are CIDs; the codes were looked up as if they were glyph indices, so
