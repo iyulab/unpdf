@@ -4058,7 +4058,42 @@ impl RawFontResolver {
         // The Adobe Symbol font's symbol cmap holds the codes of its own encoding; no other
         // symbolic font's do (see `parse_truetype_cmap_table`).
         let adobe_symbol = font.base_font(doc).is_some_and(names_adobe_symbol);
-        parse_truetype_cmap_table(&font_data, adobe_symbol)
+        let mut map = parse_truetype_cmap_table(&font_data, adobe_symbol)?;
+
+        // The table above is keyed by glyph index, but the codes under `Identity-H` are CIDs;
+        // a `/CIDToGIDMap` stream is what turns one into the other (ISO 32000-1 9.7.4.2), so the
+        // table is re-keyed by CID. Without a stream (`/Identity`) the CID is the glyph index.
+        if let Some(cid_to_gid) = Self::cid_to_gid_table(doc, cid_font_dict) {
+            map.mappings = cid_to_gid
+                .iter()
+                .enumerate()
+                .filter_map(|(cid, &gid)| {
+                    let text = map.mappings.get(&u32::from(gid))?;
+                    Some((u32::try_from(cid).ok()?, text.clone()))
+                })
+                .collect();
+            if map.mappings.is_empty() {
+                return None;
+            }
+        }
+        Some(map)
+    }
+
+    /// The `/CIDToGIDMap` stream of a CIDFontType2 as a table (CID `i` -> the big-endian `u16`
+    /// at byte `2 * i`), or `None` for `/Identity` or no entry: the CID is then the glyph index.
+    fn cid_to_gid_table(doc: &RawDocument, cid_font: &RawPdfDict) -> Option<Vec<u16>> {
+        let stream = raw_dict_get(cid_font, b"CIDToGIDMap")
+            .map(|m| doc.resolve(m))
+            .and_then(|m| m.as_stream())?;
+        let bytes = raw_stream::decompress(stream).unwrap_or_default();
+        Some(
+            bytes
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|&pair| u16::from_be_bytes(pair))
+                .collect(),
+        )
     }
 
     /// The embedded program of a font, and how its codes select glyphs.
@@ -4076,18 +4111,7 @@ impl RawFontResolver {
             }
             let cid_font = self.cid_font_dict(doc, font)?;
             let (format, data) = embedded_font_program(doc, cid_font)?;
-            let cid_to_gid = raw_dict_get(cid_font, b"CIDToGIDMap")
-                .map(|m| doc.resolve(m))
-                .and_then(|m| m.as_stream())
-                .map(|stream| {
-                    let bytes = raw_stream::decompress(stream).unwrap_or_default();
-                    bytes
-                        .as_chunks::<2>()
-                        .0
-                        .iter()
-                        .map(|&pair| u16::from_be_bytes(pair))
-                        .collect()
-                });
+            let cid_to_gid = Self::cid_to_gid_table(doc, cid_font);
             return Some(FontProgram {
                 format,
                 data,

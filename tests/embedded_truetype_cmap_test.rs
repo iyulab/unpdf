@@ -94,6 +94,12 @@ fn embedded_truetype_font_format12_only() -> Vec<u8> {
 /// embedded `FontFile2` program — the full real-world object graph
 /// `Type0 -> DescendantFonts -> CIDFontType2 -> FontDescriptor -> FontFile2`.
 fn embedded_format12_cmap_pdf(gids: &[u8], to_unicode: Option<&str>) -> Vec<u8> {
+    embedded_cmap_pdf(gids, to_unicode, None)
+}
+
+/// The same page with an explicit `/CIDToGIDMap` stream (CID `i` -> the big-endian `u16` at
+/// byte `2 * i`), so the codes in the content stream are CIDs and no longer glyph indices.
+fn embedded_cmap_pdf(gids: &[u8], to_unicode: Option<&str>, cid_to_gid: Option<&[u8]>) -> Vec<u8> {
     let font_program = embedded_truetype_font_format12_only();
     let mut content = b"BT /F1 12 Tf 72 720 Td (".to_vec();
     content.extend_from_slice(gids);
@@ -123,8 +129,18 @@ fn embedded_format12_cmap_pdf(gids: &[u8], to_unicode: Option<&str>) -> Vec<u8> 
         .into_bytes(),
         b"<< /Type /Font /Subtype /CIDFontType2 /BaseFont /Synthetic \
           /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> \
-          /FontDescriptor 7 0 R >>"
-            .to_vec(),
+          /FontDescriptor 7 0 R"
+            .iter()
+            .copied()
+            .chain(if cid_to_gid.is_some() {
+                // 9 is the ToUnicode stream when there is one, so the map follows it.
+                let number = if to_unicode.is_some() { 10 } else { 9 };
+                format!(" /CIDToGIDMap {number} 0 R").into_bytes()
+            } else {
+                Vec::new()
+            })
+            .chain(b" >>".iter().copied())
+            .collect(),
         b"<< /Type /FontDescriptor /FontName /Synthetic /Flags 4 /FontFile2 8 0 R >>".to_vec(),
         [
             format!("<< /Length {} >>\nstream\n", font_program.len()).into_bytes(),
@@ -139,6 +155,17 @@ fn embedded_format12_cmap_pdf(gids: &[u8], to_unicode: Option<&str>) -> Vec<u8> 
         );
         objects
             .push(format!("<< /Length {} >>\nstream\n{cmap}\nendstream", cmap.len()).into_bytes());
+    }
+
+    if let Some(map) = cid_to_gid {
+        objects.push(
+            [
+                format!("<< /Length {} >>\nstream\n", map.len()).into_bytes(),
+                map.to_vec(),
+                b"\nendstream".to_vec(),
+            ]
+            .concat(),
+        );
     }
 
     assemble(&objects)
@@ -187,4 +214,31 @@ fn codes_a_to_unicode_leaves_out_read_through_the_embedded_cmap() {
     let doc = parse(&[0x00, 0x05, 0x00, 0x06, 0x00, 0x07, 0x00, 0x08]);
     assert_eq!(doc.plain_text().trim(), "ABC");
     assert_eq!(doc.pages[0].undecoded_text_codes, 1);
+}
+
+#[test]
+fn a_cid_to_gid_map_is_applied_before_the_embedded_cmap_is_read() {
+    // Codes 1, 2, 3 are CIDs; the map sends them to glyphs 5, 6, 7, which the font's cmap
+    // reads as 'A', 'B', 'C'. Reading the codes as glyph indices instead finds nothing at
+    // glyphs 1-3 and the text is lost.
+    let map = [0u8, 0, 0, 5, 0, 6, 0, 7];
+    let pdf = embedded_cmap_pdf(&[0x00, 0x01, 0x00, 0x02, 0x00, 0x03], None, Some(&map));
+    let doc = PdfParser::from_bytes(&pdf)
+        .and_then(|p| p.parse())
+        .expect("fixture must parse");
+    let text = to_markdown(&doc, &RenderOptions::default()).expect("markdown render");
+    assert!(
+        text.contains("ABC"),
+        "CIDs 1-3 map to glyphs 5-7 = 'A'-'C' through /CIDToGIDMap, got: {text:?}"
+    );
+}
+
+#[test]
+fn without_a_cid_to_gid_map_the_codes_are_glyph_indices_as_before() {
+    let pdf = embedded_cmap_pdf(&[0x00, 0x05, 0x00, 0x06, 0x00, 0x07], None, None);
+    let doc = PdfParser::from_bytes(&pdf)
+        .and_then(|p| p.parse())
+        .expect("fixture must parse");
+    let text = to_markdown(&doc, &RenderOptions::default()).expect("markdown render");
+    assert!(text.contains("ABC"), "{text:?}");
 }

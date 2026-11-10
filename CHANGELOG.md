@@ -4,6 +4,12 @@
 
 ### Fixed
 
+- **A TrueType font under `Identity-H` with a `/CIDToGIDMap` stream is read through the map.** The text
+  of such a font with no `/ToUnicode` was recovered from the font's own `cmap`, which is keyed by glyph
+  index, but the codes in the page are CIDs; the codes were looked up as if they were glyph indices, so
+  every glyph the map moved was lost or read as another character. The table is now re-keyed by CID
+  through the stream (ISO 32000-1 9.7.4.2); with `/Identity`, or no entry, the CID is the glyph index
+  as before.
 - **A file that cannot be read says which file.** The error for an input that does not exist or cannot be opened
   named only the operating-system text ("No such file or directory"), so a caller handing in several paths could
   not tell which one failed. It now reads `I/O error: cannot read '<path>': <os text>`; the `io::ErrorKind` is kept,
