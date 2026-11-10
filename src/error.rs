@@ -139,6 +139,7 @@ pub enum Error {
 /// What an I/O failure was doing and to which file: the message of the `io::Error` that
 /// [`Error::read_file`] builds, with the operating-system error kept as its source.
 #[derive(Debug)]
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))] // read only where a file is opened
 struct FileAccess {
     path: PathBuf,
     source: io::Error,
@@ -163,6 +164,7 @@ impl Error {
     /// directory"), so a caller that hands in several paths cannot tell which one failed. The
     /// [`io::ErrorKind`] is kept and the original error stays reachable as the source; the
     /// classification is still [`ErrorKind::Io`].
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))] // read only where a file is opened
     pub(crate) fn read_file(path: &Path, source: io::Error) -> Self {
         Error::Io(io::Error::new(
             source.kind(),
