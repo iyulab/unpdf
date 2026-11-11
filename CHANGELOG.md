@@ -4,6 +4,13 @@
 
 ### Fixed
 
+- **An appendix letter numbers a section title.** A line in the body face's bold that opens with a
+  section number is a title, but only digits and Roman numerals counted as one; an appendix numbered
+  `B`, `B.1`, `C.2.1` was written as a bold paragraph. A capital letter, alone or followed by
+  numbers, is now read as the number (a title that is a question stays text). Of the 200 documents of
+  the OpenDataLoader benchmark one reads better (heading score +0.22), none worse; of the 1,403 olmOCR
+  pages five change, all in their headings, and no test of that benchmark changes.
+
 - **A bold section title set directly under a larger bold chapter title is a heading.** A short bold
   line in the body face stands for a title when it sits between plain lines and is followed by body
   text, but not when the line above is bold too -- a list of bold names, a bold paragraph. A chapter

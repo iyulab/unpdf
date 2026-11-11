@@ -911,7 +911,15 @@ fn section_number_depth(text: &str) -> Option<usize> {
         let parts: Vec<&str> = digits.split('.').collect();
         let numeric =
             |p: &&str| !p.is_empty() && p.len() <= 3 && p.bytes().all(|b| b.is_ascii_digit());
-        if parts.len() > 4 || !parts.iter().all(numeric) {
+        // An appendix is numbered by a capital letter ("B", "B.1", "C.2.1"): the letter stands in
+        // for the first number.
+        let lettered = parts[0].len() == 1 && parts[0].as_bytes()[0].is_ascii_uppercase();
+        let numbers = if lettered { &parts[1..] } else { &parts[..] };
+        if parts.len() > 4 || !numbers.iter().all(numeric) {
+            return None;
+        }
+        // A question set in bold ("Q What is …?") is no section title.
+        if lettered && rest.ends_with('?') {
             return None;
         }
         parts.len()
@@ -5096,6 +5104,31 @@ mod tests {
         let result = LayoutAnalyzer::detect_headings(&stats, lines);
 
         assert!(!result[1].is_heading);
+    }
+
+    #[test]
+    fn an_appendix_letter_numbers_a_section_title() {
+        assert_eq!(
+            section_number_depth("B Related Works and Background"),
+            Some(1)
+        );
+        assert_eq!(section_number_depth("B.1 Large Language Models"), Some(2));
+        assert_eq!(section_number_depth("C.2.1 Details of the setup"), Some(3));
+        // The numbered forms that already were.
+        assert_eq!(section_number_depth("3.1. Status of operations"), Some(2));
+        assert_eq!(section_number_depth("IV. Results"), Some(1));
+        // A question, a lowercase letter, two letters, a letter with a non-number part, or a title
+        // that is no title.
+        for text in [
+            "Q What is the refund policy?",
+            "b Related works",
+            "AB Related works",
+            "B.x Related works",
+            "B related works",
+            "B Related works.",
+        ] {
+            assert_eq!(section_number_depth(text), None, "{text}");
+        }
     }
 
     #[test]
