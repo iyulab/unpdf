@@ -4,6 +4,16 @@
 
 ### Fixed
 
+- **A bold section title set directly under a larger bold chapter title is a heading.** A short bold
+  line in the body face stands for a title when it sits between plain lines and is followed by body
+  text, but not when the line above is bold too -- a list of bold names, a bold paragraph. A chapter
+  title (17 pt) over its first section title (12 pt bold over 10.9 pt text) was such a pair, so the
+  section title was written as a bold paragraph. The line above no longer counts as a bold neighbour
+  when it is itself a heading set at least two points larger. Of the 200 documents of the
+  OpenDataLoader benchmark two read better (heading score +0.46 and +0.12), none worse, the overall
+  score 0.9016 to 0.9031; of the 1,403 olmOCR pages 17 change, all in their headings, and no test
+  of that benchmark changes.
+
 - **A CID font's registry and ordering, and an ICC profile's component count, may be indirect objects.**
   The `Registry` and `Ordering` strings of a `CIDSystemInfo` and the `/N` of an `ICCBased` profile were
   read only when written in place, so a file that stores them as references (valid under ISO 32000-1

@@ -2345,6 +2345,9 @@ impl<'a> LayoutAnalyzer<'a> {
         let texts: Vec<String> = lines.iter().map(|l| l.text().trim().to_string()).collect();
         let ys: Vec<f32> = lines.iter().map(|l| l.y).collect();
         let body_size = font_stats.body_size;
+        // Whether each line, once reached, was made a heading: a bold line under a larger heading
+        // is a heading's heading-chain, not a bold neighbour.
+        let mut titled = vec![false; lines.len()];
 
         for (i, line) in lines.iter_mut().enumerate() {
             let visible_chars: usize = line
@@ -2395,7 +2398,11 @@ impl<'a> LayoutAnalyzer<'a> {
                 // depth gives the level, below a size-tier title.
                 ((depth + 1).min(4) as u8, false)
             } else if is_bold_run_in_title(line, trimmed, body_size)
-                && (i == 0 || !has_bold[i - 1])
+                && (i == 0
+                    || !has_bold[i - 1]
+                    // The line above is a bold title set larger (a chapter title over its first
+                    // section title): the one is not a sibling of the other.
+                    || (titled[i - 1] && sizes[i - 1] >= line.font_size + 2.0))
                 && lines_follow_as_body(&sizes, &has_bold, i, body_size)
             {
                 // A short line in the body face's bold, standing between plain lines and
@@ -2445,6 +2452,7 @@ impl<'a> LayoutAnalyzer<'a> {
 
             line.is_heading = true;
             line.heading_level = level;
+            titled[i] = true;
         }
 
         // A chapter or section number set on a line of its own above its title ("4" over
@@ -5088,6 +5096,40 @@ mod tests {
         let result = LayoutAnalyzer::detect_headings(&stats, lines);
 
         assert!(!result[1].is_heading);
+    }
+
+    #[test]
+    fn a_bold_title_under_a_larger_bold_heading_is_a_heading_too() {
+        // A chapter title (17pt) and its first section title (12pt over 10.9pt body), both bold:
+        // the section title is neither a sibling of the chapter title nor a bold paragraph.
+        let stats = body_12pt_stats(&[17.0]);
+        let body = |t, y| line_at(t, y, 12.0, "CMR10");
+        let lines = vec![
+            line_at("Prologue", 500.0, 17.0, "Lato-Bold"),
+            line_at("Programming and Understanding", 470.0, 13.0, "Lato-Bold"),
+            body("One way to become aware of the precision required.", 440.0),
+            body("Rather than using canned programs purely as an aid.", 426.0),
+        ];
+        let result = LayoutAnalyzer::detect_headings(&stats, lines);
+        assert!(result[0].is_heading, "the chapter title");
+        assert!(result[1].is_heading, "the section title under it");
+        assert!(!result[2].is_heading && !result[3].is_heading);
+
+        // Under a bold line of its own size, or under a bold line that is no heading, it is a bold
+        // line among bold lines.
+        for (above, above_size) in [
+            ("Programming and Understanding", 13.0),
+            ("Some bold note", 12.0),
+        ] {
+            let lines = vec![
+                line_at(above, 500.0, above_size, "Lato-Bold"),
+                line_at("Programming and Understanding", 470.0, 13.0, "Lato-Bold"),
+                body("One way to become aware of the precision required.", 440.0),
+                body("Rather than using canned programs purely as an aid.", 426.0),
+            ];
+            let result = LayoutAnalyzer::detect_headings(&stats, lines);
+            assert!(!result[1].is_heading, "under {above:?} at {above_size}pt");
+        }
     }
 
     #[test]
