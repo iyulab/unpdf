@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Fixed
+
+- **A chapter label opens the title below it.** `CHAPTER 1.` set above `CALIFORNIA` in the body's size
+  was written as a plain line over a heading; book classes lay a chapter opening out this way, and the
+  bare-number rule that already joins a `4` over `Basis Fields` did not cover it because the label is set
+  smaller than the title and further from it. A line made of one of the words `Chapter`, `Part` or
+  `Appendix` (capitalised) and its number, nothing else, now joins the heading directly below it when it is
+  at least body-sized and within four of its own sizes above it. Of the 200 documents of the
+  OpenDataLoader benchmark two read better (heading score +0.17, +0.13) and one reads worse (-0.06: its
+  reference leaves the same kind of label as text); of the 1,403 olmOCR pages none changes.
+
 ## 0.55.0 — 2026-11-15
 
 ### Fixed

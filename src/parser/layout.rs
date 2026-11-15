@@ -828,10 +828,35 @@ fn is_bare_section_number(text: &str) -> bool {
     arabic || roman || letter
 }
 
+/// How far above its title a chapter label may sit, in the label's font sizes — a chapter opening
+/// leaves a gap of about two and a half lines between its label and its title.
+const CHAPTER_LABEL_REACH: f32 = 4.0;
+
+/// Whether `text` is the label a book class sets above a chapter title: a word that names a
+/// division ("CHAPTER", "Part", "Appendix") and its number ("CHAPTER 1.", "Part II"), nothing
+/// else on the line. The word is what says it is a label and not a page number, so unlike a
+/// bare number it is not held to the title's size — chapter labels are usually set smaller.
+fn is_chapter_label(text: &str) -> bool {
+    const DIVISIONS: [&str; 3] = ["chapter", "part", "appendix"];
+    let mut words = text.split_whitespace();
+    let (Some(word), Some(number), None) = (words.next(), words.next(), words.next()) else {
+        return false;
+    };
+    word.chars().next().is_some_and(char::is_uppercase)
+        && DIVISIONS.iter().any(|d| word.eq_ignore_ascii_case(d))
+        && is_bare_section_number(number)
+}
+
 /// Whether `number` sits just above `title`: its baseline higher by no more than two and a
 /// half of the number's own font size, and starting near the title's left edge or centred
 /// over it.
 fn number_sits_over(number: &TextLine, title: &TextLine) -> bool {
+    sits_over_within(number, title, 2.5)
+}
+
+/// [`number_sits_over`] with the reach given in font sizes of the line above: a chapter label
+/// is set apart from its title by a larger gap than a bare number is.
+fn sits_over_within(number: &TextLine, title: &TextLine, reach: f32) -> bool {
     let gap = number.y - title.y;
     let centre = |line: &TextLine| {
         let right = line
@@ -843,7 +868,7 @@ fn number_sits_over(number: &TextLine, title: &TextLine) -> bool {
     };
     let aligned = (number.x - title.x).abs() <= number.font_size * 2.0
         || (centre(number) - centre(title)).abs() <= number.font_size * 2.0;
-    gap > 0.0 && gap <= number.font_size * 2.5 && aligned
+    gap > 0.0 && gap <= number.font_size * reach && aligned
 }
 
 /// Whether `lower` carries on the text of `upper` as the next line of one wrapped title, both
@@ -2466,15 +2491,27 @@ impl<'a> LayoutAnalyzer<'a> {
         // A chapter or section number set on a line of its own above its title ("4" over
         // "Basis Fields", as book classes lay out a chapter opening) is part of that title —
         // too short to be a heading by itself, so it joins the one below it. It must be set
-        // at least as large as the title: a page number above a heading is smaller.
+        // at least as large as the title: a page number above a heading is smaller. A chapter
+        // label ("CHAPTER 1.") carries its word, so it need only be body-sized.
         for i in 0..lines.len().saturating_sub(1) {
             let (head, rest) = lines.split_at_mut(i + 1);
             let (number, title) = (&mut head[i], &rest[0]);
+            let text = number.text();
+            // How the line must be set against the title depends on what it is: a bare number
+            // is as large as the title (a page number is smaller) and close above it; a chapter
+            // label has its word to vouch for it, so it need only be body-sized, and it is set
+            // further from the title.
+            let (qualifies, reach) = if is_bare_section_number(&text) {
+                (number.font_size >= title.font_size - 0.5, 2.5)
+            } else if is_chapter_label(&text) {
+                (number.font_size >= body_size - 0.5, CHAPTER_LABEL_REACH)
+            } else {
+                (false, 0.0)
+            };
             if !number.is_heading
                 && title.is_heading
-                && is_bare_section_number(&number.text())
-                && number.font_size >= title.font_size - 0.5
-                && (number_sits_over(number, title) || number_sits_beside(number, title))
+                && qualifies
+                && (sits_over_within(number, title, reach) || number_sits_beside(number, title))
             {
                 let own = font_stats.get_heading_level(number.font_size, number.is_bold());
                 number.is_heading = true;
@@ -5039,6 +5076,88 @@ mod tests {
         assert!(result[1].is_heading);
         assert!(result[0].is_heading, "the number opens the title");
         assert!(result[0].heading_level <= result[1].heading_level);
+    }
+
+    #[test]
+    fn a_chapter_label_set_smaller_than_its_title_joins_the_title() {
+        // "CHAPTER 1." in the body's size over a larger bold title — the opening of a chapter,
+        // three lines of its own size above the title (a bare number may sit only 2.5 above).
+        let stats = body_12pt_stats(&[17.0]);
+        let lines = vec![
+            line_at("CHAPTER 1.", 741.0, 12.0, "Helvetica"),
+            line_at("CALIFORNIA", 705.0, 17.0, "Helvetica-Bold"),
+            line_at(
+                "A vector field may be written as a combination.",
+                675.0,
+                12.0,
+                "Helvetica",
+            ),
+        ];
+        let result = LayoutAnalyzer::detect_headings(&stats, lines);
+        assert!(result[1].is_heading);
+        assert!(result[0].is_heading, "the label opens the title");
+        assert_eq!(result[0].heading_level, result[1].heading_level);
+    }
+
+    #[test]
+    fn a_chapter_label_is_a_division_word_and_a_number_and_nothing_else() {
+        for label in [
+            "CHAPTER 1.",
+            "Chapter 12",
+            "Part II",
+            "APPENDIX A",
+            "Chapter  7.",
+        ] {
+            assert!(is_chapter_label(label), "{label}");
+        }
+        for text in [
+            "chapter 1",
+            "Chapter",
+            "Chapter One",
+            "Chapter 1 of the report",
+            "Part",
+            "1.",
+            "Page 3",
+            "Chapter 1: Basis",
+        ] {
+            assert!(!is_chapter_label(text), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_chapter_label_with_no_title_below_it_stays_text() {
+        let stats = body_12pt_stats(&[17.0]);
+        let lines = vec![
+            line_at("CHAPTER 1.", 730.0, 12.0, "Helvetica"),
+            line_at(
+                "A vector field may be written as a combination.",
+                705.0,
+                12.0,
+                "Helvetica",
+            ),
+        ];
+        let result = LayoutAnalyzer::detect_headings(&stats, lines);
+        assert!(!result[0].is_heading);
+    }
+
+    #[test]
+    fn a_chapter_label_far_above_the_title_or_set_below_body_size_stays_text() {
+        let stats = body_12pt_stats(&[17.0]);
+        for (y, size) in [(800.0, 12.0), (730.0, 8.0)] {
+            let lines = vec![
+                line_at("CHAPTER 1.", y, size, "Helvetica"),
+                line_at("CALIFORNIA", 705.0, 17.0, "Helvetica-Bold"),
+                line_at(
+                    "A vector field may be written as a combination.",
+                    675.0,
+                    12.0,
+                    "Helvetica",
+                ),
+            ];
+            let result = LayoutAnalyzer::detect_headings(&stats, lines);
+            assert!(result[1].is_heading);
+            assert!(!result[0].is_heading, "y={y} size={size}");
+        }
     }
 
     #[test]
