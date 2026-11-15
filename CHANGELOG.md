@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.55.0 — 2026-11-15
+
 ### Fixed
 
 - **The Linux (glibc) library and command-line binary no longer require glibc 2.43.** 0.54.0 was
