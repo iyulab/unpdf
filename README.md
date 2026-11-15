@@ -1024,6 +1024,11 @@ Alternatively, download from [GitHub Releases](https://github.com/iyulab/unpdf/r
 
 Each archive holds the library and its C header, `unpdf.h`.
 
+The glibc builds -- the `unpdf` command-line binary, `libunpdf.so` in the glibc archive, and the
+Linux library inside the NuGet and PyPI packages -- need **glibc 2.35 or newer** (Ubuntu 22.04,
+Debian 12, and later releases). The release build checks this: it stops when a binary asks for
+more. On an older system, or one without glibc (Alpine), use the musl archive.
+
 Or build from source:
 
 ```bash

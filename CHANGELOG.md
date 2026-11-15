@@ -4,6 +4,12 @@
 
 ### Fixed
 
+- **The Linux (glibc) library and command-line binary no longer require glibc 2.43.** 0.54.0 was
+  built on a runner image whose libm versions `acosf`, `atan2f` and `log10f` at GLIBC_2.43, so its Linux
+  library did not load on Ubuntu 24.04 or on the default .NET container images (glibc 2.39); the
+  releases before it asked for 2.35. The glibc builds now run on an image with glibc 2.35, and the release
+  stops when a binary asks for more than that. The requirement -- glibc 2.35 or newer; the musl archive
+  has none -- is stated in the README.
 - **An appendix letter numbers a section title.** A line in the body face's bold that opens with a
   section number is a title, but only digits and Roman numerals counted as one; an appendix numbered
   `B`, `B.1`, `C.2.1` was written as a bold paragraph. A capital letter, alone or followed by
