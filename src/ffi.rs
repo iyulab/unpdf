@@ -870,9 +870,7 @@ unparser_shared::export_count_getter!(
     /// - Returns -1 on error.
     LAST_ERROR,
     unpdf_page_count(doc: UnpdfDocument),
-    {
-        Ok((*doc).inner.page_count() as c_int)
-    }
+    { Ok((*doc).inner.page_count() as c_int) }
 );
 
 unparser_shared::export_string_getter!(
@@ -1369,7 +1367,11 @@ unparser_shared::export_string_getter!(
         };
         let region = page_region(region)?;
         let page_number = u32::try_from(page_number).unwrap_or(0);
-        let size = (*doc).inner.parser()?.page_size(page_number, region).map_err(ffi_err)?;
+        let size = (*doc)
+            .inner
+            .parser()?
+            .page_size(page_number, region)
+            .map_err(ffi_err)?;
         serde_json::to_string(&FfiPageSize {
             width: size.width,
             height: size.height,
