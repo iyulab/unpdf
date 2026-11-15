@@ -4,6 +4,12 @@
 
 ### Fixed
 
+- **The title of a contents page is a heading.** `Table of Contents`, set in the body's size in a heavy
+  face with the page's entries in the same face below it, was written as a bold paragraph: the rules that
+  keep a run of bold lines from becoming headings read the title as one of its own entries. A line that
+  says only `Table of Contents` or `Contents` (a closing colon allowed), in bold at least body-sized, is
+  now a heading. Of the 200 documents of the OpenDataLoader benchmark one reads better (heading score
+  +0.23), none worse; of the 1,403 olmOCR pages none changes.
 - **A chapter label opens the title below it.** `CHAPTER 1.` set above `CALIFORNIA` in the body's size
   was written as a plain line over a heading; book classes lay a chapter opening out this way, and the
   bare-number rule that already joins a `4` over `Basis Fields` did not cover it because the label is set

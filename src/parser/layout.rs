@@ -828,6 +828,13 @@ fn is_bare_section_number(text: &str) -> bool {
     arabic || roman || letter
 }
 
+/// Whether `text` is what the title of a contents page says, and nothing else: "Table of
+/// Contents" or "Contents", optionally closed by a colon.
+fn names_a_contents_page(text: &str) -> bool {
+    let text = text.trim().trim_end_matches(':').trim_end();
+    text.eq_ignore_ascii_case("table of contents") || text.eq_ignore_ascii_case("contents")
+}
+
 /// How far above its title a chapter label may sit, in the label's font sizes — a chapter opening
 /// leaves a gap of about two and a half lines between its label and its title.
 const CHAPTER_LABEL_REACH: f32 = 4.0;
@@ -2419,6 +2426,13 @@ impl<'a> LayoutAnalyzer<'a> {
             let (level, from_size) = if size_level > 0 {
                 (size_level, true)
             } else if line.is_bold() && line.is_uppercase() && visible_chars <= 40 {
+                (2, false)
+            } else if line.is_all_bold()
+                && line.font_size >= body_size - 0.5
+                && names_a_contents_page(trimmed)
+            {
+                // The title of a contents page. Its entries are set in the same bold, so the
+                // bold-neighbour rules below would read it as one of them; the words say what it is.
                 (2, false)
             } else if let Some(depth) =
                 (line.is_all_bold() && line.font_size >= body_size - 0.5 && visible_chars <= 100)
@@ -5076,6 +5090,62 @@ mod tests {
         assert!(result[1].is_heading);
         assert!(result[0].is_heading, "the number opens the title");
         assert!(result[0].heading_level <= result[1].heading_level);
+    }
+
+    #[test]
+    fn the_title_of_a_contents_page_is_a_heading_among_bold_entries() {
+        // Body-sized bold, with the page's entries in the same bold below it.
+        let stats = body_12pt_stats(&[]);
+        let lines = vec![
+            line_at("Table of Contents", 740.0, 12.0, "Arial-Bold"),
+            line_at(
+                "Introduction to Light Microscopes ..... 3",
+                700.0,
+                12.0,
+                "Arial-Bold",
+            ),
+            line_at("Preparing the Specimen ..... 9", 685.0, 12.0, "Arial-Bold"),
+        ];
+        let result = LayoutAnalyzer::detect_headings(&stats, lines);
+        assert!(result[0].is_heading, "the contents title");
+        assert!(
+            !result[1].is_heading && !result[2].is_heading,
+            "the entries stay text"
+        );
+    }
+
+    #[test]
+    fn a_contents_title_is_the_words_and_bold_and_body_sized() {
+        for text in [
+            "Table of Contents",
+            "CONTENTS",
+            "Contents:",
+            "table of contents",
+        ] {
+            assert!(names_a_contents_page(text), "{text}");
+        }
+        for text in [
+            "Contents of the box",
+            "Table of Contents 2",
+            "Content",
+            "A Table of Contents",
+        ] {
+            assert!(!names_a_contents_page(text), "{text}");
+        }
+        let stats = body_12pt_stats(&[]);
+        for (font, size) in [("Arial", 12.0), ("Arial-Bold", 9.0)] {
+            let lines = vec![
+                line_at("Table of Contents", 740.0, size, font),
+                line_at(
+                    "Some body text of the page goes here.",
+                    700.0,
+                    12.0,
+                    "Arial",
+                ),
+            ];
+            let result = LayoutAnalyzer::detect_headings(&stats, lines);
+            assert!(!result[0].is_heading, "{font} {size}");
+        }
     }
 
     #[test]
